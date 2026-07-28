@@ -64,6 +64,48 @@ _Last reviewed: 2026-07-23._
 ## Conformance (SQL++ suite corpus)
 - [ ] Raise the TestSuiteCases pass rate.
 
+## NA() operator coverage (glue/conv.go)
+Plan operators glue/conv.go still returns NA (unsupported) for, by tractability. (DONE
+recently: NEST NL/hash/ON-KEYS, LATERAL, RIGHT OUTER, correlated-FROM subqueries.)
+- Plausible, n1k1-only (no cbq changes):
+  - VisitIndexNest -- index-driven NEST (NL/hash/ON-KEYS NEST already done).
+  - VisitIndexScan2 / VisitIndexScan3 + VisitIndexCountScan / VisitIndexCountProject --
+    can DEGRADE to the base datastore-scan-index (projection/order/group-aggs pushdowns
+    are a later optimization); VisitPrimaryScan3 already degrades this way.
+  - VisitIndexJoin -- index-driven lookup join (ON-KEYS lookup join already done).
+- Niche correctness edges (within otherwise-supported ops):
+  - VisitProject window guard -- window funcs n1k1 doesn't compute natively.
+  - ORDER BY an aggregate over a `.*` projection (order-agg).
+- Out of scope / non-goals (need mutation/admin, or served by n1k1's own mechanisms):
+  DML (SendInsert/Upsert/Delete/Update/Merge/Clone/Set/Unset -- INSERT-to-file is
+  partial); DDL (index/scope/collection/bucket/catalog/sequence/user/group);
+  transactions; RBAC (grant/revoke); Prepare/Explain plan-ops (n1k1 has its own);
+  Create/Drop/ExecuteFunction (goja UDFs instead); Infer; IndexAdvice/Advise;
+  Collect/Receive/Discard.
+
+## Library API surface (for embedders)
+n1k1-as-a-library is already broadly exported: glue.Session{Store,Namespace,NamedArgs,
+PositionalArgs,PrepareLevel,Pipe,OnRow,MergeStats} + Run/StatementRun/PlanExec/Interrupt;
+glue.Result{Rows,Labels,Plan,Stats,Warnings,Count,...}; OpenSession/OpenSessionBound,
+Store.PlanStatement[QP], PlanConvert/ExecConv, Conv{Temps,TopPlan,TopOp}; the Register*
+suite (ExtensionDir/File/Glob, JS Func/Aggregate/Macro/Module/Stream, JSExtractRecipe);
+records.{OpenFile,Source,Record,Recipe,RecipeRegister,ExtractSpec,ReadWholeDecompressed,
+OpenReadCloser}; base.{Op,Val,Vals,Vars,Ctx,DatastorePipe,ExprFunc,YieldVals,Labels,
+Stats} for custom sources/ops/exprs; plus many Enable*/Disable*/cache/timeout tuning vars.
+Candidate ADDITIONS to widen power-user reach (tradeoff: larger, longer-lived contract --
+export deliberately, only what has a clear embedder use):
+- Promote a few private default consts -> public tunable vars (matching the existing
+  Enable*/cache vars): extractHeadSampleBytes + records.describeSampleBytes (extract
+  sampling caps), defaultNearDisorderNanos (ASOF reorder window), maxMacroExpansions, and
+  the rt spill tunables (rhmap StartSize, maxRecycledBatches, spill byte caps) for memory
+  control on constrained/embedded hosts.
+- Programmatic keyspace listing + schema inference (today only inside cmd/n1k1).
+- records.RegisterExtractor(ext, Extractor) for a Go-native WHOLE-FILE format (the
+  framed-format path is already covered by RecipeRegister + a Go Recipe.Extract).
+- A documented public helper to register a native-lane (non-goja) expr function into
+  engine.ExprCatalog (the map is exported, but the ExprFunc + label-resolution contract
+  is low-level today).
+
 ## Keeping current with SQL++
 n1k1's SQL++ support tracks couchbase/query (parser/algebra/expression/plan/
 planner). To move to a newer query, follow "Updating the fork to a newer query"
