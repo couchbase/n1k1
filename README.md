@@ -12,7 +12,7 @@ scan layer that treats a directory tree of mixed file formats as queryable table
 ## Try it
 
 ```sh
-make cli                       # builds ./n1k1 (pure Go, CGO-free; make install-cli to install)
+make cli      # builds ./n1k1 (pure Go, CGO-free; make install-cli to install)
 ```
 
 Point it at a directory and query the files inside it:
@@ -156,5 +156,4 @@ CI runs these on all three OSes; see [`.github/README.md`](.github/README.md).
 
 ## License
 
-Source files carry Apache 2.0 headers. See [`LICENSE.txt`](LICENSE.txt) and
-[`licenses/`](licenses/) — the applicable license is stated per file.
+Business Source License 1.1.
