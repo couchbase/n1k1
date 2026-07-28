@@ -68,7 +68,7 @@ SECTION_INTROS = {
 
 HTML_TITLE = "SQL++ recipes"
 HTML_SUB = ("The same JSON maneuver in SQL++, SQL (Postgres & DuckDB), JavaScript, Python, MongoDB, and jq.")
-HTML_FOOTER = ("Generated from docs/recipes.yaml - https://github.com/couchbase/n1k1")
+HTML_FOOTER = ('Generated from docs/recipes.yaml - <a href="https://github.com/couchbase/n1k1">github.com/couchbase/n1k1</a>')
 
 
 def build_version():
@@ -734,7 +734,7 @@ def render_html_body():
                          f'<div class="outbox"><span class="out-arrow">→</span>'
                          f'<pre class="outpre">{html.escape(r["out"].strip())}</pre></div></td></tr>')
     T.append("</tbody></table>")
-    foot = html.escape(HTML_FOOTER)
+    foot = HTML_FOOTER   # trusted literal markup, not escaped
     ver = build_version()
     if ver:
         foot += f' &middot; <code>{html.escape(ver)}</code>'
