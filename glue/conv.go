@@ -521,7 +521,7 @@ func (c *Conv) VisitExpressionScan(o *plan.ExpressionScan) (interface{}, error) 
 	}
 
 	// A streaming table-valued source (a JS *.stream.js source like FROM gen(...),
-	// or FROM rule_matches(...)): any FROM expression implementing StreamSource is
+	// or FROM multi_matches(...)): any FROM expression implementing StreamSource is
 	// routed to the generic stream-fn op, which drives its StreamRows with an emit
 	// callback and yields rows as they're produced -- no materialization. Plain
 	// (array-returning) functions and subqueries/CTEs fall through to expr-scan.

@@ -19,14 +19,14 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// rules_fix.go centralizes the AUTHOR-facing fix snippets used across the .multi
+// multi_fix.go centralizes the AUTHOR-facing fix snippets used across the .multi
 // command family. Every status an author sees -- a rejected / standalone / always-wake
-// / boxed detector, an unresolved logical keyspace, a fixture FAIL or a fixture with no
+// / boxed entry, an unresolved logical keyspace, a fixture FAIL or a fixture with no
 // golden -- carries not just WHAT it means but HOW to fix it, with a one-line example,
 // so a tech-support engineer (or an AI agent) never has to reason it out. Keeping the
 // text in one keyed helper means run / lint / test all speak with one voice.
 
-// Fix-snippet situations -- the keys into rulesFix.
+// Fix-snippet situations -- the keys into multiFix.
 const (
 	fixRejected    = "rejected"     // parse/plan/convert failed: it never runs, so it can never fire.
 	fixStandalone  = "standalone"   // valid but not fused into the shared scan (own scan).
@@ -37,10 +37,10 @@ const (
 	fixNoGolden    = "no-golden"    // a fixture with no @expect recorded.
 )
 
-// rulesFix returns the one-line fix snippet for a situation: what it means and how to
+// multiFix returns the one-line fix snippet for a situation: what it means and how to
 // fix it, with a mini example. detail is the situation-specific fill-in (a reject/
 // standalone reason, or the logical keyspace name); it is ignored where none applies.
-func rulesFix(situation, detail string) string {
+func multiFix(situation, detail string) string {
 	switch situation {
 	case fixRejected:
 		msg := "not a runnable query"
@@ -72,26 +72,26 @@ func rulesFix(situation, detail string) string {
 	return ""
 }
 
-// lintAdvice builds a detector's advice cell for the lint report card from its
-// DetectorLint verdict, using the centralized fix snippets. A rejected/standalone
-// detector gets the shape advice; a fused-but-always-wake one gets the discriminating-
-// literal nudge; and a boxed lane (on any converted detector) gets the native-form
+// lintAdvice builds an entry's advice cell for the lint report card from its
+// EntryLint verdict, using the centralized fix snippets. A rejected/standalone
+// entry gets the shape advice; a fused-but-always-wake one gets the discriminating-
+// literal nudge; and a boxed lane (on any converted entry) gets the native-form
 // nudge. Multiple nudges join with "; ". Returns "" for a clean fused+native+indexed
-// detector (nothing to say -- don't bloat the PASS row).
-func lintAdvice(d glue.DetectorLint) string {
+// entry (nothing to say -- don't bloat the PASS row).
+func lintAdvice(d glue.EntryLint) string {
 	var adv []string
 	switch d.Class {
 	case glue.LintRejected:
-		adv = append(adv, rulesFix(fixRejected, d.Reason))
+		adv = append(adv, multiFix(fixRejected, d.Reason))
 	case glue.LintStandalone:
-		adv = append(adv, rulesFix(fixStandalone, d.Reason))
+		adv = append(adv, multiFix(fixStandalone, d.Reason))
 	case glue.LintFused:
 		if !d.Indexed {
-			adv = append(adv, rulesFix(fixAlwaysWake, ""))
+			adv = append(adv, multiFix(fixAlwaysWake, ""))
 		}
 	}
 	if d.Lane == "boxed" {
-		adv = append(adv, rulesFix(fixBoxed, ""))
+		adv = append(adv, multiFix(fixBoxed, ""))
 	}
 	return strings.Join(adv, "; ")
 }

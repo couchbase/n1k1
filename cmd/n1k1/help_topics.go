@@ -88,7 +88,7 @@ func (c *cli) cmdHelp(arg string) {
 	// Command guides: delegate to the SAME help the command-scoped form prints, so
 	// `.help multi` and `.multi help` are one guide reached two ways.
 	case "multi":
-		c.cmdRulesHelp()
+		c.cmdMultiHelp()
 	case "extract":
 		c.cmdExtract("help")
 	case "macro", "macros":
@@ -174,7 +174,7 @@ func (c *cli) helpVectors() {
 	c.hline("  @vectorize_field(...)          built-in macro that embeds a text field of a")
 	c.hline("                                 keyspace in batches (.macro show vectorize_field).")
 	c.hline("")
-	c.hline("Quick try — rank a tiny corpus against a query; no model, no files:")
+	c.hline("Quick try — rank a tiny pack against a query; no model, no files:")
 	c.hline("")
 	c.hline("  WITH docs AS (VECTORIZE_BATCH([{\"id\":1,\"text\":\"the disk is full\"},")
 	c.hline("                                 {\"id\":2,\"text\":\"sunny weather today\"},")
@@ -209,7 +209,7 @@ func (c *cli) helpVectors() {
 	c.hline("    FROM vecs v ORDER BY dist ASC LIMIT 5;")
 	c.hline("")
 	c.hline("Tips:")
-	c.hline("  - Embed the corpus and the query with the SAME model + opts, or the distances")
+	c.hline("  - Embed the pack and the query with the SAME model + opts, or the distances")
 	c.hline("    are meaningless.")
 	c.hline("  - Store as `.parquet` for fast search over large vector sets; `.jsonl` works too.")
 	c.hline("  - Keep an id next to the vector (a string doc key or a number -- both are fine)")

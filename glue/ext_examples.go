@@ -20,7 +20,7 @@ package glue
 //
 // An author declares an `examples` array in the extension file -- executable JS, so
 // the file stays 100% valid JavaScript (the SQL++ recipe analog lives in comments;
-// see corpus_recipe.go). Both a top-level `var examples = [...]` and a property on
+// see multiquery_entry.go). Both a top-level `var examples = [...]` and a property on
 // the primary export (`celsius_to_fahrenheit.examples = [...]`) are read. Each entry
 // is `{ in: <input>, out: <expected> [, name, desc] }`, where `in`/`out` mean:
 //

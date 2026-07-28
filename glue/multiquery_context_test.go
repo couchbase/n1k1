@@ -29,7 +29,7 @@ import (
 
 // ctxCorpusSession writes a <root>/default/logs keyspace of {file,pos,sev,line} docs
 // across two files (f1: pos 0..5 ERROR@2; f2: pos 0..3 ERROR@0) and opens it.
-func ctxCorpusSession(t *testing.T) *Session {
+func ctxMultiQuerySession(t *testing.T) *Session {
 	t.Helper()
 	dir := t.TempDir()
 	ks := filepath.Join(dir, "default", "logs")
@@ -64,7 +64,7 @@ func ctxCorpusSession(t *testing.T) *Session {
 	return sess
 }
 
-// ctxStmt is the canonical windowed match-flag context detector: grep -C<before/after>
+// ctxStmt is the canonical windowed match-flag context entry: grep -C<before/after>
 // for a severity, partitioned by file, ordered by pos.
 func ctxStmt(sev string, before, after int) string {
 	return fmt.Sprintf(`SELECT file, pos, line FROM (`+
@@ -105,29 +105,29 @@ func countOpKind(op *base.Op, kind string) int {
 	return n
 }
 
-// TestCorpusContextRecognitionDifferential: two context detectors sharing the same
+// TestCorpusContextRecognitionDifferential: two context entries sharing the same
 // (keyspace, partition, order) signature FUSE into ONE shared scan + sort + broadcast-
 // context (one scan, one order op, one broadcast-context with two extractors), and their
-// findings equal -- per detector, by selected rows -- running each detector's own SQL
+// findings equal -- per entry, by selected rows -- running each entry's own SQL
 // standalone (its window result is the oracle).
-func TestCorpusContextRecognitionDifferential(t *testing.T) {
-	sess := ctxCorpusSession(t)
+func TestMultiQueryContextRecognitionDifferential(t *testing.T) {
+	sess := ctxMultiQuerySession(t)
 
 	// grep -C1 for ERROR, and grep -B2/-A0 for ERROR: same (file, pos) signature.
-	dets := []CorpusDetector{
+	dets := []MultiQueryEntry{
 		{Label: "ctxC1", Stmt: ctxStmt("ERROR", 1, 1)},
 		{Label: "ctxB2", Stmt: ctxStmt("ERROR", 2, 0)},
 	}
-	cc, err := sess.CorpusCompile(dets)
+	cc, err := sess.MultiQueryCompile(dets)
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 
-	// Both recognized as context detectors -> not standalone, not rejected.
+	// Both recognized as context entries -> not standalone, not rejected.
 	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
-		t.Fatalf("expected both context detectors fused; standalone=%v rejected=%v", cc.Standalone, cc.Rejected)
+		t.Fatalf("expected both context entries fused; standalone=%v rejected=%v", cc.Standalone, cc.Rejected)
 	}
-	// Shared: exactly ONE scan, ONE order-offset-limit, ONE broadcast-context (2 detectors,
+	// Shared: exactly ONE scan, ONE order-offset-limit, ONE broadcast-context (2 entries,
 	// one signature -> one group -> one shared scan+sort).
 	if n := countOpKind(cc.Plan, "datastore-scan-records"); n != 1 {
 		t.Errorf("shared scan: got %d scans, want 1", n)
@@ -149,7 +149,7 @@ func TestCorpusContextRecognitionDifferential(t *testing.T) {
 		byTag[f.Label] = append(byTag[f.Label], f.Result)
 	}
 
-	// Oracle: each detector's own SQL standalone.
+	// Oracle: each entry's own SQL standalone.
 	for _, d := range dets {
 		res, err := sess.Run(d.Stmt)
 		if err != nil {
@@ -166,13 +166,13 @@ func TestCorpusContextRecognitionDifferential(t *testing.T) {
 	}
 }
 
-// TestCorpusContextProjection (IDEA-0025): a fused context detector's result must be
+// TestCorpusContextProjection (IDEA-0025): a fused context entry's result must be
 // its SELECT PROJECTION -- shape and all -- not the whole framed scan row. It compares
 // FULL result objects (not just the selected rows, as the differential test does)
 // against the SAME SELECT run standalone, so a passing test guarantees the fused
-// result shape matches what the detector's SQL produces.
-func TestCorpusContextProjection(t *testing.T) {
-	sess := ctxCorpusSession(t)
+// result shape matches what the entry's SQL produces.
+func TestMultiQueryContextProjection(t *testing.T) {
+	sess := ctxMultiQuerySession(t)
 
 	// grep -C1 for ERROR, projecting a SUBSET of columns (file, pos) -- deliberately NOT
 	// line, so whole-row result (the old bug) would differ from the projection.
@@ -181,12 +181,12 @@ func TestCorpusContextProjection(t *testing.T) {
 		`OVER (PARTITION BY file ORDER BY pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
 		`FROM logs) sub WHERE sub.near = 1`
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "proj", Stmt: stmt}})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "proj", Stmt: stmt}})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
-		t.Fatalf("expected the projected context detector fused; standalone=%v rejected=%v",
+		t.Fatalf("expected the projected context entry fused; standalone=%v rejected=%v",
 			cc.Standalone, cc.Rejected)
 	}
 	if n := countOpKind(cc.Plan, "broadcast-context"); n != 1 {
@@ -243,18 +243,18 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
-// TestCorpusContextNestedProjection (IDEA-0029): a context detector whose windowed
+// TestCorpusContextNestedProjection (IDEA-0029): a context entry whose windowed
 // subquery is wrapped in an EXTRA derived table -- exactly what the @grep_context macro
 // expands to (SELECT g.* FROM (SELECT sub.* FROM (<window>) sub WHERE sub.near=1) g) --
 // must still fuse AND project correctly. The outer SELECT references the OUTERMOST alias
 // (g), which differs from the innermost filter's alias (sub); the fused projection has to
 // compose through the star-passthrough middle to the scan row, not silently emit `{}`.
-func TestCorpusContextNestedProjection(t *testing.T) {
-	sess := ctxCorpusSession(t)
+func TestMultiQueryContextNestedProjection(t *testing.T) {
+	sess := ctxMultiQuerySession(t)
 
 	// The exact doubly-nested shape @grep_context expands to (verified via `.macro expand`):
 	// a `SELECT gc.*` star passthrough over a `SELECT src.*, MAX(...) AS near` star window-
-	// column project, all wrapped by the detector's `SELECT g.file, g.pos`. The outer refs
+	// column project, all wrapped by the entry's `SELECT g.file, g.pos`. The outer refs
 	// the outermost alias (g); the projection has to compose g.file -> src.file THROUGH the
 	// star, not lose it. Projects a column SUBSET (file,pos) so a whole-row leak would show.
 	stmt := `SELECT g.file, g.pos FROM (` +
@@ -263,15 +263,15 @@ func TestCorpusContextNestedProjection(t *testing.T) {
 		`OVER (PARTITION BY src.file ORDER BY src.pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
 		`FROM logs src) gc WHERE gc.near = 1) g`
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "nested", Stmt: stmt}})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "nested", Stmt: stmt}})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
-	// It must FUSE as a context detector (broadcast-context) -- that's the path where
+	// It must FUSE as a context entry (broadcast-context) -- that's the path where
 	// the projection was lost. If it fell to standalone the bug would be hidden (the
 	// standalone pipeline honors the SELECT), so pin the fused path explicitly.
 	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
-		t.Fatalf("nested context detector not fused; standalone=%v rejected=%v", cc.Standalone, cc.Rejected)
+		t.Fatalf("nested context entry not fused; standalone=%v rejected=%v", cc.Standalone, cc.Rejected)
 	}
 	if n := countOpKind(cc.Plan, "broadcast-context"); n != 1 {
 		t.Fatalf("want 1 broadcast-context (fused), got %d", n)
@@ -307,28 +307,28 @@ func TestCorpusContextNestedProjection(t *testing.T) {
 	// The bug this pins: empty `{}` result from a lost projection.
 	for _, g := range got {
 		if g == "{}" {
-			t.Errorf("nested context detector emitted EMPTY result {} (IDEA-0029)")
+			t.Errorf("nested context entry emitted EMPTY result {} (IDEA-0029)")
 		}
 	}
 }
 
-// TestCorpusContextSeparateSignatures: context detectors with DIFFERENT (partition, order)
+// TestCorpusContextSeparateSignatures: context entries with DIFFERENT (partition, order)
 // signatures do NOT share -- they land in separate groups (two broadcast-context ops),
 // while a same-signature pair shares one.
-func TestCorpusContextSeparateSignatures(t *testing.T) {
-	sess := ctxCorpusSession(t)
+func TestMultiQueryContextSeparateSignatures(t *testing.T) {
+	sess := ctxMultiQuerySession(t)
 
-	sameA := CorpusDetector{Label: "a", Stmt: ctxStmt("ERROR", 1, 1)}
-	sameB := CorpusDetector{Label: "b", Stmt: ctxStmt("info", 1, 1)} // same (file,pos) sig
+	sameA := MultiQueryEntry{Label: "a", Stmt: ctxStmt("ERROR", 1, 1)}
+	sameB := MultiQueryEntry{Label: "b", Stmt: ctxStmt("info", 1, 1)} // same (file,pos) sig
 	// Different ORDER key (pos vs line) -> a different signature.
-	diff := CorpusDetector{Label: "c", Stmt: `SELECT file, pos, line FROM (` +
+	diff := MultiQueryEntry{Label: "c", Stmt: `SELECT file, pos, line FROM (` +
 		`SELECT file, pos, line, MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END) ` +
 		`OVER (PARTITION BY file ORDER BY line ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
 		`FROM logs) sub WHERE sub.near = 1`}
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{sameA, sameB, diff})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{sameA, sameB, diff})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if len(cc.Standalone) != 0 {
 		t.Fatalf("expected all three recognized as context; standalone=%v", cc.Standalone)
@@ -343,24 +343,24 @@ func TestCorpusContextSeparateSignatures(t *testing.T) {
 	}
 }
 
-// TestCorpusContextAbsenceStaysStandalone: an ABSENCE detector (WHERE near = 0) must NOT
-// be recognized as a context detector (its polarity is inverted) -- it stays standalone,
+// TestCorpusContextAbsenceStaysStandalone: an ABSENCE entry (WHERE near = 0) must NOT
+// be recognized as a context entry (its polarity is inverted) -- it stays standalone,
 // so it is never mis-lowered to the "present" fan-out.
-func TestCorpusContextAbsenceStaysStandalone(t *testing.T) {
-	sess := ctxCorpusSession(t)
-	absence := CorpusDetector{Label: "absent", Stmt: `SELECT file, pos FROM (` +
+func TestMultiQueryContextAbsenceStaysStandalone(t *testing.T) {
+	sess := ctxMultiQuerySession(t)
+	absence := MultiQueryEntry{Label: "absent", Stmt: `SELECT file, pos FROM (` +
 		`SELECT file, pos, MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END) ` +
 		`OVER (PARTITION BY file ORDER BY pos ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near ` +
 		`FROM logs) sub WHERE sub.near = 0`}
-	cc, err := sess.CorpusCompile([]CorpusDetector{absence})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{absence})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if countOpKind(cc.Plan, "broadcast-context") != 0 {
-		t.Errorf("absence detector must NOT lower to broadcast-context")
+		t.Errorf("absence entry must NOT lower to broadcast-context")
 	}
 	if len(cc.Standalone) != 1 || cc.Standalone[0].Label != "absent" {
-		t.Errorf("absence detector should be standalone; got standalone=%v", cc.Standalone)
+		t.Errorf("absence entry should be standalone; got standalone=%v", cc.Standalone)
 	}
 }
 
@@ -368,7 +368,7 @@ func TestCorpusContextAbsenceStaysStandalone(t *testing.T) {
 // -- the file scan already yields those (the flagship rotated-log grep shape), so the
 // built plan is scan -> broadcast-context (no order-offset-limit). Any other (partition,
 // order) keeps the explicit sort.
-func TestCorpusContextSortElision(t *testing.T) {
+func TestMultiQueryContextSortElision(t *testing.T) {
 	mustParse := func(s string) expression.Expression {
 		e, err := parser.Parse(s)
 		if err != nil {
@@ -409,13 +409,13 @@ func TestCorpusContextSortElision(t *testing.T) {
 	}
 }
 
-// TestCorpusContextPredNativized: the recognized detector's match predicate is lowered
+// TestCorpusContextPredNativized: the recognized entry's match predicate is lowered
 // to its NATIVE tree (e.g. ["eq", ...] for sev="ERROR"), not left boxed ["exprTree",...],
 // so the engine op's Aho-Corasick index can extract a necessary literal and prune. A
 // boxed pred would head with "exprTree" (always-wake, no pruning).
-func TestCorpusContextPredNativized(t *testing.T) {
-	sess := ctxCorpusSession(t)
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "c", Stmt: ctxStmt("ERROR", 1, 1)}})
+func TestMultiQueryContextPredNativized(t *testing.T) {
+	sess := ctxMultiQuerySession(t)
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "c", Stmt: ctxStmt("ERROR", 1, 1)}})
 	if err != nil {
 		t.Fatal(err)
 	}

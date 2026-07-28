@@ -25,7 +25,7 @@ import (
 
 // corpusTestSession writes a two-keyspace file datastore (logs + events) and opens
 // a Session over it.
-func corpusTestSession(t *testing.T) *Session {
+func multiQueryTestSession(t *testing.T) *Session {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -71,12 +71,12 @@ func canonJSON(t *testing.T, raw []byte) string {
 	return string(b)
 }
 
-// TestCorpusCompileDifferential is the correctness gate (DESIGN-prepare.md phase
-// 6): CorpusCompile over a small corpus must yield findings EQUIVALENT to running
-// each fused detector's ORIGINAL SQL separately and tagging its matched rows. The
-// corpus deliberately exercises every lever:
+// TestMultiQueryCompileDifferential is the correctness gate (DESIGN-prepare.md phase
+// 6): MultiQueryCompile over a small pack must yield findings EQUIVALENT to running
+// each fused entry's ORIGINAL SQL separately and tagging its matched rows. The
+// pack deliberately exercises every lever:
 //
-//   - T1/T2 share the sub-predicate `l.sev = "ERROR"` -> corpus CSE hoists it.
+//   - T1/T2 share the sub-predicate `l.sev = "ERROR"` -> pack CSE hoists it.
 //   - T3 keys on a distinct rare string literal -> the Aho-Corasick index.
 //   - T4 has no WHERE -> the always-true predicate.
 //   - T5 targets a SECOND keyspace -> the per-keyspace union-all.
@@ -85,10 +85,10 @@ func canonJSON(t *testing.T, raw []byte) string {
 //
 // Findings are compared as SORTED SETS (order across the standalone runs, the
 // union-all, and the interleaved fan-out is not guaranteed).
-func TestCorpusCompileDifferential(t *testing.T) {
-	sess := corpusTestSession(t)
+func TestMultiQueryCompileDifferential(t *testing.T) {
+	sess := multiQueryTestSession(t)
 
-	// Each fusable detector plus the equivalent standalone baseline that yields the
+	// Each fusable entry plus the equivalent standalone baseline that yields the
 	// raw matched row (SELECT RAW <alias>), i.e. the same whole-row result.
 	type det struct {
 		label    string
@@ -110,25 +110,25 @@ func TestCorpusCompileDifferential(t *testing.T) {
 	standaloneTag := "T6_group"
 	standaloneStmt := `SELECT sev, count(*) AS n FROM logs GROUP BY sev`
 
-	// Assemble the corpus (fusable + the one non-canonical detector).
-	corpus := make([]CorpusDetector, 0, len(fused)+1)
+	// Assemble the pack (fusable + the one non-canonical entry).
+	entries := make([]MultiQueryEntry, 0, len(fused)+1)
 	for _, d := range fused {
-		corpus = append(corpus, CorpusDetector{Label: d.label, Stmt: d.stmt})
+		entries = append(entries, MultiQueryEntry{Label: d.label, Stmt: d.stmt})
 	}
-	corpus = append(corpus, CorpusDetector{Label: standaloneTag, Stmt: standaloneStmt})
+	entries = append(entries, MultiQueryEntry{Label: standaloneTag, Stmt: standaloneStmt})
 
-	cc, err := sess.CorpusCompile(corpus)
+	cc, err := sess.MultiQueryCompile(entries)
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 
-	// (1) The GROUP BY detector must be classified STANDALONE (valid but non-fusable),
+	// (1) The GROUP BY entry must be classified STANDALONE (valid but non-fusable),
 	// not Rejected and not silently dropped -- it will RUN and produce findings.
 	if len(cc.Standalone) != 1 || cc.Standalone[0].Label != standaloneTag {
 		t.Fatalf("expected exactly 1 standalone (%s), got %+v", standaloneTag, cc.Standalone)
 	}
 	if len(cc.Rejected) != 0 {
-		t.Fatalf("expected no rejected detectors, got %+v", cc.Rejected)
+		t.Fatalf("expected no rejected entries, got %+v", cc.Rejected)
 	}
 	// t.Logf("standalone: %+v", cc.Standalone)
 
@@ -157,8 +157,8 @@ func TestCorpusCompileDifferential(t *testing.T) {
 		t.Errorf("expected a CSE precompute (^cse column) in the logs broadcast; plan=%s", dumpPlan(cc.Plan))
 	}
 
-	// (3) Equivalence: the corpus findings set == the union of each fused detector's
-	// baseline rows PLUS the standalone detector's own SELECT rows, each tagged with
+	// (3) Equivalence: the pack findings set == the union of each fused entry's
+	// baseline rows PLUS the standalone entry's own SELECT rows, each tagged with
 	// its id.
 	gotFindings, err := cc.Run()
 	if err != nil {
@@ -180,7 +180,7 @@ func TestCorpusCompileDifferential(t *testing.T) {
 			want = append(want, d.label+"\t"+canonJSON(t, row))
 		}
 	}
-	// The standalone GROUP BY detector runs its own SQL; its result is that SELECT's
+	// The standalone GROUP BY entry runs its own SQL; its result is that SELECT's
 	// REAL projection (the result asymmetry vs. the fused whole-row path), so its
 	// expected rows come straight from running standaloneStmt.
 	saRes, err := sess.Run(standaloneStmt)
@@ -204,19 +204,19 @@ func TestCorpusCompileDifferential(t *testing.T) {
 				i, got[i], want[i], got, want)
 		}
 	}
-	// t.Logf("matched %d findings across %d fused + 1 standalone detector", len(got), len(fused))
+	// t.Logf("matched %d findings across %d fused + 1 standalone entry", len(got), len(fused))
 }
 
-// TestCorpusFusedProjection is the IDEA-0004 gate: a FUSED detector's result must
+// TestCorpusFusedProjection is the IDEA-0004 gate: a FUSED entry's result must
 // be shaped by its SELECT projection -- matching the SAME statement run standalone --
 // not the whole matched row. Covers named-term (-> object), SELECT RAW (-> value),
 // and SELECT * (-> whole row) projections, plus a projection the fused envelope can't
 // reproduce (a star mixed with a term), which must route to standalone and still
 // honor the projection through the full pipeline.
-func TestCorpusFusedProjection(t *testing.T) {
-	sess := corpusTestSession(t)
+func TestMultiQueryFusedProjection(t *testing.T) {
+	sess := multiQueryTestSession(t)
 
-	// For each detector, `baseline` is the standalone SELECT whose rows the fused
+	// For each entry, `baseline` is the standalone SELECT whose rows the fused
 	// result must equal. Usually baseline == stmt (the projection reproduces
 	// exactly). SELECT * is the documented exception: fused result is the bare
 	// matched doc (whole-row), which equals `SELECT RAW l` -- NOT standalone
@@ -243,16 +243,16 @@ func TestCorpusFusedProjection(t *testing.T) {
 			`SELECT l.*, l.id AS ident FROM logs l WHERE l.sev = "ERROR"`, false},
 	}
 
-	corpus := make([]CorpusDetector, 0, len(cases))
+	entries := make([]MultiQueryEntry, 0, len(cases))
 	for _, c := range cases {
-		corpus = append(corpus, CorpusDetector{Label: c.label, Stmt: c.stmt})
+		entries = append(entries, MultiQueryEntry{Label: c.label, Stmt: c.stmt})
 	}
-	cc, err := sess.CorpusCompile(corpus)
+	cc, err := sess.MultiQueryCompile(entries)
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if len(cc.Rejected) != 0 {
-		t.Fatalf("unexpected rejected detectors: %+v", cc.Rejected)
+		t.Fatalf("unexpected rejected entries: %+v", cc.Rejected)
 	}
 
 	// Fusion classification per case.
@@ -269,7 +269,7 @@ func TestCorpusFusedProjection(t *testing.T) {
 		}
 	}
 
-	// Result set: every detector's findings must equal the identical SELECT run
+	// Result set: every entry's findings must equal the identical SELECT run
 	// standalone (its own projected rows), tagged. This holds whether it fused or not.
 	gotFindings, err := cc.Run()
 	if err != nil {
@@ -305,7 +305,7 @@ func TestCorpusFusedProjection(t *testing.T) {
 		}
 	}
 
-	// Direct anti-regression: the "named" detector's result is the {id,sev} object,
+	// Direct anti-regression: the "named" entry's result is the {id,sev} object,
 	// NOT the whole row (no "code"/"msg" keys leak through).
 	for _, f := range gotFindings {
 		if f.Label != "named" {
@@ -327,20 +327,20 @@ func TestCorpusFusedProjection(t *testing.T) {
 	}
 }
 
-// TestCorpusRunReport: RunReport returns per-keyspace scanned-row counts (the shared
-// scan's RowsIn) and CorpusCompile records each fused detector's keyspace -- the
-// substrate for .rules run's per-detector hit stats (IDEA-0015).
-func TestCorpusRunReport(t *testing.T) {
-	sess := corpusTestSession(t) // logs: 4 rows; events: 3 rows
-	cc, err := sess.CorpusCompile([]CorpusDetector{
+// TestMultiQueryRunReport: RunReport returns per-keyspace scanned-row counts (the shared
+// scan's RowsIn) and MultiQueryCompile records each fused entry's keyspace -- the
+// substrate for .multi run's per-entry hit stats (IDEA-0015).
+func TestMultiQueryRunReport(t *testing.T) {
+	sess := multiQueryTestSession(t) // logs: 4 rows; events: 3 rows
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{
 		{Label: "err", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
 		{Label: "login", Stmt: `SELECT * FROM events e WHERE e.act = "login"`},
 	})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
-	if cc.DetKeyspace["err"] != "default:logs" || cc.DetKeyspace["login"] != "default:events" {
-		t.Fatalf("DetKeyspace = %v, want err->default:logs, login->default:events", cc.DetKeyspace)
+	if cc.EntryKeyspace["err"] != "default:logs" || cc.EntryKeyspace["login"] != "default:events" {
+		t.Fatalf("DetKeyspace = %v, want err->default:logs, login->default:events", cc.EntryKeyspace)
 	}
 
 	findings, report, err := cc.RunReport()
@@ -359,30 +359,30 @@ func TestCorpusRunReport(t *testing.T) {
 	}
 }
 
-// TestCorpusRunReportWoken: RunReport reports per-detector WOKEN counts (the rows the
-// predicate index actually evaluated each detector on) -- IDEA-0015-followup. Uses
-// DISTINCT literals so no CSE sharing perturbs the counts: a detector keyed to a
+// TestMultiQueryRunReportWoken: RunReport reports per-entry WOKEN counts (the rows the
+// predicate index actually evaluated each entry on) -- IDEA-0015-followup. Uses
+// DISTINCT literals so no CSE sharing perturbs the counts: an entry keyed to a
 // literal present in one row wakes once; one keyed to an absent literal never wakes.
-func TestCorpusRunReportWoken(t *testing.T) {
-	sess := corpusTestSession(t) // logs: 4 rows; row b's msg is "rare_token_xyz"
-	cc, err := sess.CorpusCompile([]CorpusDetector{
+func TestMultiQueryRunReportWoken(t *testing.T) {
+	sess := multiQueryTestSession(t) // logs: 4 rows; row b's msg is "rare_token_xyz"
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{
 		{Label: "rare", Stmt: `SELECT * FROM logs l WHERE l.msg = "rare_token_xyz"`},
 		{Label: "absent", Stmt: `SELECT * FROM logs l WHERE l.msg = "zzz_never_present"`},
 	})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	findings, report, err := cc.RunReport()
 	if err != nil {
 		t.Fatalf("RunReport: %v", err)
 	}
 	// "rare" wakes on exactly the one row whose bytes contain its literal, and matches.
-	if report.WokenByDetector["rare"] != 1 {
-		t.Errorf("rare woken = %d, want 1 (its literal is in one row)", report.WokenByDetector["rare"])
+	if report.WokenByEntry["rare"] != 1 {
+		t.Errorf("rare woken = %d, want 1 (its literal is in one row)", report.WokenByEntry["rare"])
 	}
 	// "absent" is index-pruned on every row -> never woken (and never matched).
-	if report.WokenByDetector["absent"] != 0 {
-		t.Errorf("absent woken = %d, want 0 (its literal appears in no row)", report.WokenByDetector["absent"])
+	if report.WokenByEntry["absent"] != 0 {
+		t.Errorf("absent woken = %d, want 0 (its literal appears in no row)", report.WokenByEntry["absent"])
 	}
 	matched := map[string]int{}
 	for _, f := range findings {
@@ -396,23 +396,23 @@ func TestCorpusRunReportWoken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunReport (2nd): %v", err)
 	}
-	if report2.WokenByDetector["rare"] != 1 {
-		t.Errorf("2nd run rare woken = %d, want 1 (counters must reset per run)", report2.WokenByDetector["rare"])
+	if report2.WokenByEntry["rare"] != 1 {
+		t.Errorf("2nd run rare woken = %d, want 1 (counters must reset per run)", report2.WokenByEntry["rare"])
 	}
 }
 
-// TestCorpusCompileSingleKeyspace: a corpus confined to one keyspace returns the
+// TestMultiQueryCompileSingleKeyspace: a pack confined to one keyspace returns the
 // per-keyspace broadcast directly (no union-all wrapper), and an empty / all-
-// unfusable corpus yields a nil plan (Run -> no findings).
-func TestCorpusCompileSingleKeyspace(t *testing.T) {
-	sess := corpusTestSession(t)
+// unfusable pack yields a nil plan (Run -> no findings).
+func TestMultiQueryCompileSingleKeyspace(t *testing.T) {
+	sess := multiQueryTestSession(t)
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{
 		{Label: "a", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
 		{Label: "b", Stmt: `SELECT * FROM logs l WHERE l.code > 3`},
 	})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if cc.Plan == nil || cc.Plan.Kind != "broadcast-indexed" {
 		t.Fatalf("single-keyspace plan = %v, want a bare broadcast-indexed", cc.Plan)
@@ -425,16 +425,16 @@ func TestCorpusCompileSingleKeyspace(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) == 0 {
-		t.Fatal("expected findings from single-keyspace corpus")
+		t.Fatal("expected findings from single-keyspace pack")
 	}
 
-	// Empty corpus -> nil plan, no findings.
-	empty, err := sess.CorpusCompile(nil)
+	// Empty pack -> nil plan, no findings.
+	empty, err := sess.MultiQueryCompile(nil)
 	if err != nil {
-		t.Fatalf("CorpusCompile(nil): %v", err)
+		t.Fatalf("MultiQueryCompile(nil): %v", err)
 	}
 	if empty.Plan != nil {
-		t.Fatalf("empty corpus plan = %v, want nil", empty.Plan)
+		t.Fatalf("empty pack plan = %v, want nil", empty.Plan)
 	}
 	fs, err := empty.Run()
 	if err != nil || len(fs) != 0 {
@@ -442,12 +442,12 @@ func TestCorpusCompileSingleKeyspace(t *testing.T) {
 	}
 }
 
-// TestCorpusCompileBoxedPredicate: a predicate that does not lower to a native
+// TestMultiQueryCompileBoxedPredicate: a predicate that does not lower to a native
 // tree stays boxed (alias remapped to SELF) and STILL evaluates against the shared
 // scan. Uses a function-heavy predicate to force the boxed lane, and checks the
 // fused findings match the standalone baseline.
-func TestCorpusCompileBoxedPredicate(t *testing.T) {
-	sess := corpusTestSession(t)
+func TestMultiQueryCompileBoxedPredicate(t *testing.T) {
+	sess := multiQueryTestSession(t)
 
 	// l.msg LIKE '%high%load%' -- an interior-wildcard LIKE the native lowering
 	// declines (only the plain %lit% form lowers to CONTAINS), so the predicate
@@ -455,12 +455,12 @@ func TestCorpusCompileBoxedPredicate(t *testing.T) {
 	stmt := `SELECT * FROM logs l WHERE l.msg LIKE "%high%load%"`
 	baseline := `SELECT RAW l FROM logs l WHERE l.msg LIKE "%high%load%"`
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "boxed", Stmt: stmt}})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "boxed", Stmt: stmt}})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
-		t.Fatalf("boxed detector unexpectedly non-fused: standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
+		t.Fatalf("boxed entry unexpectedly non-fused: standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
 	}
 	findings, err := cc.Run()
 	if err != nil {
@@ -484,17 +484,17 @@ func TestCorpusCompileBoxedPredicate(t *testing.T) {
 	}
 }
 
-// TestCorpusCompileASOFStandalone is the headline for the standalone class: a corpus
-// that mixes fusable single-source detectors with a NON-fusable ASOF/argmax
-// correlated-subquery detector. The ASOF detector must be classified STANDALONE (not
+// TestMultiQueryCompileASOFStandalone is the headline for the standalone class: a pack
+// that mixes fusable single-source entries with a NON-fusable ASOF/argmax
+// correlated-subquery entry. The ASOF entry must be classified STANDALONE (not
 // fused, not rejected) and, at Run() time, execute through the FULL pipeline so its
 // nearest-preceding merge-join lowering FIRES -- producing findings identical to
 // running that SQL alone, unioned with the fused findings.
-func TestCorpusCompileASOFStandalone(t *testing.T) {
+func TestMultiQueryCompileASOFStandalone(t *testing.T) {
 	root := t.TempDir()
 
-	// A plain 'logs' keyspace for the fusable detectors (proven to fuse -- see the
-	// differential test), PLUS recipe-matched elog/rlog ns_server_log keyspaces (with
+	// A plain 'logs' keyspace for the fusable entries (proven to fuse -- see the
+	// differential test), PLUS entry-matched elog/rlog ns_server_log keyspaces (with
 	// a normalized int64 `ts`) for the ASOF correlated subquery.
 	logsDir := filepath.Join(root, "default", "logs")
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
@@ -528,41 +528,41 @@ func TestCorpusCompileASOFStandalone(t *testing.T) {
 	asofStmt := "SELECT e.ts AS ts, " +
 		"(SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1) AS state " +
 		"FROM default:elog e"
-	corpus := []CorpusDetector{
+	entries := []MultiQueryEntry{
 		{Label: "F_err", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
 		{Label: "F_hot", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR" AND l.code > 3`},
 		{Label: "ASOF", Stmt: asofStmt},
 	}
 
-	cc, err := sess.CorpusCompile(corpus)
+	cc, err := sess.MultiQueryCompile(entries)
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 
-	// (a) The ASOF detector is STANDALONE -- not fused, not rejected.
+	// (a) The ASOF entry is STANDALONE -- not fused, not rejected.
 	if len(cc.Rejected) != 0 {
 		t.Fatalf("unexpected rejected: %+v", cc.Rejected)
 	}
 	if len(cc.Standalone) != 1 || cc.Standalone[0].Label != "ASOF" {
-		t.Fatalf("expected ASOF as the sole standalone detector, got %+v", cc.Standalone)
+		t.Fatalf("expected ASOF as the sole standalone entry, got %+v", cc.Standalone)
 	}
-	// The two fusable logs detectors folded into a single-keyspace broadcast plan.
+	// The two fusable logs entries folded into a single-keyspace broadcast plan.
 	if cc.Plan == nil || cc.Plan.Kind != "broadcast-indexed" {
-		t.Fatalf("expected a fused broadcast-indexed plan for the 2 fusable detectors, got %v", cc.Plan)
+		t.Fatalf("expected a fused broadcast-indexed plan for the 2 fusable entries, got %v", cc.Plan)
 	}
 
-	// (c) The ASOF lowering must FIRE during the corpus Run (proving the standalone
-	// detector ran the merge-join, not nothing).
+	// (c) The ASOF lowering must FIRE during the pack Run (proving the standalone
+	// entry ran the merge-join, not nothing).
 	before := AsofRewriteApplied
 	got, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if AsofRewriteApplied <= before {
-		t.Fatalf("ASOF lowering did not fire during the corpus Run (AsofRewriteApplied did not advance from %d)", before)
+		t.Fatalf("ASOF lowering did not fire during the pack Run (AsofRewriteApplied did not advance from %d)", before)
 	}
 
-	// (b) The corpus's ASOF findings == running the ASOF SQL alone (its real
+	// (b) The pack's ASOF findings == running the ASOF SQL alone (its real
 	// projection as result), compared as sorted sets.
 	var asofGot []string
 	fusedCount := 0
@@ -587,7 +587,7 @@ func TestCorpusCompileASOFStandalone(t *testing.T) {
 	sort.Strings(asofWant)
 
 	if len(asofGot) == 0 {
-		t.Fatal("no ASOF findings produced by the corpus")
+		t.Fatal("no ASOF findings produced by the pack")
 	}
 	if len(asofGot) != len(asofWant) {
 		t.Fatalf("ASOF findings count: got %d want %d\n got=%v\n want=%v", len(asofGot), len(asofWant), asofGot, asofWant)
@@ -609,26 +609,26 @@ func TestCorpusCompileASOFStandalone(t *testing.T) {
 		t.Fatalf("expected a nearest-preceding ASOF finding (e@13.3 -> r-200); got=%v", asofGot)
 	}
 
-	// And the fusable detectors still produce their findings.
+	// And the fusable entries still produce their findings.
 	if fusedCount == 0 {
-		t.Fatal("expected the fusable logs detectors to also produce findings")
+		t.Fatal("expected the fusable logs entries to also produce findings")
 	}
-	// t.Logf("ASOF-in-corpus: %d ASOF findings + %d fused findings", len(asofGot), fusedCount)
+	// t.Logf("ASOF-in-pack: %d ASOF findings + %d fused findings", len(asofGot), fusedCount)
 }
 
-// TestCorpusCompileStandaloneOnly: a corpus of ONLY non-fusable detectors (a GROUP BY)
+// TestMultiQueryCompileStandaloneOnly: a pack of ONLY non-fusable entries (a GROUP BY)
 // has a nil fused Plan yet STILL produces findings -- run individually via the full
-// pipeline -- matching the detector's own SELECT rows.
-func TestCorpusCompileStandaloneOnly(t *testing.T) {
-	sess := corpusTestSession(t)
+// pipeline -- matching the entry's own SELECT rows.
+func TestMultiQueryCompileStandaloneOnly(t *testing.T) {
+	sess := multiQueryTestSession(t)
 
 	stmt := `SELECT sev, count(*) AS n FROM logs GROUP BY sev`
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "grp", Stmt: stmt}})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "grp", Stmt: stmt}})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if cc.Plan != nil {
-		t.Fatalf("standalone-only corpus should have a nil fused Plan, got %v", cc.Plan)
+		t.Fatalf("standalone-only pack should have a nil fused Plan, got %v", cc.Plan)
 	}
 	if len(cc.Rejected) != 0 || len(cc.Standalone) != 1 || cc.Standalone[0].Label != "grp" {
 		t.Fatalf("expected 1 standalone (grp), 0 rejected; got standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
@@ -658,7 +658,7 @@ func TestCorpusCompileStandaloneOnly(t *testing.T) {
 	sort.Strings(wantRows)
 
 	if len(gotRows) == 0 {
-		t.Fatal("standalone-only corpus produced no findings")
+		t.Fatal("standalone-only pack produced no findings")
 	}
 	if len(gotRows) != len(wantRows) {
 		t.Fatalf("count: got %d want %d\n got=%v\n want=%v", len(gotRows), len(wantRows), gotRows, wantRows)
@@ -670,46 +670,46 @@ func TestCorpusCompileStandaloneOnly(t *testing.T) {
 	}
 }
 
-// TestCorpusCompileRejected: a genuinely broken detector (a parse error) is classified
-// REJECTED with a reason and NOT run -- and it does NOT abort the corpus: the other
-// (fusable) detector still compiles and produces its findings.
-func TestCorpusCompileRejected(t *testing.T) {
-	sess := corpusTestSession(t)
+// TestMultiQueryCompileRejected: a genuinely broken entry (a parse error) is classified
+// REJECTED with a reason and NOT run -- and it does NOT abort the pack: the other
+// (fusable) entry still compiles and produces its findings.
+func TestMultiQueryCompileRejected(t *testing.T) {
+	sess := multiQueryTestSession(t)
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{
 		{Label: "good", Stmt: `SELECT * FROM logs l WHERE l.sev = "ERROR"`},
 		{Label: "broken", Stmt: `SELECT FROM WHERE GROUP nonsense (((`},
 	})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 
-	// The broken detector is rejected (with a reason), not standalone, not fused.
+	// The broken entry is rejected (with a reason), not standalone, not fused.
 	if len(cc.Rejected) != 1 || cc.Rejected[0].Label != "broken" {
 		t.Fatalf("expected 'broken' rejected, got %+v", cc.Rejected)
 	}
 	if cc.Rejected[0].Reason == "" {
-		t.Fatal("rejected detector must carry a reason")
+		t.Fatal("rejected entry must carry a reason")
 	}
 	// t.Logf("rejected: %+v", cc.Rejected)
 	if len(cc.Standalone) != 0 {
 		t.Fatalf("unexpected standalone: %+v", cc.Standalone)
 	}
 
-	// The good detector still fused and still produces findings (corpus not aborted).
+	// The good entry still fused and still produces findings (pack not aborted).
 	if cc.Plan == nil {
-		t.Fatal("expected a fused plan for the good detector")
+		t.Fatal("expected a fused plan for the good entry")
 	}
 	got, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(got) == 0 {
-		t.Fatal("expected the good detector's findings despite the broken sibling")
+		t.Fatal("expected the good entry's findings despite the broken sibling")
 	}
 	for _, f := range got {
 		if f.Label != "good" {
-			t.Fatalf("unexpected finding label %q (broken detector must not run)", f.Label)
+			t.Fatalf("unexpected finding label %q (broken entry must not run)", f.Label)
 		}
 	}
 }

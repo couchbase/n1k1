@@ -42,7 +42,7 @@ func DatastoreOp(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 // DatastoreDispatch runs a datastore leaf op via the in-process file datastore, WITHOUT
 // the Ctx.Pipe check -- so a DatastorePipe that only overrides SOME ops (e.g. the corpus
-// shared-scan cache, corpus_correlate.go) can delegate the rest here without recursing
+// shared-scan cache, multiquery_correlate.go) can delegate the rest here without recursing
 // back through its own Pipe. Identical to DatastoreOp's body sans the pipe redirect.
 func DatastoreDispatch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {

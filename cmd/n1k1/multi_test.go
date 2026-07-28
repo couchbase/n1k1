@@ -25,7 +25,7 @@ import (
 )
 
 // writeCorpus writes each name->body entry as <dir>/<name>.sql++ and returns dir.
-func writeCorpus(t *testing.T, files map[string]string) string {
+func writeMultiQueryEntries(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range files {
@@ -37,7 +37,7 @@ func writeCorpus(t *testing.T, files map[string]string) string {
 }
 
 // newLogsBundle builds a <root>/default/logs datastore of a few log docs and returns
-// the root (the bundle dir a .rules command opens as c.dir).
+// the root (the bundle dir a .multi command opens as c.dir).
 func newLogsBundle(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -59,11 +59,11 @@ func newLogsBundle(t *testing.T) string {
 	return root
 }
 
-// TestRulesList: the metadata-only inventory shows one row per recipe with its
+// TestMultiList: the metadata-only inventory shows one row per entry with its
 // label / source / description / tags and fixture?/golden? flags -- WITHOUT opening a
 // bundle (c.dir is empty) and without compiling.
-func TestRulesList(t *testing.T) {
-	corpus := writeCorpus(t, map[string]string{
+func TestMultiList(t *testing.T) {
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"a_full": `-- label: ET-1
 -- source: logs
 -- description: disk errors
@@ -78,10 +78,10 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb} // no c.dir: no bundle opened
-	c.cmdRules("list --queries " + corpus)
+	c.cmdMulti("list --queries " + entries)
 
 	stdout := out.String()
-	// The rich recipe: label/source/description/tags + both flags "yes".
+	// The rich entry: label/source/description/tags + both flags "yes".
 	for _, want := range []string{
 		`"label":"ET-1"`, `"source":"logs"`, `"description":"disk errors"`, `"tags":"disk,io"`,
 		`"fixture?":"yes"`, `"golden?":"yes"`,
@@ -90,9 +90,9 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 			t.Errorf("list inventory missing %s; stdout:\n%s", want, stdout)
 		}
 	}
-	// The bare recipe: label is the filename stem, no source, both flags "no".
+	// The bare entry: label is the filename stem, no source, both flags "no".
 	if !strings.Contains(stdout, `"label":"b_bare"`) || !strings.Contains(stdout, `"fixture?":"no"`) {
-		t.Errorf("bare recipe row wrong; stdout:\n%s", stdout)
+		t.Errorf("bare entry row wrong; stdout:\n%s", stdout)
 	}
 	if !strings.Contains(errb.String(), "2 query/queries") {
 		t.Errorf("inventory summary count wrong; stderr:\n%s", errb.String())
@@ -102,17 +102,17 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	}
 }
 
-// TestRulesHelp: the embedded guide prints the key sections to stdout -- the recipe
+// TestMultiHelp: the embedded guide prints the key sections to stdout -- the entry
 // format markers, an example score line, and the authoring tips.
-func TestRulesHelp(t *testing.T) {
+func TestMultiHelp(t *testing.T) {
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("help")
+	c.cmdMulti("help")
 
 	help := out.String()
 	for _, want := range []string{
 		"-- @fixture", "-- @expect", // the golden-fixture format
-		"ANNOTATED RECIPE", "QUERIES DIRECTORY LAYOUT", // the doc structure
+		"ANNOTATED ENTRY", "QUERIES DIRECTORY LAYOUT", // the doc structure
 		"score:", "% fused", // an example score line shape
 		"TIPS", "regexp_contains", // the tips (native-over-boxed nudge)
 		"--bind", "--update", // the flag one-liners
@@ -122,15 +122,15 @@ func TestRulesHelp(t *testing.T) {
 		"GATE (index-gate a standalone query)", "gate:", // the standalone index-gate
 	} {
 		if !strings.Contains(help, want) {
-			t.Errorf(".rules help missing %q; stdout:\n%s", want, help)
+			t.Errorf(".multi help missing %q; stdout:\n%s", want, help)
 		}
 	}
 }
 
-// TestRulesQueriesFlag: the directory flag is --queries. It is REPEATABLE and accepts a
-// comma-list, so several tiers fuse into one pack (IDEA-0034). The former --corpus alias
+// TestMultiQueriesFlag: the directory flag is --queries. It is REPEATABLE and accepts a
+// comma-list, so several tiers fuse into one pack (IDEA-0034). The former --pack alias
 // was removed (hard cut) and now fails loudly as an unknown flag.
-func TestRulesQueriesFlag(t *testing.T) {
+func TestMultiQueriesFlag(t *testing.T) {
 	for _, tc := range []struct {
 		arg  string
 		want []string
@@ -140,24 +140,24 @@ func TestRulesQueriesFlag(t *testing.T) {
 		{"--queries ./a --queries ./b", []string{"./a", "./b"}}, // repeatable
 		{"--queries ./a,./b", []string{"./a", "./b"}},           // comma-list
 	} {
-		a, err := parseRulesArgs(tc.arg)
+		a, err := parseMultiArgs(tc.arg)
 		if err != nil || !reflect.DeepEqual(a.queries, tc.want) {
-			t.Errorf("parseRulesArgs(%q) = {queries:%v} err %v; want queries=%v", tc.arg, a.queries, err, tc.want)
+			t.Errorf("parseMultiArgs(%q) = {queries:%v} err %v; want queries=%v", tc.arg, a.queries, err, tc.want)
 		}
 	}
-	// The removed --corpus alias is now an unknown flag, not silently accepted.
-	if _, err := parseRulesArgs("--corpus ./x"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
-		t.Errorf("--corpus should now be an unknown flag; got %v", err)
+	// The removed --pack alias is now an unknown flag, not silently accepted.
+	if _, err := parseMultiArgs("--pack ./x"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("--pack should now be an unknown flag; got %v", err)
 	}
 	// The error message names the new flag, not the old one.
-	if _, err := parseRulesArgs("--bind m"); err == nil || !strings.Contains(err.Error(), "--queries") {
+	if _, err := parseMultiArgs("--bind m"); err == nil || !strings.Contains(err.Error(), "--queries") {
 		t.Errorf("missing-dir error should mention --queries; got %v", err)
 	}
 }
 
 // TestExtractHelp: .extract help is a self-contained *.extract.js authoring reference
 // (DOC-1) -- it names the file object, every framing kind, the timestamp layouts, and
-// the match claim shape, so writing a recipe doesn't require reading records/spec.go.
+// the match claim shape, so writing an entry doesn't require reading records/spec.go.
 func TestExtractHelp(t *testing.T) {
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
@@ -170,7 +170,7 @@ func TestExtractHelp(t *testing.T) {
 		"FRAMING", "multiline", "section", "whole", "json", // framing kinds
 		"TIME", "RFC3339", "epoch_ms", "epoch-NANOS", // timestamp layouts
 		"FIELDS", "(?P<", // named-capture fields
-		"ANNOTATED EXAMPLE", // a full recipe
+		"ANNOTATED EXAMPLE", // a full entry
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf(".extract help missing %q; stdout:\n%s", want, help)
@@ -178,7 +178,7 @@ func TestExtractHelp(t *testing.T) {
 	}
 }
 
-// TestExtractList: .extract list inventories the loaded recipes with what each claims.
+// TestExtractList: .extract list inventories the loaded entries with what each claims.
 func TestExtractList(t *testing.T) {
 	repo, err := filepath.Abs("../..") // from cmd/n1k1 up to the repo root
 	if err != nil {
@@ -186,7 +186,7 @@ func TestExtractList(t *testing.T) {
 	}
 	path := filepath.Join(repo, "extensions", "extract_plugins", "couchbase_log.extract.js")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("example recipe not present: %v", err)
+		t.Skipf("example entry not present: %v", err)
 	}
 	if _, err := glue.RegisterExtensionFile(path); err != nil {
 		t.Fatalf("RegisterExtensionFile: %v", err)
@@ -202,15 +202,15 @@ func TestExtractList(t *testing.T) {
 	}
 }
 
-// TestRulesFixSnippets: every author-facing status carries its fix snippet. A boxed
-// detector, an always-wake detector, and a rejected one surface their snippets in the
+// TestMultiFixSnippets: every author-facing status carries its fix snippet. A boxed
+// entry, an always-wake entry, and a rejected one surface their snippets in the
 // lint advice column and (rejected) in the run health block; a fixture with no @expect
 // surfaces the "capture the golden" snippet in test output.
-// TestRulesRunHitStats: .rules run prints per-detector hit stats (IDEA-0015) so a
-// 0-findings detector is debuggable -- a matched=0 over a scanned-many keyspace is a
+// TestMultiRunHitStats: .multi run prints per-entry hit stats (IDEA-0015) so a
+// 0-findings entry is debuggable -- a matched=0 over a scanned-many keyspace is a
 // predicate miss, while matched=0 over a scanned=1 whole-file blob is an upstream
 // framing problem, and the two carry different hints.
-func TestRulesRunHitStats(t *testing.T) {
+func TestMultiRunHitStats(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, body string) {
 		p := filepath.Join(root, rel)
@@ -225,7 +225,7 @@ func TestRulesRunHitStats(t *testing.T) {
 	write("default/logs/l.jsonl", `{"sev":"ERROR","msg":"a"}`+"\n"+`{"sev":"ERROR","msg":"b"}`+"\n"+`{"sev":"INFO","msg":"c"}`+"\n")
 	write("default/blob/dump.log", "just raw text\nnothing structured\n")
 
-	corpus := writeCorpus(t, map[string]string{
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"hit":        `SELECT * FROM logs l WHERE l.sev = "ERROR"`,                // matches 2 of 3
 		"absent_lit": `SELECT * FROM logs l WHERE l.msg = "zzz_never"`,            // literal absent -> 0 woken
 		"woke_miss":  `SELECT * FROM logs l WHERE l.msg = "a" AND l.sev = "INFO"`, // "a" in 1 row, pred false -> woken>0, matched 0
@@ -234,8 +234,8 @@ func TestRulesRunHitStats(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("run --queries " + corpus)
-	got := errb.String() // the per-detector block goes to stderr
+	c.cmdMulti("run --queries " + entries)
+	got := errb.String() // the per-entry block goes to stderr
 
 	for _, want := range []string{
 		"per-query hits",
@@ -245,14 +245,14 @@ func TestRulesRunHitStats(t *testing.T) {
 		"miss_blob", "scanned 1 row", "whole-file blob", // blob hint
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf(".rules run hit-stats missing %q; stderr:\n%s", want, got)
+			t.Errorf(".multi run hit-stats missing %q; stderr:\n%s", want, got)
 		}
 	}
 }
 
-func TestRulesFixSnippets(t *testing.T) {
+func TestMultiFixSnippets(t *testing.T) {
 	root := newLogsBundle(t)
-	corpus := writeCorpus(t, map[string]string{
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"boxed":  `SELECT * FROM logs l WHERE l.msg LIKE "%a%b%"`, // boxed (interior wildcards) + always-wake
 		"wake":   `SELECT * FROM logs l WHERE l.ts > 5`,           // fused, always-wake (no literal)
 		"broken": `SELECT * FROM logs l WHERE`,                    // rejected
@@ -261,7 +261,7 @@ func TestRulesFixSnippets(t *testing.T) {
 	// lint: the advice column carries the boxed, always-wake, and rejected snippets.
 	var lout, lerr bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &lout, stderr: &lerr}
-	c.cmdRules("lint --queries " + corpus)
+	c.cmdMulti("lint --queries " + entries)
 	lintOut := lout.String()
 	for _, want := range []string{
 		"predicate boxes (falls back to cbq)", // boxed advice
@@ -274,16 +274,16 @@ func TestRulesFixSnippets(t *testing.T) {
 		}
 	}
 
-	// run: the rejected detector's fix snippet appears in the health block on stderr.
+	// run: the rejected entry's fix snippet appears in the health block on stderr.
 	var rout, rerr bytes.Buffer
 	c2 := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &rout, stderr: &rerr}
-	c2.cmdRules("run --queries " + corpus)
+	c2.cmdMulti("run --queries " + entries)
 	if !strings.Contains(rerr.String(), "not a runnable query") {
 		t.Errorf("run health block missing the rejected fix snippet; stderr:\n%s", rerr.String())
 	}
 
 	// test: a fixture with no @expect surfaces the "capture the golden" snippet.
-	tc := writeCorpus(t, map[string]string{
+	tc := writeMultiQueryEntries(t, map[string]string{
 		"nogold": `-- label: G
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
@@ -292,7 +292,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	})
 	var tout, terr bytes.Buffer
 	c3 := &cli{prog: "n1k1", mode: "jsonlines", out: &tout, stderr: &terr}
-	c3.cmdRules("test --queries " + tc)
+	c3.cmdMulti("test --queries " + tc)
 	if !strings.Contains(terr.String(), "fixture has no expected findings recorded") {
 		t.Errorf("test missing the no-golden fix snippet; stderr:\n%s", terr.String())
 	}
@@ -301,13 +301,13 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	}
 }
 
-// TestRulesRun: a corpus of one fusable filter, one correlated (standalone), and one
-// broken (rejected) detector. The fusable + standalone produce tagged findings; the
+// TestMultiRun: a pack of one fusable filter, one correlated (standalone), and one
+// broken (rejected) entry. The fusable + standalone produce tagged findings; the
 // coverage summary reports 1 fused / 1 standalone / 1 rejected (with the reason); the
-// broken detector does not abort the run.
-func TestRulesRun(t *testing.T) {
+// broken entry does not abort the run.
+func TestMultiRun(t *testing.T) {
 	root := newLogsBundle(t)
-	corpus := writeCorpus(t, map[string]string{
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"errors":   `SELECT * FROM logs WHERE sev = "ERROR"`,
 		"prev_ts":  `SELECT e.msg, (SELECT RAW r.ts FROM logs r WHERE r.ts <= e.ts ORDER BY r.ts DESC LIMIT 1)[0] AS prior_ts FROM logs e`,
 		"broken_x": `SELECT * FROM logs WHERE`,
@@ -315,17 +315,17 @@ func TestRulesRun(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("run --queries " + corpus)
+	c.cmdMulti("run --queries " + entries)
 
 	stderr := errb.String()
 	if !strings.Contains(stderr, "1 fused, 1 standalone, 1 rejected") {
 		t.Errorf("coverage summary wrong; stderr:\n%s", stderr)
 	}
-	// The rejected detector is surfaced with its label + a reason, and did not abort.
+	// The rejected entry is surfaced with its label + a reason, and did not abort.
 	if !strings.Contains(stderr, "broken_x") {
-		t.Errorf("rejected detector broken_x not surfaced; stderr:\n%s", stderr)
+		t.Errorf("rejected entry broken_x not surfaced; stderr:\n%s", stderr)
 	}
-	// Findings for the fusable (errors) and standalone (prev_ts) detectors appear,
+	// Findings for the fusable (errors) and standalone (prev_ts) entries appear,
 	// tagged. (2 ERROR rows fused + 4 standalone projection rows.)
 	stdout := out.String()
 	if !strings.Contains(stdout, `"label":"errors"`) {
@@ -335,16 +335,16 @@ func TestRulesRun(t *testing.T) {
 		t.Errorf("no standalone findings tagged prev_ts; stdout:\n%s", stdout)
 	}
 	if c.failed {
-		t.Errorf("a broken detector must not abort the run (c.failed=true); stderr:\n%s", stderr)
+		t.Errorf("a broken entry must not abort the run (c.failed=true); stderr:\n%s", stderr)
 	}
 }
 
-// TestRulesLint: the report card shows the three classes, an always-wake fused
-// detector gets the always-wake advice, a boxed one names its native alternative, and
-// the corpus score line is present.
-func TestRulesLint(t *testing.T) {
+// TestMultiLint: the report card shows the three classes, an always-wake fused
+// entry gets the always-wake advice, a boxed one names its native alternative, and
+// the pack score line is present.
+func TestMultiLint(t *testing.T) {
 	root := newLogsBundle(t)
-	corpus := writeCorpus(t, map[string]string{
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"errors":     `SELECT * FROM logs WHERE sev = "ERROR"`,           // fused, native, indexed
 		"everything": `SELECT * FROM logs`,                               // fused, always-wake (no literal)
 		"grouped":    `SELECT sev, COUNT(*) AS n FROM logs GROUP BY sev`, // standalone
@@ -353,7 +353,7 @@ func TestRulesLint(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("lint --queries " + corpus)
+	c.cmdMulti("lint --queries " + entries)
 
 	stdout := out.String()
 	for _, want := range []string{`"class":"fused"`, `"class":"standalone"`, `"class":"rejected"`} {
@@ -361,25 +361,25 @@ func TestRulesLint(t *testing.T) {
 			t.Errorf("lint report missing %s; stdout:\n%s", want, stdout)
 		}
 	}
-	// The no-WHERE fused detector always-wakes -> the discriminating-literal advice.
+	// The no-WHERE fused entry always-wakes -> the discriminating-literal advice.
 	if !strings.Contains(stdout, "always-wake") {
-		t.Errorf("expected always-wake advice for the no-literal detector; stdout:\n%s", stdout)
+		t.Errorf("expected always-wake advice for the no-literal entry; stdout:\n%s", stdout)
 	}
-	// A native+indexed detector reports its required literal.
+	// A native+indexed entry reports its required literal.
 	if !strings.Contains(stdout, "ERROR") {
-		t.Errorf("expected the ERROR literal for the indexed detector; stdout:\n%s", stdout)
+		t.Errorf("expected the ERROR literal for the indexed entry; stdout:\n%s", stdout)
 	}
-	// The corpus score line (on stderr) is present.
+	// The pack score line (on stderr) is present.
 	if !strings.Contains(errb.String(), "score:") || !strings.Contains(errb.String(), "% fused") {
-		t.Errorf("corpus score line missing; stderr:\n%s", errb.String())
+		t.Errorf("pack score line missing; stderr:\n%s", errb.String())
 	}
 }
 
-// TestRulesExplain: `.multi explain` surfaces the fused shared-scan PLAN (the op tree
+// TestMultiExplain: `.multi explain` surfaces the fused shared-scan PLAN (the op tree
 // MULTI_MATCHES's stream-fn node hides) plus the fusion map -- which queries share the
 // scan and the index literal each is keyed on -- and lists the standalone/rejected ones
 // (IDEA-0036). It compiles but does NOT run (no findings printed).
-func TestRulesExplain(t *testing.T) {
+func TestMultiExplain(t *testing.T) {
 	root := newLogsBundle(t)
 	// A second keyspace, so the fused plan is a union-all over TWO shared scans.
 	evDir := filepath.Join(root, "default", "events")
@@ -389,7 +389,7 @@ func TestRulesExplain(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(evDir, "e0.json"), []byte(`{"act":"login","who":"ann"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	corpus := writeCorpus(t, map[string]string{
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"errors":     `SELECT * FROM logs WHERE sev = "ERROR"`,           // fused, native, indexed on "ERROR"
 		"everything": `SELECT * FROM logs`,                               // fused, always-wake (no literal)
 		"logins":     `SELECT * FROM events WHERE act = "login"`,         // fused, a SECOND keyspace -> union-all
@@ -399,7 +399,7 @@ func TestRulesExplain(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("explain --queries " + corpus)
+	c.cmdMulti("explain --queries " + entries)
 
 	got := out.String()
 	for _, want := range []string{
@@ -410,11 +410,11 @@ func TestRulesExplain(t *testing.T) {
 		"datastore-scan-records", // the shared scan leaf
 		"FUSION MAP",             // which queries share the scan
 		"shared scan:",           // per-keyspace group header
-		`literal "ERROR"`,        // the indexed detector's necessary literal
-		"always-wake",            // the no-literal detector
-		"STANDALONE",             // the grouped detector
+		`literal "ERROR"`,        // the indexed entry's necessary literal
+		"always-wake",            // the no-literal entry
+		"STANDALONE",             // the grouped entry
 		"grouped",                //   ... named
-		"REJECTED",               // the broken detector
+		"REJECTED",               // the broken entry
 		"broken_x",               //   ... named
 	} {
 		if !strings.Contains(got, want) {
@@ -424,19 +424,19 @@ func TestRulesExplain(t *testing.T) {
 	// explain compiles, it does NOT run -- no findings rows (a finding row is
 	// `{"label":"errors",...}`; the bare label token appears in the plan's schema).
 	if strings.Contains(got, `"label":"`) {
-		t.Errorf(".multi explain must not run the corpus (no findings); stdout:\n%s", got)
+		t.Errorf(".multi explain must not run the pack (no findings); stdout:\n%s", got)
 	}
 	if c.failed {
-		t.Errorf("a rejected detector must not fail explain (c.failed=true); stderr:\n%s", errb.String())
+		t.Errorf("a rejected entry must not fail explain (c.failed=true); stderr:\n%s", errb.String())
 	}
 }
 
-// TestRulesExplainSQL: `.multi explain --sql` renders each query as PRETTY SQL++ with a
+// TestMultiExplainSQL: `.multi explain --sql` renders each query as PRETTY SQL++ with a
 // provenance header comment (fused/standalone/rejected + keyspace + lane + index literal)
 // and inline `-- hint:` advice (IDEA-0037). The SQL body is re-laid-out multi-line.
-func TestRulesExplainSQL(t *testing.T) {
+func TestMultiExplainSQL(t *testing.T) {
 	root := newLogsBundle(t)
-	corpus := writeCorpus(t, map[string]string{
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"errors":     `SELECT * FROM logs WHERE sev = "ERROR"`,           // fused, indexed on "ERROR"
 		"everything": `SELECT * FROM logs`,                               // fused, always-wake -> a hint
 		"grouped":    `SELECT sev, COUNT(*) AS n FROM logs GROUP BY sev`, // standalone
@@ -445,7 +445,7 @@ func TestRulesExplainSQL(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("explain --sql --queries " + corpus)
+	c.cmdMulti("explain --sql --queries " + entries)
 
 	got := out.String()
 	for _, want := range []string{
@@ -469,18 +469,18 @@ func TestRulesExplainSQL(t *testing.T) {
 		t.Errorf(".multi explain --sql should pretty-print the body multi-line; stdout:\n%s", got)
 	}
 	if c.failed {
-		t.Errorf("a rejected detector must not fail explain --sql; stderr:\n%s", errb.String())
+		t.Errorf("a rejected entry must not fail explain --sql; stderr:\n%s", errb.String())
 	}
 }
 
-// TestRulesTest: the golden-fixture runner in check mode over a corpus of a PASSING
-// recipe (fixture + correct expect), a FAILING recipe (fixture + deliberately wrong
-// expect -> reported with a diff), a NO-FIXTURE recipe (counted, not a hard fail), and a
-// FIXTURE-WITHOUT-EXPECT recipe (a hard fail -- "no golden recorded"). The summary counts
+// TestMultiTest: the golden-fixture runner in check mode over a pack of a PASSING
+// entry (fixture + correct expect), a FAILING entry (fixture + deliberately wrong
+// expect -> reported with a diff), a NO-FIXTURE entry (counted, not a hard fail), and a
+// FIXTURE-WITHOUT-EXPECT entry (a hard fail -- "no golden recorded"). The summary counts
 // are asserted and failure is signaled via c.failed (so a CI caller exits non-zero).
-// It needs no open bundle -- .rules test builds its own temp fixture keyspaces.
-func TestRulesTest(t *testing.T) {
-	corpus := writeCorpus(t, map[string]string{
+// It needs no open bundle -- .multi test builds its own temp fixture keyspaces.
+func TestMultiTest(t *testing.T) {
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"pass": `-- label: P
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
@@ -508,7 +508,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("test --queries " + corpus)
+	c.cmdMulti("test --queries " + entries)
 
 	stderr := errb.String()
 	// pass PASS, fail FAIL (with a diff), nogold FAIL (no golden), nofix counted.
@@ -516,10 +516,10 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 		t.Errorf("summary counts wrong; stderr:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "P: PASS") {
-		t.Errorf("passing recipe not reported PASS; stderr:\n%s", stderr)
+		t.Errorf("passing entry not reported PASS; stderr:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "F: FAIL") || !strings.Contains(stderr, "missing:") {
-		t.Errorf("failing recipe not reported FAIL with a diff; stderr:\n%s", stderr)
+		t.Errorf("failing entry not reported FAIL with a diff; stderr:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "no expected findings recorded") {
 		t.Errorf("fixture-without-expect not reported as no-golden FAIL; stderr:\n%s", stderr)
@@ -529,13 +529,13 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	}
 }
 
-// TestRulesTestContextProjection (IDEA-0025): a CONTEXT (grep -C) detector's golden is
-// its SELECT projection {pos,msg}, and `.rules test` check-PASSES against it -- proving
+// TestMultiTestContextProjection (IDEA-0025): a CONTEXT (grep -C) entry's golden is
+// its SELECT projection {pos,msg}, and `.multi test` check-PASSES against it -- proving
 // the fused broadcast-context path honors the projection (not the whole framed row) and
 // that the golden shape matches what a real run emits. The golden would MISMATCH the old
 // whole-row result ({_meta,...,msg}), so a passing check locks in the fix.
-func TestRulesTestContextProjection(t *testing.T) {
-	corpus := writeCorpus(t, map[string]string{
+func TestMultiTestContextProjection(t *testing.T) {
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"ctx": `-- label: CTX
 -- source: logs
 SELECT sub.pos AS pos, sub.msg AS msg
@@ -558,21 +558,21 @@ WHERE sub.near = 1
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("test --queries " + corpus)
+	c.cmdMulti("test --queries " + entries)
 
 	stderr := errb.String()
 	if c.failed || !strings.Contains(stderr, "CTX: PASS") {
-		t.Errorf("context detector golden (projected shape) should PASS; stderr:\n%s", stderr)
+		t.Errorf("context entry golden (projected shape) should PASS; stderr:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "1 passed / 0 failed") {
 		t.Errorf("summary wrong; stderr:\n%s", stderr)
 	}
 }
 
-// TestRulesTestUpdate: a recipe with a fixture and NO @expect -> --update records the
+// TestMultiTestUpdate: an entry with a fixture and NO @expect -> --update records the
 // golden; re-running in check mode then PASSES; and everything before the @expect block
 // is left byte-identical.
-func TestRulesTestUpdate(t *testing.T) {
+func TestMultiTestUpdate(t *testing.T) {
 	head := `-- label: U
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
@@ -589,7 +589,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	// (1) --update records the golden; no failure.
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("test --queries " + dir + " --update")
+	c.cmdMulti("test --queries " + dir + " --update")
 	if c.failed {
 		t.Fatalf("--update must not fail on a runnable fixture; stderr:\n%s", errb.String())
 	}
@@ -603,7 +603,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(string(rewritten), head) {
-		t.Errorf("--update altered the recipe head:\n%s", string(rewritten))
+		t.Errorf("--update altered the entry head:\n%s", string(rewritten))
 	}
 	if !strings.Contains(string(rewritten), "-- @expect") {
 		t.Errorf("--update did not append an @expect block:\n%s", string(rewritten))
@@ -612,7 +612,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	// (2) Re-run in check mode -> PASS now.
 	var out2, errb2 bytes.Buffer
 	c2 := &cli{prog: "n1k1", mode: "jsonlines", out: &out2, stderr: &errb2}
-	c2.cmdRules("test --queries " + dir)
+	c2.cmdMulti("test --queries " + dir)
 	if c2.failed {
 		t.Errorf("recorded golden should PASS on re-check; stderr:\n%s", errb2.String())
 	}
@@ -621,10 +621,10 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	}
 }
 
-// TestRulesRunBind: a corpus written against a LOGICAL keyspace resolves via a
+// TestMultiRunBind: a pack written against a LOGICAL keyspace resolves via a
 // manifest and runs; an unresolved logical keyspace fails loud (coverage surfaces the
 // gap) rather than reporting a silently clean bundle.
-func TestRulesRunBind(t *testing.T) {
+func TestMultiRunBind(t *testing.T) {
 	// A flat bundle of *.json at the root (the manifest globs them directly).
 	root := t.TempDir()
 	for i, d := range []string{
@@ -635,7 +635,7 @@ func TestRulesRunBind(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	corpus := writeCorpus(t, map[string]string{
+	entries := writeMultiQueryEntries(t, map[string]string{
 		"oom": `SELECT * FROM indexer_log WHERE sev = "ERROR"`,
 	})
 
@@ -646,7 +646,7 @@ func TestRulesRunBind(t *testing.T) {
 	}
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
-	c.cmdRules("run --queries " + corpus + " --bind " + good)
+	c.cmdMulti("run --queries " + entries + " --bind " + good)
 	if !strings.Contains(out.String(), `"label":"oom"`) {
 		t.Errorf("bound run produced no findings; stdout:\n%s\nstderr:\n%s", out.String(), errb.String())
 	}
@@ -664,7 +664,7 @@ func TestRulesRunBind(t *testing.T) {
 	}
 	var out2, errb2 bytes.Buffer
 	c2 := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out2, stderr: &errb2}
-	c2.cmdRules("run --queries " + corpus + " --bind " + bad)
+	c2.cmdMulti("run --queries " + entries + " --bind " + bad)
 	if !strings.Contains(errb2.String(), "UNRESOLVED") {
 		t.Errorf("an unresolved logical keyspace must fail loud; stderr:\n%s", errb2.String())
 	}

@@ -13,60 +13,60 @@
 
 package glue
 
-// corpus.go is the PREPARE++ corpus compiler (DESIGN-prepare.md phase 6): it
-// turns a repo of stock SQL++ "detector" queries into ONE fused multi-query-
+// multiquery.go is the PREPARE++ pack compiler (DESIGN-prepare.md phase 6): it
+// turns a repo of stock SQL++ "entry" queries into ONE fused multi-query-
 // optimization (MQO) plan over shared scans. It is the glue-level FEEDER for the
 // engine's MQO substrate (engine/op_broadcast*.go): where those hand-built
 // helpers (BroadcastCSE / BroadcastIndexed / BroadcastRoute) consume already-
-// bound engine.Detector structs, CorpusCompile derives those structs from real
+// bound engine.Detector structs, MultiQueryCompile derives those structs from real
 // SQL++ -- parse -> plan -> convert -> recognize -> normalize -> group -> compose.
 //
-// A "detector" is a stock SELECT over a single keyspace: `SELECT ... FROM <ks>
+// An "entry" is a stock SELECT over a single keyspace: `SELECT ... FROM <ks>
 // <alias> [WHERE <pred>]`. Its ESSENCE is the PREDICATE; a "finding" is the
-// matching result row, tagged with the detector's id. Fusing K detectors on one
+// matching result row, tagged with the entry's id. Fusing K entries on one
 // keyspace means: scan the keyspace ONCE, and per row evaluate the K predicates
-// (with corpus-CSE hoisting shared sub-terms and an Aho-Corasick predicate index
-// waking only detectors whose necessary literal is present) instead of K separate
+// (with pack-CSE hoisting shared sub-terms and an Aho-Corasick predicate index
+// waking only entries whose necessary literal is present) instead of K separate
 // scan+decode passes.
 //
-// THE PIPELINE (CorpusCompile) classifies every detector into one of THREE classes:
+// THE PIPELINE (MultiQueryCompile) classifies every entry into one of THREE classes:
 //
 //   - FUSABLE  -- the canonical single-source shape below; folded into the shared-
 //                 scan broadcast/CSE/index plan (Plan) and run by that plan.
 //   - STANDALONE -- parse+plan+convert SUCCEEDED but the shape is not fusable
 //                 (an ASOF/argmax correlated subquery, a window, GROUP BY, a join,
 //                 a datastore-scan-index leaf, multiple sources, ...). These are
-//                 VALID queries n1k1 runs end-to-end; CorpusCompile keeps the
-//                 detector's Label+Stmt and, at Run() time, executes each through the
+//                 VALID queries n1k1 runs end-to-end; MultiQueryCompile keeps the
+//                 entry's Label+Stmt and, at Run() time, executes each through the
 //                 FULL normal pipeline (s.Run) -- so WireASOFJoin / window / group
-//                 all fire and each detector is individually optimized -- then tags
+//                 all fire and each entry is individually optimized -- then tags
 //                 its result rows into the uniform Finding shape, UNION'd with the
-//                 fused findings. (Standalone detectors do NOT share a scan among
+//                 fused findings. (Standalone entries do NOT share a scan among
 //                 themselves -- each is an independent run; sharing standalone scans
-//                 is a future step. Their result is the detector's SELECT
+//                 is a future step. Their result is the entry's SELECT
 //                 projection -- as is the fused path's, so the two shapes agree.)
-//   - REJECTED -- parse/plan/convert FAILED (a genuinely broken detector). Surfaced
-//                 with a reason and NOT run; it never aborts the corpus.
+//   - REJECTED -- parse/plan/convert FAILED (a genuinely broken entry). Surfaced
+//                 with a reason and NOT run; it never aborts the pack.
 //
-//  1. RECOGNIZE. Each detector is parsed/planned/converted (the normal glue path)
+//  1. RECOGNIZE. Each entry is parsed/planned/converted (the normal glue path)
 //     and matched against the canonical fusable shape
 //     project(filter(datastore-scan-records)) -- or a bare
-//     project(datastore-scan-records) for a no-WHERE detector (predicate =
-//     always-true). A detector whose parse/plan/convert FAILS is Rejected. A
-//     detector that converts fine but is NOT the fusable shape (joins,
+//     project(datastore-scan-records) for a no-WHERE entry (predicate =
+//     always-true). A entry whose parse/plan/convert FAILS is Rejected. A
+//     entry that converts fine but is NOT the fusable shape (joins,
 //     group/order/distinct, subqueries, multiple sources, or a non-records leaf such
 //     as an index scan) is Standalone -- run individually at Run() time, never
 //     silently dropped.
 //
-//  2. EXTRACT. Per fused detector: its keyspace (branchScanKeyspace), its predicate
+//  2. EXTRACT. Per fused entry: its keyspace (branchScanKeyspace), its predicate
 //     (the filter's expr, or always-true), and its alias (mergeLabelLeaf of the
 //     scan label).
 //
 //  3. NORMALIZE (the core challenge -- alias unification). To share ONE scan across
-//     detectors on the same keyspace, every detector's predicate must resolve
+//     entries on the same keyspace, every entry's predicate must resolve
 //     against a single canonical row. The shared scan labels its row under "." (the
 //     whole-row convention the broadcast/CSE machinery expects; see
-//     engine/op_broadcast_cse.go). So each detector's predicate is rewritten to be
+//     engine/op_broadcast_cse.go). So each entry's predicate is rewritten to be
 //     rooted at "." instead of its own alias:
 //       - Native path: the predicate is lowered to the native expr-tree
 //         (ExprTreeOptimize) whose field refs are ["labelPath", `.["<alias>"]`,
@@ -80,34 +80,34 @@ package glue
 //         against the "."-labeled shared row. Boxed predicates are thus fully
 //         supported; they simply don't get indexed.
 //
-//  4. FINDINGS. A uniform findings schema across all detectors (FindingsLabels =
+//  4. FINDINGS. A uniform findings schema across all entries (FindingsLabels =
 //     [.["label"], .["result"]]), so union-all funnels cleanly: slot 0 the label, slot
-//     1 the single result value. Result is SHAPED to the detector's SELECT
-//     projection (corpusFusedProjection) so a fused detector's result matches the
+//     1 the single result value. Result is SHAPED to the entry's SELECT
+//     projection (corpusFusedProjection) so a fused entry's result matches the
 //     SAME SELECT run standalone: SELECT * keeps the whole-row passthrough
 //     ["labelPath","."]; SELECT RAW yields the single value; SELECT a,b assembles a
 //     boxed OBJECT_CONSTRUCT {"a":..,"b":..}. A projection that can't be faithfully
-//     reproduced in that single-column envelope routes the detector to standalone.
+//     reproduced in that single-column envelope routes the entry to standalone.
 //
-//  5. COMPOSE. Fused detectors are grouped by keyspace (routing == per-keyspace
+//  5. COMPOSE. Fused entries are grouped by keyspace (routing == per-keyspace
 //     grouping). Per keyspace: BroadcastCSE hoists shared sub-predicates over the
 //     shared scan, and the result is turned into a broadcast-INDEXED fan-out (CSE
 //     precompute + Aho-Corasick predicate index) by re-kinding the CSE broadcast
 //     op -- its child/Params layout is byte-identical to what BroadcastIndexed
 //     builds. The per-keyspace plans combine under a single union-all.
 //
-//  6. RUN. CompiledCorpus.Run first runs each STANDALONE detector through the full
+//  6. RUN. CompiledMultiQueryEntries.Run first runs each STANDALONE entry through the full
 //     s.Run pipeline (so ASOF/window/group lowerings fire) and tags its rows, then
 //     mirrors Session.PlanExec's vars/GlueContext/ExecOpEx setup and drives
 //     engine.ExecOp over the fused Plan -- the UNION of both is the findings set.
 //
 // DELIBERATELY DEFERRED (noted, not built): a SHA-keyed / content-addressed build
 // cache; the embed-source analyzer binary; a logical-keyspace vocabulary +
-// late-binding manifest (detectors FROM the real keyspace name for now); and richer
-// recipe metadata (beyond the Label / description / tags reported today).
+// late-binding manifest (entries FROM the real keyspace name for now); and richer
+// entry metadata (beyond the Label / description / tags reported today).
 //
 // RECOGNIZER NARROWNESS (known): the fusable shape is exactly
-// project([filter,]datastore-scan-records). A detector that the planner answers
+// project([filter,]datastore-scan-records). A entry that the planner answers
 // with an INDEX scan (a secondary index exists and is sargable) converts to a
 // datastore-scan-index leaf, not datastore-scan-records, and is classified Standalone
 // (run individually) even though it is semantically a single-keyspace filter. It
@@ -131,34 +131,17 @@ import (
 	"github.com/couchbase/n1k1/engine"
 )
 
-// CorpusDetector is one SQL++ detector query plus its stable id (Label). The Label is
-// emitted in slot 0 of every finding this detector produces, so a consumer can
-// demultiplex the interleaved findings stream.
-type CorpusDetector struct {
-	Label string
-	Stmt  string
-
-	// Source + Gate drive index-gating of a STANDALONE detector (see CompiledCorpus.Run
-	// / gateAllows). Source is the detector's logical keyspace; Gate is a cheap NECESSARY
-	// precondition (boolean SQL++ over Source). When both are set and Source holds no row
-	// satisfying Gate, the standalone detector is SKIPPED (its expensive sort/window never
-	// runs). Empty Gate = never gated (always run). Populated from recipe front-matter by
-	// Recipe.AsDetector; a hand-built CorpusDetector leaves them empty (ungated).
-	Source string
-	Gate   string
-}
-
-// RejectedDetector reports a detector whose parse/plan/convert FAILED (a genuinely
+// RejectedDetector reports an entry whose parse/plan/convert FAILED (a genuinely
 // broken query), with a human-readable Reason. Surfaced (never silently dropped) and
-// NOT run. Distinct from a Standalone detector, which converts fine but is not the
+// NOT run. Distinct from a Standalone entry, which converts fine but is not the
 // fusable shape -- that one still runs and produces findings.
-type RejectedDetector struct {
+type RejectedEntry struct {
 	Label  string
 	Reason string
 }
 
-// Finding is one tagged result row produced by running the compiled corpus: the
-// detector's Label plus its result as canonical JSON. Result is the detector's
+// Finding is one tagged result row produced by running the compiled pack: the
+// entry's Label plus its result as canonical JSON. Result is the entry's
 // SELECT projection whether it ran FUSED (shaped by corpusFusedProjection) or
 // STANDALONE (whatever s.Run of its statement yields) -- the two paths agree on shape.
 // Both are the same Finding{Label, Result} envelope, so they union cleanly.
@@ -167,81 +150,81 @@ type Finding struct {
 	Result json.RawMessage
 }
 
-// CompiledCorpus is the output of CorpusCompile: the fused MQO plan (Plan) plus the
-// Temps it resolves its shared-scan keyspaces from, the STANDALONE detectors (valid
-// but non-fusable -- run individually at Run() time), the REJECTED detectors (parse/
+// CompiledMultiQueryEntries is the output of MultiQueryCompile: the fused MQO plan (Plan) plus the
+// Temps it resolves its shared-scan keyspaces from, the STANDALONE entries (valid
+// but non-fusable -- run individually at Run() time), the REJECTED entries (parse/
 // plan/convert failed -- surfaced, not run), the uniform findings schema
 // (FindingsLabels), and enough of the originating session to Run it. Plan is nil when
-// no detector fused (empty corpus, or all standalone/rejected) -- an honestly empty
-// fused plan; Run() still produces the standalone detectors' findings.
-type CompiledCorpus struct {
+// no entry fused (empty pack, or all standalone/rejected) -- an honestly empty
+// fused plan; Run() still produces the standalone entries' findings.
+type CompiledMultiQueryEntries struct {
 	Plan           *base.Op
 	Temps          []interface{}
-	Standalone     []CorpusDetector
-	Rejected       []RejectedDetector
+	Standalone     []MultiQueryEntry
+	Rejected       []RejectedEntry
 	FindingsLabels base.Labels
 
-	// DetKeyspace maps a FUSED detector's Label to the keyspace it scans (its qualified
+	// DetKeyspace maps a FUSED entry's Label to the keyspace it scans (its qualified
 	// name), so a run report can attribute per-keyspace scanned-row counts to each
-	// detector (IDEA-0015 hit stats). Standalone/rejected detectors are absent.
-	DetKeyspace map[string]string
+	// entry (IDEA-0015 hit stats). Standalone/rejected entries are absent.
+	EntryKeyspace map[string]string
 
-	// wokenByTag holds one live *int64 per FUSED detector (by Label), wired into the
+	// wokenByTag holds one live *int64 per FUSED entry (by Label), wired into the
 	// broadcast op's engine.Detector.Woken so it counts the rows that woke each
-	// detector; RunReport reads them back (IDEA-0015-followup). Standalone absent.
+	// entry; RunReport reads them back (IDEA-0015-followup). Standalone absent.
 	wokenByTag map[string]*int64
 
-	// GatedSkipped lists the Tags of STANDALONE detectors that Run skipped because their
+	// GatedSkipped lists the Tags of STANDALONE entries that Run skipped because their
 	// `gate:` precondition matched no row in their Source keyspace (index-gating). Reset
 	// and populated on each Run; surfaced by the caller so a skip is visible, not silent.
 	GatedSkipped []string
 
 	// CorrelationGroups maps a temporal-correlation signature (left keyspace, right
-	// keyspace, key, direction) to the Tags of the correlation detectors that share it
+	// keyspace, key, direction) to the Tags of the correlation entries that share it
 	// (DESIGN-sorting.md Part B). A group of >1 could share ONE sorted scan of each
 	// keyspace; today each still runs standalone -- this surfaces the opportunity.
 	CorrelationGroups map[string][]string
 
 	session   *Session
-	scanCache *corpusScanCache // the last run's shared-scan cache (test observability), or nil
+	scanCache *multiQueryScanCache // the last run's shared-scan cache (test observability), or nil
 
 	// MergeStats holds the last run's sorted-merge counters (merge/spill/skip/stream),
 	// race-safe across the streaming merge's actor goroutines. Set per run; nil before.
 	MergeStats *base.MergeStats
 }
 
-// CorpusRunReport accompanies a RunReport run with the diagnostics an author needs to
-// debug a 0-findings detector (IDEA-0015): how many rows each fused keyspace scan
-// fanned (ScannedByKeyspace, the shared-scan RowsIn) alongside the per-detector match
+// MultiQueryRunReport accompanies a RunReport run with the diagnostics an author needs to
+// debug a 0-findings entry (IDEA-0015): how many rows each fused keyspace scan
+// fanned (ScannedByKeyspace, the shared-scan RowsIn) alongside the per-entry match
 // count the caller tallies from the findings. It distinguishes "the keyspace scanned
 // ~0 rows" (a whole-file blob / empty scan -- the IDEA-0001 trap) from "the predicate
 // matched nothing of N scanned".
-type CorpusRunReport struct {
+type MultiQueryRunReport struct {
 	// ScannedByKeyspace maps a keyspace's qualified name to the rows its fused shared
 	// scan fanned in (== the broadcast-indexed op's RowsIn). Fused keyspaces only.
 	ScannedByKeyspace map[string]int64
 
-	// WokenByDetector maps a FUSED detector's Label to how many rows woke it (its
-	// predicate was evaluated) -- the predicate index's effect per detector
+	// WokenByDetector maps a FUSED entry's Label to how many rows woke it (its
+	// predicate was evaluated) -- the predicate index's effect per entry
 	// (IDEA-0015-followup): woken<<scanned means the literal is rare/absent, woken
-	// with 0 matched means the predicate ran but never held. Fused detectors only.
-	WokenByDetector map[string]int64
+	// with 0 matched means the predicate ran but never held. Fused entries only.
+	WokenByEntry map[string]int64
 }
 
 // corpusFindingsLabels is the uniform two-column findings schema every per-keyspace
-// broadcast (and the union-all) shares: slot 0 the detector label, slot 1 the whole
+// broadcast (and the union-all) shares: slot 0 the entry label, slot 1 the whole
 // result row.
-func corpusFindingsLabels() base.Labels {
+func multiQueryFindingsLabels() base.Labels {
 	return base.Labels{"." + LabelSuffix("label"), "." + LabelSuffix("result")}
 }
 
-// CorpusCompile turns a set of stock SQL++ detectors into ONE fused shared-scan
+// MultiQueryCompile turns a set of stock SQL++ entries into ONE fused shared-scan
 // plan (see the file header for the full pipeline) plus a list of Standalone
-// detectors (valid but non-fusable, run individually at Run() time) and Rejected
-// detectors (parse/plan/convert failed). It never returns a hard error for an
-// individual detector -- those are classified into the returned CompiledCorpus; err
+// entries (valid but non-fusable, run individually at Run() time) and Rejected
+// entries (parse/plan/convert failed). It never returns a hard error for an
+// individual entry -- those are classified into the returned CompiledMultiQueryEntries; err
 // is non-nil only for a setup-level failure.
-func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) {
+func (s *Session) MultiQueryCompile(dets []MultiQueryEntry) (*CompiledMultiQueryEntries, error) {
 	// Correlated/keyspace resolution in the planner reads the process-global
 	// datastore; point it at this session's store (idempotent), exactly as
 	// Session.Run does before planning.
@@ -249,12 +232,12 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		ensureDatastore(s.Store.Datastore)
 	}
 
-	findingsLabels := corpusFindingsLabels()
+	findingsLabels := multiQueryFindingsLabels()
 
-	// One unified Conv/Temps for the WHOLE fused plan: the per-detector Convs' Temps
+	// One unified Conv/Temps for the WHOLE fused plan: the per-entry Convs' Temps
 	// indices belong to their own conversions, so we CANNOT reuse their scan ops.
 	// Instead we register one fresh shared scan per keyspace into this unified Conv
-	// (its keyspacer plan-op borrowed from a detector's Temps -- only Keyspace() is
+	// (its keyspacer plan-op borrowed from an entry's Temps -- only Keyspace() is
 	// read off it at scan time).
 	unified := &Conv{Temps: []interface{}{nil}}
 
@@ -268,20 +251,20 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	keyspacerFor := map[string]interface{}{}
 	detKeyspace := map[string]string{}
 	wokenByTag := map[string]*int64{}
-	var standalone []CorpusDetector
-	var rejected []RejectedDetector
+	var standalone []MultiQueryEntry
+	var rejected []RejectedEntry
 	var correlationGroups map[string][]string // Part B: correlation sig -> tags (foundation)
 
-	// Context detectors (grep -A/-B/-C windowed match-flag idiom) grouped by their
+	// Context entries (grep -A/-B/-C windowed match-flag idiom) grouped by their
 	// (keyspace, partition, order) signature -- each group shares one scan + sort + a
-	// broadcast-context fan-out (corpus_context.go).
+	// broadcast-context fan-out (multiquery_context.go).
 	contextGroups := map[string][]contextGroupEntry{}
 	var contextSigOrder []string
 
 	for _, d := range dets {
-		// Try the context idiom first: a recognized context detector joins its shared-sort
+		// Try the context idiom first: a recognized context entry joins its shared-sort
 		// group instead of running standalone.
-		if ci, ok := s.analyzeContextDetector(d.Stmt); ok {
+		if ci, ok := s.analyzeContextEntry(d.Stmt); ok {
 			if _, seen := contextGroups[ci.sig]; !seen {
 				contextSigOrder = append(contextSigOrder, ci.sig)
 			}
@@ -290,20 +273,20 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 			continue
 		}
 
-		info, fusable, rejectReason := s.analyzeCorpusDetector(d.Stmt)
+		info, fusable, rejectReason := s.analyzeEntry(d.Stmt)
 		switch {
 		case rejectReason != "":
-			// Parse/plan/convert failed -- a broken detector. Surfaced, not run.
-			rejected = append(rejected, RejectedDetector{Label: d.Label, Reason: rejectReason})
+			// Parse/plan/convert failed -- a broken entry. Surfaced, not run.
+			rejected = append(rejected, RejectedEntry{Label: d.Label, Reason: rejectReason})
 		case !fusable:
 			// Valid but not the fusable shape (ASOF/window/group/join/index-scan/...).
 			// Keep it verbatim (incl. its Source/Gate, so Run can index-gate it); Run()
 			// executes it through the full s.Run pipeline.
-			standalone = append(standalone, CorpusDetector{
+			standalone = append(standalone, MultiQueryEntry{
 				Label: d.Label, Stmt: d.Stmt, Source: d.Source, Gate: d.Gate})
-			// A temporal-correlation detector additionally records its shared-scan
+			// A temporal-correlation entry additionally records its shared-scan
 			// signature (Part B foundation) -- still standalone for now.
-			if sig, isCorr := s.analyzeCorrelationDetector(d.Stmt); isCorr {
+			if sig, isCorr := s.analyzeCorrelationEntry(d.Stmt); isCorr {
 				if correlationGroups == nil {
 					correlationGroups = map[string][]string{}
 				}
@@ -332,7 +315,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		// The shared scan: one datastore-scan-records over the keyspace, labeling its
 		// row under "." (the whole-row convention the broadcast/CSE machinery resolves
 		// against) plus "^id". Built fresh into the unified Temps -- NOT reused from a
-		// detector's Conv.
+		// entry's Conv.
 		scan := &base.Op{
 			Kind:   "datastore-scan-records",
 			Labels: base.Labels{".", "^id"},
@@ -342,14 +325,14 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		dets := byKeyspace[ks]
 		edets := make([]engine.Detector, 0, len(dets))
 		for _, fd := range dets {
-			// A live per-detector woken counter, wired into the broadcast op and read
+			// A live per-entry woken counter, wired into the broadcast op and read
 			// back by RunReport (IDEA-0015-followup).
 			w := new(int64)
 			wokenByTag[fd.label] = w
 			edets = append(edets, engine.Detector{
-				Tag:  fd.label, // engine's generic per-detector id (glue's `label`).
+				Tag:  fd.label, // engine's generic per-entry id (glue's `label`).
 				Pred: fd.pred,
-				// Result shaped to the detector's SELECT projection (IDEA-0004):
+				// Result shaped to the entry's SELECT projection (IDEA-0004):
 				// whole row for SELECT *, else the RAW value / assembled object.
 				Proj:  fd.proj,
 				Woken: w,
@@ -382,7 +365,7 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 	var planOp *base.Op
 	switch len(perKeyspace) {
 	case 0:
-		planOp = nil // no fusable detector (empty corpus, or all standalone/rejected).
+		planOp = nil // no fusable entry (empty pack, or all standalone/rejected).
 	case 1:
 		planOp = perKeyspace[0] // a single keyspace needs no union-all wrapper.
 	default:
@@ -393,28 +376,28 @@ func (s *Session) CorpusCompile(dets []CorpusDetector) (*CompiledCorpus, error) 
 		}
 	}
 
-	return &CompiledCorpus{
+	return &CompiledMultiQueryEntries{
 		Plan:              planOp,
 		Temps:             unified.Temps,
 		Standalone:        standalone,
 		Rejected:          rejected,
 		FindingsLabels:    findingsLabels,
-		DetKeyspace:       detKeyspace,
+		EntryKeyspace:     detKeyspace,
 		CorrelationGroups: correlationGroups,
 		wokenByTag:        wokenByTag,
 		session:           s,
 	}, nil
 }
 
-// corpusDetInfo is the extracted, normalized description of one fusable detector.
-type corpusDetInfo struct {
+// corpusDetInfo is the extracted, normalized description of one fusable entry.
+type entryInfo struct {
 	keyspaceName string        // keyspace.QualifiedName() -- the grouping key.
 	keyspacer    interface{}   // the plan scan op (a keyspacer) for the shared scan.
 	pred         []interface{} // predicate expr-tree, field refs rooted at ".".
 	proj         []interface{} // result projection (engine.Detector.Proj), rooted at ".".
 }
 
-// analyzeCorpusDetector parses/plans/converts one detector's SQL++ and classifies it
+// analyzeEntry parses/plans/converts one entry's SQL++ and classifies it
 // (see the file header's three classes). It returns:
 //
 //   - rejectReason != ""            -> REJECTED (parse/plan/convert failed).
@@ -426,17 +409,17 @@ type corpusDetInfo struct {
 // The crucial split: only a genuine parse/plan/convert FAILURE is a reject. Once the
 // statement converts, an unrecognized shape (or a normalize step that can't extract
 // the shared-scan bits) is Standalone -- still a valid, runnable query, never dropped.
-func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, fusable bool, rejectReason string) {
+func (s *Session) analyzeEntry(stmt string) (info entryInfo, fusable bool, rejectReason string) {
 	parsed, err := ParseStatement(stmt, s.Namespace, true)
 	if err != nil {
-		return corpusDetInfo{}, false, "parse error: " + err.Error()
+		return entryInfo{}, false, "parse error: " + err.Error()
 	}
 	qp, err := s.Store.PlanStatementQP(parsed, s.Namespace, nil, nil)
 	if err != nil {
-		return corpusDetInfo{}, false, "plan error: " + err.Error()
+		return entryInfo{}, false, "plan error: " + err.Error()
 	}
 
-	// Convert with a per-detector Conv (a plain Accept -- no post-plan rewrites; we
+	// Convert with a per-entry Conv (a plain Accept -- no post-plan rewrites; we
 	// only need the raw project/filter/scan shape). A convert panic (an unsupported
 	// op) is caught and reported as REJECTED, never crashing the compile.
 	conv := &Conv{Temps: []interface{}{nil}}
@@ -450,62 +433,62 @@ func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, fusabl
 		_, convErr = qp.PlanOp().Accept(conv)
 	}()
 	if convErr != nil {
-		return corpusDetInfo{}, false, "convert error: " + convErr.Error()
+		return entryInfo{}, false, "convert error: " + convErr.Error()
 	}
 	if conv.TopOp == nil {
-		return corpusDetInfo{}, false, "unconverted plan (nil TopOp)"
+		return entryInfo{}, false, "unconverted plan (nil TopOp)"
 	}
 
 	// From here parse/plan/convert has SUCCEEDED: any shape/extraction miss below is
-	// STANDALONE (fusable=false, no reject reason), so the detector still runs.
-	scan, filter, ok := recognizeCorpusDetector(conv.TopOp)
+	// STANDALONE (fusable=false, no reject reason), so the entry still runs.
+	scan, filter, ok := recognizeEntry(conv.TopOp)
 	if !ok {
-		return corpusDetInfo{}, false, ""
+		return entryInfo{}, false, ""
 	}
 
 	// The recognizer matches only the shape BELOW the project; the projection itself
 	// is shaped into result by corpusFusedProjection below. But a projection carrying
 	// a (correlated) SUBQUERY -- e.g. the ASOF nearest-preceding argmax -- has an OUTER
 	// shape (project -> scan) that LOOKS fusable while its real value comes from the
-	// subquery per row. Fusing it would silently drop that subquery. Such a detector
+	// subquery per row. Fusing it would silently drop that subquery. Such an entry
 	// must run STANDALONE (so WireASOFJoin / EvaluateSubquery fire); route it there.
 	if projectionHasSubquery(conv.TopOp) {
-		return corpusDetInfo{}, false, ""
+		return entryInfo{}, false, ""
 	}
 
-	// The alias the detector's field refs are rooted at (from the scan's `.["alias"]`
+	// The alias the entry's field refs are rooted at (from the scan's `.["alias"]`
 	// row label).
 	if len(scan.Labels) == 0 {
-		return corpusDetInfo{}, false, ""
+		return entryInfo{}, false, ""
 	}
 	alias, ok := mergeLabelLeaf(scan.Labels[0])
 	if !ok {
-		return corpusDetInfo{}, false, ""
+		return entryInfo{}, false, ""
 	}
 	aliasLabel := "." + LabelSuffix(alias)
 
 	ks := branchScanKeyspace(conv.TopOp, conv.Temps)
 	if ks == nil {
-		return corpusDetInfo{}, false, ""
+		return entryInfo{}, false, ""
 	}
 
 	scanTempIdx, ok := scan.Params[0].(int)
 	if !ok || scanTempIdx < 0 || scanTempIdx >= len(conv.Temps) {
-		return corpusDetInfo{}, false, ""
+		return entryInfo{}, false, ""
 	}
 
-	pred := normalizeCorpusPred(filter, scan.Labels, alias, aliasLabel)
+	pred := normalizeMultiQueryPred(filter, scan.Labels, alias, aliasLabel)
 
-	// Shape the fused result to match the detector's SELECT projection (IDEA-0004):
-	// a projection the fused envelope can't faithfully reproduce routes the detector
+	// Shape the fused result to match the entry's SELECT projection (IDEA-0004):
+	// a projection the fused envelope can't faithfully reproduce routes the entry
 	// to standalone, where the full pipeline runs its real projection -- so result
-	// shape is consistent whether a detector fuses or not.
-	proj, ok := corpusFusedProjection(conv.TopOp, alias)
+	// shape is consistent whether an entry fuses or not.
+	proj, ok := multiQueryFusedProjection(conv.TopOp, alias)
 	if !ok {
-		return corpusDetInfo{}, false, ""
+		return entryInfo{}, false, ""
 	}
 
-	return corpusDetInfo{
+	return entryInfo{
 		keyspaceName: ks.QualifiedName(),
 		keyspacer:    conv.Temps[scanTempIdx],
 		pred:         pred,
@@ -513,7 +496,7 @@ func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, fusabl
 	}, true, ""
 }
 
-// recognizeCorpusDetector matches the canonical fusable detector shape and returns
+// recognizeEntry matches the canonical fusable entry shape and returns
 // its scan leaf + (optional) filter. Accepts:
 //
 //	project -> filter -> datastore-scan-records     (SELECT ... WHERE ...)
@@ -522,8 +505,8 @@ func (s *Session) analyzeCorpusDetector(stmt string) (info corpusDetInfo, fusabl
 // Everything else (a join/group/order/distinct/subquery op in the chain, multiple
 // sources, or a non-records leaf) returns ok=false. Only the shape below the project
 // matters here; the project op's own terms are shaped into result separately by
-// corpusFusedProjection (called from analyzeCorpusDetector).
-func recognizeCorpusDetector(top *base.Op) (scan, filter *base.Op, ok bool) {
+// corpusFusedProjection (called from analyzeEntry).
+func recognizeEntry(top *base.Op) (scan, filter *base.Op, ok bool) {
 	if top == nil || top.Kind != "project" || len(top.Children) != 1 {
 		return nil, nil, false
 	}
@@ -546,8 +529,8 @@ func recognizeCorpusDetector(top *base.Op) (scan, filter *base.Op, ok bool) {
 // projectionHasSubquery reports whether the project op's boxed ["exprTree", expr]
 // projection terms embed any correlated/scalar subquery. Mirrors the temporal
 // recognizer's projection walk (recognizeASOFWalk in optimize_temporal.go): a fusable
-// detector's outer shape can hide a subquery in its SELECT list, which the whole-row
-// fused path would drop -- so such a detector is routed to a standalone run instead.
+// entry's outer shape can hide a subquery in its SELECT list, which the whole-row
+// fused path would drop -- so such an entry is routed to a standalone run instead.
 func projectionHasSubquery(project *base.Op) bool {
 	if project == nil {
 		return false
@@ -572,20 +555,20 @@ func projectionHasSubquery(project *base.Op) bool {
 }
 
 // corpusFusedProjection derives the fused-result projection (engine.Detector.Proj)
-// from a detector's converted `project` op, so a FUSED detector's result shape
+// from an entry's converted `project` op, so a FUSED entry's result shape
 // matches the same SELECT run STANDALONE (IDEA-0004). The engine's projFunc emits one
 // output column per Proj term after the label; the findings schema carries a single
 // result column, so every case here yields exactly ONE Proj term. Returns ok=false
 // when the projection can't be faithfully reproduced in that single-column envelope,
-// so analyzeCorpusDetector routes the detector to standalone (which honors it via the
-// full pipeline). Field refs are re-rooted from the detector alias to SELF, resolving
+// so analyzeEntry routes the entry to standalone (which honors it via the
+// full pipeline). Field refs are re-rooted from the entry alias to SELF, resolving
 // against the shared "." row exactly as normalizeCorpusPred's boxed fallback does.
 //
 //	SELECT *            (lone ".*" label)  -> whole matched row (the established MVP).
 //	SELECT RAW expr     (lone "." label)   -> the single value itself.
 //	SELECT a, b AS c    (all named terms)  -> a boxed OBJECT_CONSTRUCT {"a":..,"c":..}.
 //	anything else (mixed star+terms, path.*, EXCLUDE, a group-key labelPath) -> false.
-func corpusFusedProjection(project *base.Op, alias string) ([]interface{}, bool) {
+func multiQueryFusedProjection(project *base.Op, alias string) ([]interface{}, bool) {
 	if project == nil || project.Kind != "project" || len(project.Labels) == 0 {
 		return nil, false
 	}
@@ -641,20 +624,20 @@ func projTermExpr(param interface{}) (expression.Expression, bool) {
 	return e, ok && e != nil
 }
 
-// normalizeCorpusPred returns the detector's predicate as an expr-tree rooted at
+// normalizeCorpusPred returns the entry's predicate as an expr-tree rooted at
 // the shared "." row. With no filter the predicate is the always-true constant. The
 // filter carries a boxed ["exprTree", <cbq-expr>] (VisitFilter's output); we prefer
 // to LOWER it to a native tree (so field refs become ["labelPath", `.["alias"]`,
 // ...] we can re-root to "." -- and so the Aho-Corasick index can extract a
 // required literal), and fall back to keeping it boxed with the alias remapped to
 // SELF when it does not lower.
-func normalizeCorpusPred(filter *base.Op, scanLabels base.Labels, alias, aliasLabel string) []interface{} {
+func normalizeMultiQueryPred(filter *base.Op, scanLabels base.Labels, alias, aliasLabel string) []interface{} {
 	if filter == nil {
 		// No WHERE: always-true (matches every scanned row).
 		return []interface{}{"json", "true"}
 	}
 
-	expr, ok := corpusFilterExpr(filter)
+	expr, ok := multiQueryFilterExpr(filter)
 	if !ok {
 		// Unexpected (VisitFilter always boxes an ["exprTree", expr]); defensively
 		// re-root whatever tree is in the filter's Params.
@@ -665,7 +648,7 @@ func normalizeCorpusPred(filter *base.Op, scanLabels base.Labels, alias, aliasLa
 		return []interface{}{"json", "true"}
 	}
 
-	// Native path: lower against the detector's own scan labels (`.["alias"]`, ^id),
+	// Native path: lower against the entry's own scan labels (`.["alias"]`, ^id),
 	// then re-root every `.["alias"]` labelPath to the shared "." row.
 	var buf bytes.Buffer
 	if out, ok := ExprTreeOptimize(scanLabels, expr, &buf, false); ok {
@@ -683,7 +666,7 @@ func normalizeCorpusPred(filter *base.Op, scanLabels base.Labels, alias, aliasLa
 
 // corpusFilterExpr extracts the cbq expression from a filter op's boxed
 // ["exprTree", <expr>] Params (VisitFilter's encoding).
-func corpusFilterExpr(filter *base.Op) (expression.Expression, bool) {
+func multiQueryFilterExpr(filter *base.Op) (expression.Expression, bool) {
 	if filter == nil || len(filter.Params) < 2 {
 		return nil, false
 	}
@@ -697,8 +680,8 @@ func corpusFilterExpr(filter *base.Op) (expression.Expression, bool) {
 // rewriteLabelRoot returns node with every ["labelPath", <from>, ...path] whose
 // ROOT label element equals from re-rooted to `to`, preserving the trailing path
 // elements. Non-matching labelPaths and all other tree nodes are structurally
-// copied unchanged. Used to swap a detector's `.["alias"]` row root for the shared
-// "." row root, so K detectors resolve against one scan. Returns the same dynamic
+// copied unchanged. Used to swap an entry's `.["alias"]` row root for the shared
+// "." row root, so K entries resolve against one scan. Returns the same dynamic
 // type it was given (a []interface{} tree, or a passed-through leaf).
 func rewriteLabelRoot(node interface{}, from, to string) interface{} {
 	t, ok := node.([]interface{})
@@ -751,7 +734,7 @@ type aliasToSelf struct {
 	alias string
 }
 
-// broadcastCSEIndexed composes corpus CSE with the predicate index over one shared
+// broadcastCSEIndexed composes pack CSE with the predicate index over one shared
 // scan: engine.BroadcastCSE builds a "broadcast" op over a CSE precompute project
 // (or the bare scan when nothing is shared) whose child/Params layout is exactly
 // what OpBroadcastIndexed consumes, so re-kinding it to "broadcast-indexed" yields
@@ -764,10 +747,10 @@ func broadcastCSEIndexed(scan *base.Op, dets []engine.Detector,
 	return op
 }
 
-// Run executes the compiled corpus and returns the UNION of its tagged findings.
+// Run executes the compiled pack and returns the UNION of its tagged findings.
 // It is the buffering wrapper over RunStream: collect every streamed finding into
 // a slice. Callers that want bounded memory should use RunStream directly.
-func (cc *CompiledCorpus) Run() ([]Finding, error) {
+func (cc *CompiledMultiQueryEntries) Run() ([]Finding, error) {
 	var findings []Finding
 	err := cc.RunStream(func(f Finding) error {
 		findings = append(findings, f)
@@ -776,17 +759,17 @@ func (cc *CompiledCorpus) Run() ([]Finding, error) {
 	return findings, err
 }
 
-// RunReport runs the corpus like Run and additionally returns per-keyspace scanned-row
+// RunReport runs the pack like Run and additionally returns per-keyspace scanned-row
 // counts (IDEA-0015): it lays a stats overlay over the fused Plan so each shared scan's
-// RowsIn is captured, letting a caller tell a 0-findings detector whose keyspace
+// RowsIn is captured, letting a caller tell a 0-findings entry whose keyspace
 // scanned ~0 rows (a whole-file blob / empty scan) apart from one whose predicate
 // matched nothing. Findings are buffered like Run.
-func (cc *CompiledCorpus) RunReport() ([]Finding, *CorpusRunReport, error) {
+func (cc *CompiledMultiQueryEntries) RunReport() ([]Finding, *MultiQueryRunReport, error) {
 	var stats *base.Stats
 	if cc.Plan != nil {
 		stats = base.StatsLayout(cc.Plan)
 	}
-	// Reset the per-detector woken counters so a repeated RunReport doesn't accumulate
+	// Reset the per-entry woken counters so a repeated RunReport doesn't accumulate
 	// (the broadcast op bumps them live via the wired pointers during the run).
 	for _, w := range cc.wokenByTag {
 		*w = 0
@@ -800,9 +783,9 @@ func (cc *CompiledCorpus) RunReport() ([]Finding, *CorpusRunReport, error) {
 	for label, w := range cc.wokenByTag {
 		woken[label] = *w
 	}
-	return findings, &CorpusRunReport{
+	return findings, &MultiQueryRunReport{
 		ScannedByKeyspace: cc.scannedByKeyspace(stats),
-		WokenByDetector:   woken,
+		WokenByEntry:      woken,
 	}, err
 }
 
@@ -810,7 +793,7 @@ func (cc *CompiledCorpus) RunReport() ([]Finding, *CorpusRunReport, error) {
 // fanned-row count) out of a post-run stats overlay, keyed by the op's keyspace. Empty
 // when stats weren't collected. The op pointers walked here are the SAME ones
 // StatsLayout stamped with StatsBase and the engine bumped, so the read is exact.
-func (cc *CompiledCorpus) scannedByKeyspace(stats *base.Stats) map[string]int64 {
+func (cc *CompiledMultiQueryEntries) scannedByKeyspace(stats *base.Stats) map[string]int64 {
 	out := map[string]int64{}
 	if stats == nil || cc.Plan == nil {
 		return out
@@ -836,35 +819,35 @@ func (cc *CompiledCorpus) scannedByKeyspace(stats *base.Stats) map[string]int64 
 	return out
 }
 
-// RunStream executes the compiled corpus and calls onFinding for EACH tagged
+// RunStream executes the compiled pack and calls onFinding for EACH tagged
 // finding as it is produced -- so a consumer can stream at bounded memory instead
-// of materializing the whole result set. It runs first each STANDALONE detector via
+// of materializing the whole result set. It runs first each STANDALONE entry via
 // the full s.Run pipeline (so ASOF/window/group lowerings fire and each is
 // individually optimized), then the fused Plan -- mirroring Session.PlanExec's
 // vars / GlueContext / ExecOpEx setup and reading each finding's [label, result]
 // straight from the yielded row slots (no ConvertVals). Finding order (across
 // standalone runs, the union-all, and the interleaved fan-out) is NOT guaranteed.
 // An onFinding error aborts the run and is returned. A nil Plan with no standalone
-// detectors produces nothing; standalone-only corpora still produce their findings.
+// entries produces nothing; standalone-only corpora still produce their findings.
 //
-// NOTE: standalone detectors run via s.Run, which buffers that ONE detector's rows
+// NOTE: standalone entries run via s.Run, which buffers that ONE entry's rows
 // before they stream out; the FUSED majority streams row-by-row from the shared
 // scan. So peak memory is bounded by the largest single standalone result, not the
-// whole corpus.
-func (cc *CompiledCorpus) RunStream(onFinding func(Finding) error) error {
+// whole pack.
+func (cc *CompiledMultiQueryEntries) RunStream(onFinding func(Finding) error) error {
 	return cc.runStream(onFinding, nil)
 }
 
 // runStream is RunStream's body, optionally wiring a stats overlay (non-nil only from
 // RunReport) so the fused Plan's per-op counters (e.g. each shared scan's RowsIn) are
 // captured. stats == nil is the zero-overhead default path.
-func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.Stats) error {
+func (cc *CompiledMultiQueryEntries) runStream(onFinding func(Finding) error, stats *base.Stats) error {
 	s := cc.session
 
 	cc.GatedSkipped = nil // repopulated per run by streamStandalone's index-gating.
 
 	// Memory-behavior knobs + result. A fresh shared, race-safe merge-counter set is
-	// installed for this run (propagated to each detector Run's Ctx by PlanExec + the
+	// installed for this run (propagated to each entry Run's Ctx by PlanExec + the
 	// fused plan below), so a streaming merge's per-actor goroutines bump it without a
 	// data race. N1K1_MEM_STATS prints a summary; the counts are also on cc.MergeStats
 	// for a caller (e.g. RunReport) to surface.
@@ -877,20 +860,20 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	}
 
 	// Part B execution sharing: install a shared-scan cache over the correlation
-	// keyspaces for this run (DESIGN-sorting.md). It reaches the standalone detectors'
+	// keyspaces for this run (DESIGN-sorting.md). It reaches the standalone entries'
 	// own s.Run scans (PlanExec propagates s.Pipe) and the fused plan below, serving each
 	// keyspace's full scan+decode once. Transparent to everything else; removed after.
 	if qns := correlationKeyspaceQNs(cc.CorrelationGroups); len(qns) > 0 {
 		if dir, err := os.MkdirTemp("", "n1k1scancache"); err == nil {
 			orig := s.Pipe
-			cache := newCorpusScanCache(qns, dir, orig)
+			cache := newMultiQueryScanCache(qns, dir, orig)
 			cc.scanCache = cache
 			s.Pipe = cache
 			defer func() { s.Pipe = orig; os.RemoveAll(dir) }()
 		}
 	}
 
-	// (A) Standalone detectors: run each verbatim through the full normal pipeline and
+	// (A) Standalone entries: run each verbatim through the full normal pipeline and
 	// label its SELECT-projection rows as result. s.Run is self-contained (it does its
 	// own datastore + ExecOpEx setup), so this must happen BEFORE the fused block's
 	// global ExecOpEx swap below.
@@ -899,7 +882,7 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	}
 
 	if cc.Plan == nil {
-		return nil // standalone-only (or empty) corpus.
+		return nil // standalone-only (or empty) pack.
 	}
 
 	if s.Store != nil {
@@ -918,7 +901,7 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	}
 
 	gctx := NewGlueContext(time.Now())
-	gctx.InitSubqueries(s.Store, s.Namespace, nil, nil) // no subqueries in fusable detectors
+	gctx.InitSubqueries(s.Store, s.Namespace, nil, nil) // no subqueries in fusable entries
 	vars.Ctx.Warn = func(w string) { gctx.Warning(errors.NewWarning(w)) }
 
 	vars.Temps = vars.Temps[:0]
@@ -938,7 +921,7 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 			return
 		}
 		// Slot 0 = the label (a JSON-quoted string placed by the broadcast op); slot 1
-		// = the result value shaped by the detector's projection (JSON bytes).
+		// = the result value shaped by the entry's projection (JSON bytes).
 		var label string
 		if err := json.Unmarshal([]byte(vals[0]), &label); err != nil {
 			label = string(vals[0]) // fall back to the raw bytes if not a JSON string.
@@ -961,15 +944,15 @@ func (cc *CompiledCorpus) runStream(onFinding func(Finding) error, stats *base.S
 	return execErr
 }
 
-// streamStandalone runs each Standalone detector through the FULL normal pipeline
+// streamStandalone runs each Standalone entry through the FULL normal pipeline
 // (Session.Run -- so its ASOF/window/group/join lowerings all fire and each is
 // individually optimized) and calls onFinding for every result row, tagged with the
-// detector's id. Result is the detector's SELECT projection (the fused path shapes
+// entry's id. Result is the entry's SELECT projection (the fused path shapes
 // the same projection into result via corpusFusedProjection). A run-time error
-// from any standalone detector (or from onFinding) is returned. Note s.Run buffers a
-// single detector's rows before they stream out (see RunStream's NOTE).
-func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error {
-	// gateCache dedups the presence probe per (Source, Gate) so N detectors sharing a
+// from any standalone entry (or from onFinding) is returned. Note s.Run buffers a
+// single entry's rows before they stream out (see RunStream's NOTE).
+func (cc *CompiledMultiQueryEntries) streamStandalone(onFinding func(Finding) error) error {
+	// gateCache dedups the presence probe per (Source, Gate) so N entries sharing a
 	// gate over one keyspace probe it once.
 	gateCache := map[string]bool{}
 
@@ -978,12 +961,12 @@ func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error 
 			allow, err := cc.gateAllows(d.Source, d.Gate, gateCache)
 			if err != nil {
 				// A broken/erroring gate must not silently drop findings: fall through
-				// and RUN the detector (safe -- gating only ever SKIPS). The error rides
+				// and RUN the entry (safe -- gating only ever SKIPS). The error rides
 				// out as a warning-shaped skip note so the author can fix the gate.
 				cc.GatedSkipped = append(cc.GatedSkipped,
 					fmt.Sprintf("%s (gate error, ran anyway: %v)", d.Label, err))
 			} else if !allow {
-				// The precondition matched no row in the keyspace: the detector cannot
+				// The precondition matched no row in the keyspace: the entry cannot
 				// produce a finding, so skip its expensive standalone sort/window.
 				cc.GatedSkipped = append(cc.GatedSkipped, d.Label)
 				continue
@@ -1009,14 +992,14 @@ func (cc *CompiledCorpus) streamStandalone(onFinding func(Finding) error) error 
 // gateAllows reports whether the Source keyspace holds at least one row satisfying the
 // gate precondition -- a cheap `SELECT 1 FROM <source> WHERE <gate> LIMIT 1` probe that
 // stops at the first match (and whose scan itself benefits from literal pushdown). false
-// => the standalone detector can be skipped. Results are cached per (source|gate) key.
-func (cc *CompiledCorpus) gateAllows(source, gate string, cache map[string]bool) (bool, error) {
+// => the standalone entry can be skipped. Results are cached per (source|gate) key.
+func (cc *CompiledMultiQueryEntries) gateAllows(source, gate string, cache map[string]bool) (bool, error) {
 	key := source + "\x00" + gate
 	if v, ok := cache[key]; ok {
 		return v, nil
 	}
 	// The probe is a plain SELECT over the (possibly bound) logical keyspace, so it
-	// resolves exactly as the detector's own FROM does under this session's binding.
+	// resolves exactly as the entry's own FROM does under this session's binding.
 	res, err := cc.session.Run("SELECT 1 FROM " + source + " WHERE " + gate + " LIMIT 1")
 	if err != nil {
 		return false, err

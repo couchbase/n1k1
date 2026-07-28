@@ -134,7 +134,7 @@ func (g *Store) InitParser() error {
 // ensureDatastore points the process-global datastore -- which the cbq planner resolves
 // keyspaces through (datastore.GetDatastore) -- at ds, but ONLY when it isn't already ds.
 // InitParser sets it once up front, so in the one-store server model (one data root -> one
-// Store -> many Sessions) every concurrent Run/CorpusLint then just READS the global here and
+// Store -> many Sessions) every concurrent Run/MultiQueryLint then just READS the global here and
 // skips the write, avoiding the write-write data race an unconditional per-Run SetDatastore
 // causes. See DESIGN-concurrency.md blocker 3. Distinct stores concurrently remain
 // unsupported by construction (the global can only name one datastore).
@@ -231,8 +231,8 @@ func FileStore(path string) (*Store, error) {
 }
 
 // FileStoreBound is FileStore with a per-bundle late-binding manifest installed: a
-// logical keyspace name a detector corpus references (`FROM <logical>`) resolves to
-// the manifest's glob pattern at bind time, so the SAME corpus runs against a new,
+// logical keyspace name a multi-query pack references (`FROM <logical>`) resolves to
+// the manifest's glob pattern at bind time, so the SAME pack runs against a new,
 // differently-named bundle by re-binding to its root (DESIGN-prepare.md late binding;
 // see binding.go). A nil/empty manifest is exactly FileStore (the wrapper is a no-op).
 func FileStoreBound(path string, b Binding) (*Store, error) {

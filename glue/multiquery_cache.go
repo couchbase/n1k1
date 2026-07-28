@@ -13,26 +13,26 @@
 
 package glue
 
-// Shared-scan cache for correlation detectors -- the EXECUTION half of Part B of the
-// shared sorted-stream substrate (DESIGN-sorting.md). K temporal-correlation detectors
+// Shared-scan cache for correlation entries -- the EXECUTION half of Part B of the
+// shared sorted-stream substrate (DESIGN-sorting.md). K temporal-correlation entries
 // over the same keyspaces each scan (and DECODE / re-extract) those keyspaces separately.
 // corpusScanCache captures each correlation keyspace's scan once into a spillable heap and
-// replays it for every later scan with the SAME key -- across the group's detectors -- so
+// replays it for every later scan with the SAME key -- across the group's entries -- so
 // the expensive record extraction (gzip / multiline / regex) happens once per (keyspace,
-// scan-shape) per corpus run.
+// scan-shape) per pack run.
 //
-// It is a base.DatastorePipe installed on the session for the corpus run (reaching the
-// standalone detectors' own s.Run scans, since PlanExec propagates s.Pipe): a
+// It is a base.DatastorePipe installed on the session for the pack run (reaching the
+// standalone entries' own s.Run scans, since PlanExec propagates s.Pipe): a
 // datastore-scan-records of a known correlation keyspace is served from the cache;
 // everything else delegates to the underlying provider unchanged, so it is transparent to
-// WireASOFJoin and to non-correlation detectors. The cache key is the keyspace QN plus a
+// WireASOFJoin and to non-correlation entries. The cache key is the keyspace QN plus a
 // faithful serialization of every scan pushdown (see scanCacheKey), so two scans share a
 // heap ONLY when they yield identical rows: a FULL scan (build side of K merges) shares by
-// QN; a project-columns scan (driving side EarlyProjection) shares among detectors that
+// QN; a project-columns scan (driving side EarlyProjection) shares among entries that
 // project it identically; an unrecognized pushdown is not cached. The per-scan capture is
 // byte-BUDGETED (CorpusScanCacheBudgetBytes): a keyspace larger than the budget is
 // abandoned (partial heap freed, re-scanned thereafter) rather than mirrored to disk in
-// full. Differential-tested: findings are identical to running each detector standalone.
+// full. Differential-tested: findings are identical to running each entry standalone.
 
 import (
 	"fmt"
@@ -58,7 +58,7 @@ func applyMemEnv() {
 		engine.MergeJoinBuildSpillBytes = v
 	}
 	if v := envBytes("N1K1_SCANCACHE_BUDGET_BYTES"); v >= 0 {
-		CorpusScanCacheBudgetBytes = v
+		MultiQueryScanCacheBudgetBytes = v
 	}
 	if s := os.Getenv("N1K1_MERGEJOIN_STREAM_ASOF"); s == "0" || s == "false" {
 		engine.MergeJoinStreamASOF = false
@@ -78,12 +78,12 @@ func envBytes(name string) int64 {
 	return n
 }
 
-// printMemStats writes a one-block memory-behavior summary to stderr after a corpus run
+// printMemStats writes a one-block memory-behavior summary to stderr after a pack run
 // (gated by N1K1_MEM_STATS): how much the merge-join builds materialized and whether they
 // spilled, and what the shared-scan cache captured / replayed / abandoned. This is the
 // evidence for whether the build-spill and scan-cache budgets actually fire on a real
 // bundle (and thus whether the bounded-band sweep-line is worth pursuing).
-func (cc *CompiledCorpus) printMemStats() {
+func (cc *CompiledMultiQueryEntries) printMemStats() {
 	mb := func(b int64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }
 	if m := cc.MergeStats; m != nil {
 		fmt.Fprintf(os.Stderr, "mem-stats: merge-join count=%d streamed=%d spilled=%d (budget %s) "+
@@ -99,7 +99,7 @@ func (cc *CompiledCorpus) printMemStats() {
 		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache captured=%d (%s) replayed=%d "+
 			"skipped-big=%d abandoned=%d (budget %s)\n",
 			c.captures, mb(c.capturedBytes), c.replays, c.skippedBig, c.abandoned,
-			mb(CorpusScanCacheBudgetBytes))
+			mb(MultiQueryScanCacheBudgetBytes))
 	} else {
 		fmt.Fprintf(os.Stderr, "mem-stats: scan-cache not installed (no correlation groups)\n")
 	}
@@ -107,30 +107,30 @@ func (cc *CompiledCorpus) printMemStats() {
 
 // newCorpusScanCache builds a shared-scan cache over the given keyspace QNs, spilling
 // under dir, delegating uncached ops to inner (nil -> the file datastore).
-func newCorpusScanCache(qns map[string]bool, dir string, inner base.DatastorePipe) *corpusScanCache {
-	return &corpusScanCache{
+func newMultiQueryScanCache(qns map[string]bool, dir string, inner base.DatastorePipe) *multiQueryScanCache {
+	return &multiQueryScanCache{
 		sharedQNs: qns,
 		captured:  map[string]*store.Heap{},
 		tooBig:    map[string]bool{},
 		dir:       dir,
 		inner:     inner,
-		budget:    CorpusScanCacheBudgetBytes,
+		budget:    MultiQueryScanCacheBudgetBytes,
 	}
 }
 
 // correlationKeyspaceQNs returns the keyspaces worth caching: those read by 2+ correlation
-// detectors (both sides of each signature = the first two "\x00"-separated fields, counted
-// once per detector in the group). Caching a keyspace used by only ONE detector -- a
-// per-detector probe, say -- is pure waste: it spills to a heap that is never replayed. So
+// entries (both sides of each signature = the first two "\x00"-separated fields, counted
+// once per entry in the group). Caching a keyspace used by only ONE entry -- a
+// per-entry probe, say -- is pure waste: it spills to a heap that is never replayed. So
 // only GENUINELY-SHARED keyspaces are cached; the shared build of K correlators is framed
-// once, a lone probe is left to stream. (An ASOF-lowered detector scans each side once, so
-// cross-detector reuse is the only win; a boxed correlated subquery's inner re-scan never
+// once, a lone probe is left to stream. (An ASOF-lowered entry scans each side once, so
+// cross-entry reuse is the only win; a boxed correlated subquery's inner re-scan never
 // reaches this pipe.)
 func correlationKeyspaceQNs(groups map[string][]string) map[string]bool {
 	if len(groups) == 0 {
 		return nil
 	}
-	uses := map[string]int{} // keyspace -> # detectors reading it.
+	uses := map[string]int{} // keyspace -> # entries reading it.
 	for sig, tags := range groups {
 		parts := strings.Split(sig, "\x00")
 		if len(parts) < 2 {
@@ -153,14 +153,14 @@ func correlationKeyspaceQNs(groups map[string][]string) map[string]bool {
 }
 
 // CorpusScanCacheBudgetBytes caps how many bytes the shared-scan cache will spill for ONE
-// cached scan of a GENUINELY-SHARED keyspace (read by 2+ correlation detectors). NOTE: the
+// cached scan of a GENUINELY-SHARED keyspace (read by 2+ correlation entries). NOTE: the
 // spill chunks are mmap-backed, so a capture counts toward RSS -- this cache trades MEMORY
-// for TIME (frame a shared keyspace once instead of per detector), so raise it only when
-// the shared keyspace is big AND reused by enough detectors to pay for the resident
+// for TIME (frame a shared keyspace once instead of per entry), so raise it only when
+// the shared keyspace is big AND reused by enough entries to pay for the resident
 // capture. A keyspace estimated to exceed this is SKIPPED up front (see the size gate in
 // Op / keyspaceRawBytes); a keyspace that slips past the estimate but overflows mid-capture
 // is abandoned (partial heap freed) as a backstop.
-var CorpusScanCacheBudgetBytes int64 = 256 << 20 // 256 MiB per cached scan.
+var MultiQueryScanCacheBudgetBytes int64 = 256 << 20 // 256 MiB per cached scan.
 
 // CorpusScanCacheSizeFactor is the assumed framing+encode EXPANSION of a keyspace's raw
 // file bytes into the cache's encoded spill (measured ~1.9x for a real log keyspace;
@@ -168,22 +168,22 @@ var CorpusScanCacheBudgetBytes int64 = 256 << 20 // 256 MiB per cached scan.
 // toward NOT spilling a keyspace that would overflow -- a missed share is cheaper than a
 // wasted budget-sized spill. Raise it to be more conservative (skip more), lower to try
 // caching more aggressively (risking a mid-capture abandon).
-var CorpusScanCacheSizeFactor = 2.0
+var MultiQueryScanCacheSizeFactor = 2.0
 
 // corpusScanCache is a caching DatastorePipe. The two-stream ASOF merge-join co-advance
 // runs its left probe and right build on SEPARATE goroutines, both hitting this shared
-// pipe concurrently (a detector's probe + build keyspaces are distinct, so they touch
+// pipe concurrently (an entry's probe + build keyspaces are distinct, so they touch
 // distinct map keys but still write the maps/counters at the same time). mu guards all
 // shared state; the scan / replay / capture-serving happen OUTSIDE the lock (only the
 // short map + counter mutations are under it), so the two scans still run concurrently.
-type corpusScanCache struct {
+type multiQueryScanCache struct {
 	sharedQNs map[string]bool    // keyspace QNs to cache (correlation keyspaces); read-only after ctor.
 	inner     base.DatastorePipe // underlying provider (nil -> the file datastore); read-only.
-	dir       string             // corpus-scoped spill dir (outlives per-detector Runs); read-only.
+	dir       string             // pack-scoped spill dir (outlives per-entry Runs); read-only.
 	budget    int64              // max bytes to spill per cached scan; read-only.
 
 	mu       sync.Mutex             // guards everything below.
-	captured map[string]*store.Heap // scan-key -> captured rows (lazy, corpus-dir backed).
+	captured map[string]*store.Heap // scan-key -> captured rows (lazy, pack-dir backed).
 	tooBig   map[string]bool        // scan-keys whose capture blew the budget (don't retry).
 	seq      int                    // distinct heap path suffix.
 
@@ -196,7 +196,7 @@ type corpusScanCache struct {
 
 // Op serves one datastore leaf op: a cacheable full correlation-keyspace scan from the
 // cache (capturing on first access), else delegates unchanged.
-func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+func (c *multiQueryScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	key, ok := c.scanCacheKey(o, vars)
 	if !ok {
@@ -229,7 +229,7 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 	// offers NO hint (raw < 0 -- a datasource that can't cheaply size itself) is simply not
 	// gated: it falls through to attempt-and-maybe-abandon, which is always correct.
 	if raw := keyspaceRawBytes(o, vars); raw >= 0 &&
-		float64(raw)*CorpusScanCacheSizeFactor > float64(c.budget) {
+		float64(raw)*MultiQueryScanCacheSizeFactor > float64(c.budget) {
 		c.mu.Lock()
 		c.tooBig[key] = true
 		c.skippedBig++
@@ -243,9 +243,9 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 	seq := c.seq
 	c.mu.Unlock()
 
-	// First access: capture the scan into a corpus-scoped heap WHILE serving this caller
+	// First access: capture the scan into a pack-scoped heap WHILE serving this caller
 	// (so the first scan isn't wasted). The heap spills to disk, so RAM is bounded; it
-	// lives under the corpus dir, not the per-detector Run's tmpDir (which is removed when
+	// lives under the pack dir, not the per-entry Run's tmpDir (which is removed when
 	// that Run ends), so later Runs can replay it. If the capture exceeds the byte budget
 	// we ABANDON it (free the partial heap, poison the key) and keep serving -- so a huge
 	// keyspace falls back to re-scanning instead of a giant spill. capYield touches only
@@ -291,10 +291,10 @@ func (c *corpusScanCache) Op(o *base.Op, vars *base.Vars, yieldVals base.YieldVa
 // scan pushdown, so two scans share a heap ONLY when they yield identical rows. A FULL scan
 // (keyspacer index only) keys on the QN alone -- so the build side of K merges shares. A
 // scan carrying a project-columns pushdown (EarlyProjection on the driving side) keys on
-// the QN + those columns -- so the driving side shares across detectors that project it the
+// the QN + those columns -- so the driving side shares across entries that project it the
 // same way. Any UNRECOGNIZED pushdown -> ok=false (its rows might differ in a way the key
 // wouldn't capture; correctness beats sharing).
-func (c *corpusScanCache) scanCacheKey(o *base.Op, vars *base.Vars) (string, bool) {
+func (c *multiQueryScanCache) scanCacheKey(o *base.Op, vars *base.Vars) (string, bool) {
 	if o.Kind != "datastore-scan-records" || len(o.Params) == 0 {
 		return "", false
 	}
@@ -325,7 +325,7 @@ func (c *corpusScanCache) scanCacheKey(o *base.Op, vars *base.Vars) (string, boo
 
 // delegate runs the op via the underlying provider (the wrapped pipe, or the file
 // datastore) WITHOUT re-entering this cache -- DatastoreDispatch skips the Ctx.Pipe check.
-func (c *corpusScanCache) delegate(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
+func (c *multiQueryScanCache) delegate(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	if c.inner != nil {
 		c.inner.Op(o, vars, yieldVals, yieldErr, path, pathNext)
@@ -334,10 +334,10 @@ func (c *corpusScanCache) delegate(o *base.Op, vars *base.Vars, yieldVals base.Y
 	DatastoreDispatch(o, vars, yieldVals, yieldErr, path, pathNext)
 }
 
-// newHeap builds an append-only, order-preserving, spillable heap under the corpus dir
+// newHeap builds an append-only, order-preserving, spillable heap under the pack dir
 // (mirrors MakeVars' AllocHeap construction; PushBytes/Get(i) give insertion order --
 // the same "appendable sequence" use as OpTempCapture).
-func (c *corpusScanCache) newHeap(seq int) *store.Heap {
+func (c *multiQueryScanCache) newHeap(seq int) *store.Heap {
 	// Chunk files are <prefix>_chunk_N.<suffix>; their parent must exist. c.dir is a
 	// dedicated MkdirTemp dir, so prefix directly under it -- NO extra subdir, which
 	// (uncreated) previously made spill chunk files fail to open, silently dropping the

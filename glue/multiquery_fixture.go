@@ -13,16 +13,16 @@
 
 package glue
 
-// corpus_fixture.go runs a recipe's GOLDEN FIXTURE (DESIGN-prepare.md phase 7,
-// "a golden-fixture diff ... is the detector's unit test"). It builds a throwaway
-// single-keyspace datastore from the fixture's input rows, runs JUST that one detector
-// over it (through the exact CorpusCompile -> Run path .rules run uses, so the produced
+// multiquery_fixture.go runs an entry's GOLDEN FIXTURE (DESIGN-prepare.md phase 7,
+// "a golden-fixture diff ... is the entry's unit test"). It builds a throwaway
+// single-keyspace datastore from the fixture's input rows, runs JUST that one entry
+// over it (through the exact MultiQueryCompile -> Run path .multi run uses, so the produced
 // findings' shape matches a real run), and returns the findings for the caller to diff
-// against the recipe's @expect golden (DiffFindings) or record as the new golden
+// against the entry's @expect golden (DiffFindings) or record as the new golden
 // (RewriteExpect + --update).
 //
-// MVP SCOPE (matches corpus_recipe.go's deferred list): the fixture feeds the
-// detector's SINGLE `source` keyspace. A detector that also reads a second keyspace
+// MVP SCOPE (matches multiquery_entry.go's deferred list): the fixture feeds the
+// entry's SINGLE `source` keyspace. A entry that also reads a second keyspace
 // (a join / correlated subquery over another keyspace) can't be fixtured yet; RunFixture
 // surfaces that as ErrFixtureUnresolved so the runner can SKIP it with a clear note
 // rather than counting a spurious failure.
@@ -35,9 +35,9 @@ import (
 )
 
 // ErrFixtureUnresolved reports that a fixture run could not resolve a keyspace the
-// detector references -- almost always because the detector reads a SECOND keyspace the
+// entry references -- almost always because the entry reads a SECOND keyspace the
 // single-source fixture doesn't provide (multi-source fixtures are a deferred MVP gap),
-// or because the recipe's `source` doesn't match the statement's FROM. The runner treats
+// or because the entry's `source` doesn't match the statement's FROM. The runner treats
 // it as a SKIP (with this message), not a hard failure.
 type ErrFixtureUnresolved struct{ Reason string }
 
@@ -45,17 +45,17 @@ func (e *ErrFixtureUnresolved) Error() string {
 	return "fixture keyspace unresolved (multi-source fixture unsupported (MVP), or source mismatch): " + e.Reason
 }
 
-// RunFixture materializes the recipe's fixture rows as a temporary single-keyspace
-// datastore named after Source, runs the detector over it, and returns the tagged
+// RunFixture materializes the entry's fixture rows as a temporary single-keyspace
+// datastore named after Source, runs the entry over it, and returns the tagged
 // findings. It requires HasFixture and a non-empty Source (a fixture with no `source`
 // front-matter can't be placed into a keyspace). The temp datastore is removed before
 // returning. Findings order is not guaranteed (compare as a set -- DiffFindings).
-func (r *Recipe) RunFixture() ([]Finding, error) {
+func (r *MultiQueryEntry) RunFixture() ([]Finding, error) {
 	if !r.HasFixture {
-		return nil, fmt.Errorf("recipe %q has no @fixture", r.Label)
+		return nil, fmt.Errorf("entry %q has no @fixture", r.Label)
 	}
 	if strings.TrimSpace(r.Source) == "" {
-		return nil, fmt.Errorf("recipe %q has a fixture but no `source:` front-matter "+
+		return nil, fmt.Errorf("entry %q has a fixture but no `source:` front-matter "+
 			"(can't place fixture rows into a keyspace)", r.Label)
 	}
 
@@ -86,11 +86,11 @@ func (r *Recipe) RunFixture() ([]Finding, error) {
 		return nil, err
 	}
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{r.AsDetector()})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{*r})
 	if err != nil {
 		return nil, err
 	}
-	// A REJECTED detector (parse/plan/convert failed) runs to ZERO findings, which would
+	// A REJECTED entry (parse/plan/convert failed) runs to ZERO findings, which would
 	// otherwise masquerade as a clean pass -- exactly the "rejected -> no findings" lie
 	// the report card guards against. Surface it as a hard error so the fixture FAILS.
 	if len(cc.Rejected) > 0 {
@@ -98,7 +98,7 @@ func (r *Recipe) RunFixture() ([]Finding, error) {
 	}
 	findings, err := cc.Run()
 	if err != nil {
-		// A keyspace-resolution failure means the detector reaches for a keyspace the
+		// A keyspace-resolution failure means the entry reaches for a keyspace the
 		// single-source fixture doesn't provide (deferred multi-source) -- reclassify it
 		// as a SKIP so the runner doesn't count a false failure.
 		if looksLikeMissingKeyspace(err, r.Source) {
@@ -111,7 +111,7 @@ func (r *Recipe) RunFixture() ([]Finding, error) {
 
 // looksLikeMissingKeyspace heuristically recognizes a "keyspace not found" plan/run
 // error (the fork's phrasing varies), used to reclassify a multi-source fixture run as a
-// skip. It errs toward NOT matching (a real detector bug should still FAIL): it requires
+// skip. It errs toward NOT matching (a real entry bug should still FAIL): it requires
 // a recognizably keyspace-resolution phrase.
 func looksLikeMissingKeyspace(err error, source string) bool {
 	if err == nil {

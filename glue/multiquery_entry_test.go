@@ -22,10 +22,10 @@ import (
 	"testing"
 )
 
-// TestParseRecipeFull: a recipe with front-matter + fixture + expect parses into all
+// TestParseMultiQueryEntryFull: an entry with front-matter + fixture + expect parses into all
 // the expected fields; the label becomes the Label, the SQL body is stripped of front-
 // matter and both sections, and the fixture rows + golden findings round-trip.
-func TestParseRecipeFull(t *testing.T) {
+func TestParseMultiQueryEntryFull(t *testing.T) {
 	text := `-- label: ET-12345
 -- description: disk-full errors
 -- source: logs
@@ -40,9 +40,9 @@ SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 {"label":"ET-12345","result":{"sev":"ERROR","msg":"disk full","ts":3}}
 {"label":"ET-12345","result":{"sev":"ERROR","msg":"oom","ts":9}}
 `
-	r, err := ParseRecipe("recipes/disk_full.sql++", text)
+	r, err := ParseMultiQueryEntry("entries/disk_full.sql++", text)
 	if err != nil {
-		t.Fatalf("ParseRecipe: %v", err)
+		t.Fatalf("ParseMultiQueryEntry: %v", err)
 	}
 	if r.Label != "ET-12345" {
 		t.Errorf("Label = %q, want ET-12345 (from label)", r.Label)
@@ -52,9 +52,6 @@ SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 	}
 	if r.Gate != `l.sev = "ERROR"` {
 		t.Errorf("Gate = %q, want l.sev = \"ERROR\"", r.Gate)
-	}
-	if d := r.AsDetector(); d.Gate != r.Gate || d.Source != r.Source {
-		t.Errorf("AsDetector() dropped gate/source: %+v", d)
 	}
 	if !reflect.DeepEqual(r.Tags, []string{"disk", "io"}) {
 		t.Errorf("Tags = %v, want [disk io]", r.Tags)
@@ -76,14 +73,14 @@ SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 	}
 }
 
-// TestParseRecipeNoTicketAlias: `label` is the only key that sets the Label. The old
+// TestParseMultiQueryEntryNoTicketAlias: `label` is the only key that sets the Label. The old
 // `ticket` back-compat alias was dropped (n1k1 is pre-1.0, no compatibility promise), so
 // `ticket` is now just an ordinary front-matter key stashed in Meta -- and the Label
 // falls back to the filename stem.
-func TestParseRecipeNoTicketAlias(t *testing.T) {
-	r, err := ParseRecipe("recipes/old.sql++", "-- ticket: LEGACY-1\nSELECT * FROM logs")
+func TestParseMultiQueryEntryNoTicketAlias(t *testing.T) {
+	r, err := ParseMultiQueryEntry("entries/old.sql++", "-- ticket: LEGACY-1\nSELECT * FROM logs")
 	if err != nil {
-		t.Fatalf("ParseRecipe: %v", err)
+		t.Fatalf("ParseMultiQueryEntry: %v", err)
 	}
 	if r.Label != "old" {
 		t.Errorf("Label = %q, want the filename stem 'old' (`ticket` is no longer an alias)", r.Label)
@@ -93,21 +90,21 @@ func TestParseRecipeNoTicketAlias(t *testing.T) {
 	}
 }
 
-// TestParseRecipePlain: a plain *.sql++ with NO front-matter and NO sections loads as a
-// detector whose Label is the filename stem and whose Stmt is the whole body -- the
+// TestParseMultiQueryEntryPlain: a plain *.sql++ with NO front-matter and NO sections loads as a
+// entry whose Label is the filename stem and whose Stmt is the whole body -- the
 // backward-compatible path. A leading non-key:value comment is NOT front-matter (it
 // stays in the body).
-func TestParseRecipePlain(t *testing.T) {
-	text := "-- just a note about this detector\nSELECT * FROM logs WHERE sev = \"ERROR\"\n"
-	r, err := ParseRecipe("errors.sql++", text)
+func TestParseMultiQueryEntryPlain(t *testing.T) {
+	text := "-- just a note about this entry\nSELECT * FROM logs WHERE sev = \"ERROR\"\n"
+	r, err := ParseMultiQueryEntry("errors.sql++", text)
 	if err != nil {
-		t.Fatalf("ParseRecipe: %v", err)
+		t.Fatalf("ParseMultiQueryEntry: %v", err)
 	}
 	if r.Label != "errors" {
 		t.Errorf("Label = %q, want errors (filename stem)", r.Label)
 	}
 	if r.HasFixture || r.HasExpect {
-		t.Errorf("plain recipe should have no fixture/expect; got %v/%v", r.HasFixture, r.HasExpect)
+		t.Errorf("plain entry should have no fixture/expect; got %v/%v", r.HasFixture, r.HasExpect)
 	}
 	if r.Source != "" {
 		t.Errorf("Source = %q, want empty", r.Source)
@@ -118,9 +115,9 @@ func TestParseRecipePlain(t *testing.T) {
 	}
 }
 
-// TestLoadCorpus: a dir of *.sql++ recipes loads sorted, mixing a full recipe and a
-// plain one; an empty dir errors (a silent no-op corpus would read as clean).
-func TestLoadCorpus(t *testing.T) {
+// TestLoadMultiQueryEntries: a dir of *.sql++ entries loads sorted, mixing a full entry and a
+// plain one; an empty dir errors (a silent no-op pack would read as clean).
+func TestLoadMultiQueryEntries(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
@@ -130,28 +127,28 @@ func TestLoadCorpus(t *testing.T) {
 	write("a_full.sql++", "-- label: ET-1\n-- source: logs\nSELECT * FROM logs\n-- @fixture\n{\"x\":1}\n")
 	write("b_plain.sql++", "SELECT * FROM events\n")
 
-	recipes, err := LoadCorpus(dir)
+	entries, err := LoadMultiQueryEntries(dir)
 	if err != nil {
-		t.Fatalf("LoadCorpus: %v", err)
+		t.Fatalf("LoadMultiQueryEntries: %v", err)
 	}
-	if len(recipes) != 2 {
-		t.Fatalf("loaded %d recipes, want 2", len(recipes))
+	if len(entries) != 2 {
+		t.Fatalf("loaded %d entries, want 2", len(entries))
 	}
-	if recipes[0].Label != "ET-1" || !recipes[0].HasFixture {
-		t.Errorf("recipe[0] = %+v, want Label ET-1 with a fixture", recipes[0])
+	if entries[0].Label != "ET-1" || !entries[0].HasFixture {
+		t.Errorf("entry[0] = %+v, want Label ET-1 with a fixture", entries[0])
 	}
-	if recipes[1].Label != "b_plain" || recipes[1].HasFixture {
-		t.Errorf("recipe[1] = %+v, want Label b_plain with no fixture", recipes[1])
+	if entries[1].Label != "b_plain" || entries[1].HasFixture {
+		t.Errorf("entry[1] = %+v, want Label b_plain with no fixture", entries[1])
 	}
 
-	if _, err := LoadCorpus(t.TempDir()); err == nil {
-		t.Error("empty corpus dir should error (a silent no-op corpus reads as clean)")
+	if _, err := LoadMultiQueryEntries(t.TempDir()); err == nil {
+		t.Error("empty pack dir should error (a silent no-op pack reads as clean)")
 	}
 }
 
-// TestLoadCorpusDirs: several tiers on disk fuse into one recipe list, in dir order
+// TestLoadMultiQueryEntriesDirs: several tiers on disk fuse into one entry list, in dir order
 // (IDEA-0034 -- tiers stay organized on disk yet feed one shared-scan pack).
-func TestLoadCorpusDirs(t *testing.T) {
+func TestLoadMultiQueryEntriesDirs(t *testing.T) {
 	mk := func(name, body string) string {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
@@ -162,24 +159,24 @@ func TestLoadCorpusDirs(t *testing.T) {
 	tier1 := mk("t1.sql++", "-- label: ET-1\nSELECT * FROM logs\n")
 	tier2 := mk("t2.sql++", "-- label: ET-2\nSELECT * FROM events\n")
 
-	recipes, err := LoadCorpusDirs([]string{tier1, tier2})
+	entries, err := LoadMultiQueryEntriesDirs([]string{tier1, tier2})
 	if err != nil {
-		t.Fatalf("LoadCorpusDirs: %v", err)
+		t.Fatalf("LoadMultiQueryEntriesDirs: %v", err)
 	}
-	if len(recipes) != 2 || recipes[0].Label != "ET-1" || recipes[1].Label != "ET-2" {
-		t.Fatalf("fused recipes = %+v, want [ET-1 ET-2] in dir order", recipes)
+	if len(entries) != 2 || entries[0].Label != "ET-1" || entries[1].Label != "ET-2" {
+		t.Fatalf("fused entries = %+v, want [ET-1 ET-2] in dir order", entries)
 	}
 
-	if _, err := LoadCorpusDirs(nil); err == nil {
+	if _, err := LoadMultiQueryEntriesDirs(nil); err == nil {
 		t.Error("no query dir should error")
 	}
 	// One bad tier fails the whole load (loud, not a silent partial).
-	if _, err := LoadCorpusDirs([]string{tier1, t.TempDir()}); err == nil {
+	if _, err := LoadMultiQueryEntriesDirs([]string{tier1, t.TempDir()}); err == nil {
 		t.Error("an empty tier among the dirs should error")
 	}
 }
 
-// TestRewriteExpectRoundTrip: RewriteExpect records a golden into a fixture-only recipe
+// TestRewriteExpectRoundTrip: RewriteExpect records a golden into a fixture-only entry
 // (leaving everything before @expect byte-identical), and re-parsing yields exactly
 // those findings. A second RewriteExpect over an existing @expect replaces it in place.
 func TestRewriteExpectRoundTrip(t *testing.T) {
@@ -198,7 +195,7 @@ func TestRewriteExpectRoundTrip(t *testing.T) {
 		t.Fatal("RewriteExpect did not add an @expect marker")
 	}
 
-	r, err := ParseRecipe("x.sql++", out)
+	r, err := ParseMultiQueryEntry("x.sql++", out)
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
@@ -211,7 +208,7 @@ func TestRewriteExpectRoundTrip(t *testing.T) {
 	if !strings.HasPrefix(out2, head) {
 		t.Fatalf("second RewriteExpect changed the head:\n%q", out2)
 	}
-	r2, _ := ParseRecipe("x.sql++", out2)
+	r2, _ := ParseMultiQueryEntry("x.sql++", out2)
 	if canonicalJSON(r2.Fixture.Expect[0].Result) != `{"n":2,"sev":"ERROR"}` {
 		t.Fatalf("in-place replace failed: %s", r2.Fixture.Expect[0].Result)
 	}
@@ -247,12 +244,12 @@ func TestDiffFindings(t *testing.T) {
 	}
 }
 
-// TestRunFixture: a recipe's fixture runs end-to-end -- RunFixture builds a temp
-// keyspace named after `source`, runs the detector, and returns whole-row findings for
-// the matching rows. A rejected (broken-SQL) detector surfaces as an error (not a silent
+// TestRunFixture: an entry's fixture runs end-to-end -- RunFixture builds a temp
+// keyspace named after `source`, runs the entry, and returns whole-row findings for
+// the matching rows. A rejected (broken-SQL) entry surfaces as an error (not a silent
 // zero-findings pass). A fixture without `source` errors.
 func TestRunFixture(t *testing.T) {
-	r, err := ParseRecipe("d.sql++", `-- label: ET-1
+	r, err := ParseMultiQueryEntry("d.sql++", `-- label: ET-1
 -- source: logs
 SELECT * FROM logs l WHERE l.sev = "ERROR"
 -- @fixture
@@ -276,14 +273,14 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 		}
 	}
 
-	// A broken detector must FAIL loudly, not run to a false clean 0 findings.
-	broken, _ := ParseRecipe("b.sql++", "-- source: logs\nSELECT FROM WHERE (((\n-- @fixture\n{\"x\":1}\n")
+	// A broken entry must FAIL loudly, not run to a false clean 0 findings.
+	broken, _ := ParseMultiQueryEntry("b.sql++", "-- source: logs\nSELECT FROM WHERE (((\n-- @fixture\n{\"x\":1}\n")
 	if _, err := broken.RunFixture(); err == nil {
-		t.Error("a rejected detector's fixture must error, not pass with 0 findings")
+		t.Error("a rejected entry's fixture must error, not pass with 0 findings")
 	}
 
 	// A fixture with no source can't be placed into a keyspace.
-	noSrc, _ := ParseRecipe("n.sql++", "SELECT * FROM logs\n-- @fixture\n{\"x\":1}\n")
+	noSrc, _ := ParseMultiQueryEntry("n.sql++", "SELECT * FROM logs\n-- @fixture\n{\"x\":1}\n")
 	if _, err := noSrc.RunFixture(); err == nil {
 		t.Error("a fixture without `source` must error")
 	}

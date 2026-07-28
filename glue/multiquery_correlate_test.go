@@ -42,11 +42,11 @@ func correlateSession(t *testing.T) *Session {
 	return sess
 }
 
-// TestCorpusCorrelationGrouping (Part B foundation): temporal-correlation detectors are
+// TestCorpusCorrelationGrouping (Part B foundation): temporal-correlation entries are
 // recognized and grouped by their (left, right, key, direction) signature -- two
-// nearest-PRECEDING errors->state-by-ts detectors share a group; a nearest-FOLLOWING one
+// nearest-PRECEDING errors->state-by-ts entries share a group; a nearest-FOLLOWING one
 // is a separate group. They still run standalone (this slice only surfaces the grouping).
-func TestCorpusCorrelationGrouping(t *testing.T) {
+func TestMultiQueryCorrelationGrouping(t *testing.T) {
 	sess := correlateSession(t)
 
 	preceding := func() string {
@@ -56,19 +56,19 @@ func TestCorpusCorrelationGrouping(t *testing.T) {
 	following := "SELECT e.ts AS ts, (SELECT r.msg FROM default:state r WHERE r.ts >= e.ts " +
 		"ORDER BY r.ts ASC LIMIT 1) AS next_state FROM default:errors e"
 
-	dets := []CorpusDetector{
+	dets := []MultiQueryEntry{
 		{Label: "p1", Stmt: preceding()},
 		{Label: "p2", Stmt: preceding() + " WHERE e.msg = \"x\""}, // same sig (outer WHERE doesn't change it)
 		{Label: "f1", Stmt: following},                            // different direction -> different sig
 	}
-	cc, err := sess.CorpusCompile(dets)
+	cc, err := sess.MultiQueryCompile(dets)
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 
-	// All three are correlation detectors -> still standalone (no execution change here).
+	// All three are correlation entries -> still standalone (no execution change here).
 	if len(cc.Standalone) != 3 {
-		t.Fatalf("expected 3 standalone correlation detectors, got %d", len(cc.Standalone))
+		t.Fatalf("expected 3 standalone correlation entries, got %d", len(cc.Standalone))
 	}
 
 	// Two groups: {p1,p2} (preceding) and {f1} (following).
@@ -88,14 +88,14 @@ func TestCorpusCorrelationGrouping(t *testing.T) {
 }
 
 // TestCorpusCorrelationScanSharing (Part B execution): two ASOF-lowered correlation
-// detectors over the same two keyspaces share the scan+decode of each via the corpus scan
+// entries over the same two keyspaces share the scan+decode of each via the pack scan
 // cache (both merge-scan sides are n1k1 full scans). The findings are byte-identical to
-// running each detector standalone (the oracle), and the shared keyspace is CAPTURED once
-// then REPLAYED for the second detector -- proving the sharing without changing results.
-// (Uses recipe-matched ns_server_log keyspaces + the ASOF lowering, because an UN-lowered
+// running each entry standalone (the oracle), and the shared keyspace is CAPTURED once
+// then REPLAYED for the second entry -- proving the sharing without changing results.
+// (Uses entry-matched ns_server_log keyspaces + the ASOF lowering, because an UN-lowered
 // correlated subquery evaluates its inner scan via boxed cbq, which no n1k1 scan cache --
 // nor temp-capture/temp-yield -- can intercept.)
-func TestCorpusCorrelationScanSharing(t *testing.T) {
+func TestMultiQueryCorrelationScanSharing(t *testing.T) {
 	prev := EnableASOFRewrite
 	EnableASOFRewrite = true
 	defer func() { EnableASOFRewrite = prev }()
@@ -118,7 +118,7 @@ func TestCorpusCorrelationScanSharing(t *testing.T) {
 	d2 := "SELECT e.node AS node, (SELECT r.msg FROM default:rlog r WHERE r.ts <= e.ts " +
 		"ORDER BY r.ts DESC LIMIT 1) AS state_at FROM default:elog e ORDER BY e.ts"
 
-	// Oracle: each detector standalone (no corpus / no cache) FIRST.
+	// Oracle: each entry standalone (no pack / no cache) FIRST.
 	oracle := map[string][]string{}
 	for label, stmt := range map[string]string{"c1": d1, "c2": d2} {
 		res, rerr := sess.Run(stmt)
@@ -131,9 +131,9 @@ func TestCorpusCorrelationScanSharing(t *testing.T) {
 		sort.Strings(oracle[label])
 	}
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "c1", Stmt: d1}, {Label: "c2", Stmt: d2}})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "c1", Stmt: d1}, {Label: "c2", Stmt: d2}})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if len(cc.CorrelationGroups) != 1 {
 		t.Fatalf("expected 1 correlation group (both share the sig), got %v", cc.CorrelationGroups)
@@ -160,7 +160,7 @@ func TestCorpusCorrelationScanSharing(t *testing.T) {
 	}
 
 	// The win: a correlation keyspace is captured once then replayed for the other
-	// detector's full scan (the merge build side is a full n1k1 scan). At least one
+	// entry's full scan (the merge build side is a full n1k1 scan). At least one
 	// capture + one replay proves the sharing fired.
 	if cc.scanCache == nil {
 		t.Fatal("no scan cache installed (correlation keyspaces not recognized?)")
@@ -174,12 +174,12 @@ func TestCorpusCorrelationScanSharing(t *testing.T) {
 	// t.Logf("scan cache: %d captured, %d replayed", cc.scanCache.captures, cc.scanCache.replays)
 }
 
-// TestCorpusCorrelationSharesBothSides: when two detectors share the sig AND project the
+// TestCorpusCorrelationSharesBothSides: when two entries share the sig AND project the
 // DRIVING (left) keyspace identically (here they differ only by a constant projection
 // term, so both scans are byte-identical), the cache shares BOTH sides -- the build-side
 // (rlog) full scan and the driving-side (elog) projected scan are each captured once and
-// replayed for the second detector. captures == 2, replays == 2.
-func TestCorpusCorrelationSharesBothSides(t *testing.T) {
+// replayed for the second entry. captures == 2, replays == 2.
+func TestMultiQueryCorrelationSharesBothSides(t *testing.T) {
 	prev := EnableASOFRewrite
 	EnableASOFRewrite = true
 	defer func() { EnableASOFRewrite = prev }()
@@ -201,9 +201,9 @@ func TestCorpusCorrelationSharesBothSides(t *testing.T) {
 	d1 := "SELECT \"d1\" AS label, e.ts AS ts, " + sub + " AS state_at FROM default:elog e ORDER BY e.ts"
 	d2 := "SELECT \"d2\" AS label, e.ts AS ts, " + sub + " AS state_at FROM default:elog e ORDER BY e.ts"
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "c1", Stmt: d1}, {Label: "c2", Stmt: d2}})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "c1", Stmt: d1}, {Label: "c2", Stmt: d2}})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if _, err := cc.Run(); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -215,7 +215,7 @@ func TestCorpusCorrelationSharesBothSides(t *testing.T) {
 		t.Errorf("captures = %d, want 2 (elog + rlog each captured once)", cc.scanCache.captures)
 	}
 	if cc.scanCache.replays != 2 {
-		t.Errorf("replays = %d, want 2 (each side replayed for the 2nd detector)", cc.scanCache.replays)
+		t.Errorf("replays = %d, want 2 (each side replayed for the 2nd entry)", cc.scanCache.replays)
 	}
 	// t.Logf("both-side sharing: %d captured, %d replayed", cc.scanCache.captures, cc.scanCache.replays)
 }
@@ -224,13 +224,13 @@ func TestCorpusCorrelationSharesBothSides(t *testing.T) {
 // keyspace mid-capture (free the partial heap, re-scan thereafter) instead of spilling it
 // in full -- and the findings are STILL byte-identical to standalone (abandoning caching
 // never changes results).
-func TestCorpusCorrelationScanBudget(t *testing.T) {
+func TestMultiQueryCorrelationScanBudget(t *testing.T) {
 	prev := EnableASOFRewrite
 	EnableASOFRewrite = true
 	defer func() { EnableASOFRewrite = prev }()
-	prevB := CorpusScanCacheBudgetBytes
-	CorpusScanCacheBudgetBytes = 1 // 1 byte: nothing fits.
-	defer func() { CorpusScanCacheBudgetBytes = prevB }()
+	prevB := MultiQueryScanCacheBudgetBytes
+	MultiQueryScanCacheBudgetBytes = 1 // 1 byte: nothing fits.
+	defer func() { MultiQueryScanCacheBudgetBytes = prevB }()
 
 	root := t.TempDir()
 	asofWriteKS(t, root, "elog", "ns_server.error.log",
@@ -251,9 +251,9 @@ func TestCorpusCorrelationScanBudget(t *testing.T) {
 		t.Fatalf("oracle: %v", err)
 	}
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{{Label: "c1", Stmt: d}, {Label: "c2", Stmt: d}})
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "c1", Stmt: d}, {Label: "c2", Stmt: d}})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	findings, err := cc.Run()
 	if err != nil {
@@ -299,13 +299,13 @@ func TestKeyspaceRawBytes(t *testing.T) {
 		t.Errorf("keyspaceRawBytes(single file) = %d, want 5000", got)
 	}
 	// The gate decision it feeds: raw*factor vs budget.
-	if !(float64(5000)*CorpusScanCacheSizeFactor > float64(4000)) {
-		t.Errorf("gate math wrong: 5000*%v should exceed a 4000 budget", CorpusScanCacheSizeFactor)
+	if !(float64(5000)*MultiQueryScanCacheSizeFactor > float64(4000)) {
+		t.Errorf("gate math wrong: 5000*%v should exceed a 4000 budget", MultiQueryScanCacheSizeFactor)
 	}
 }
 
-// TestCorrelationKeyspaceQNsSharedOnly: only keyspaces read by 2+ detectors are cached.
-// Two detectors with DIFFERENT probes but the SAME build keyspace -> only the build is
+// TestCorrelationKeyspaceQNsSharedOnly: only keyspaces read by 2+ entries are cached.
+// Two entries with DIFFERENT probes but the SAME build keyspace -> only the build is
 // shared (caching a single-use probe would spill a heap that's never replayed).
 func TestCorrelationKeyspaceQNsSharedOnly(t *testing.T) {
 	groups := map[string][]string{
@@ -314,7 +314,7 @@ func TestCorrelationKeyspaceQNsSharedOnly(t *testing.T) {
 	}
 	qns := correlationKeyspaceQNs(groups)
 	if !qns["default:memcached"] {
-		t.Errorf("memcached (used by both detectors) should be shared; got %v", qns)
+		t.Errorf("memcached (used by both entries) should be shared; got %v", qns)
 	}
 	if qns["default:master_events"] || qns["default:cbcollect_info"] {
 		t.Errorf("single-use probes should NOT be cached; got %v", qns)

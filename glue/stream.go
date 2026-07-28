@@ -33,7 +33,7 @@ import (
 // it to the single generic "stream-fn" op (StreamFnOp) -- so a new streaming source
 // needs only to implement this interface; it does NOT need its own op or its own
 // dispatch case. Today the JS streaming source (*.stream.js, ext_jsvm_stream.go)
-// and RULE_MATCHES (rule_matches.go) both ride this one op.
+// and MULTI_MATCHES (multi.go) both ride this one op.
 type StreamSource interface {
 	// StreamRows drives the source. It evaluates its own SQL operands against
 	// (item, ctx), then calls emit(row) for each produced row -- one row per call,

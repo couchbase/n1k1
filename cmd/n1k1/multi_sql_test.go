@@ -28,22 +28,22 @@ import (
 func TestExplainSQLGroupedAndExpanded(t *testing.T) {
 	registerBuiltinMacros() // so @grep_context expands
 
-	dets := []glue.CorpusDetector{
+	dets := []glue.MultiQueryEntry{
 		{Label: "DISK", Stmt: `SELECT l.msg FROM logs l WHERE l.sev = "ERROR" AND l.msg LIKE "%disk%"`},
 		{Label: "OOM", Stmt: `SELECT l.msg FROM logs l WHERE l.sev = "ERROR" AND l.msg LIKE "%oom%"`},
 		{Label: "SOLO", Stmt: `SELECT r.id FROM reqs r WHERE r.ms > 1000`}, // fuse-eligible but alone
 		{Label: "CTX", Stmt: `SELECT g.msg FROM @grep_context(logs, when => sev = "ERROR", before => 1, after => 1, order => ts) AS g WHERE g.near = 1`},
 	}
-	report := []glue.DetectorLint{
+	report := []glue.EntryLint{
 		{Label: "DISK", Class: glue.LintFused, Keyspace: "default:logs", Lane: "native", Literal: "ERROR", Indexed: true},
 		{Label: "OOM", Class: glue.LintFused, Keyspace: "default:logs", Lane: "native", Literal: "ERROR", Indexed: true},
 		{Label: "SOLO", Class: glue.LintFused, Keyspace: "default:reqs", Lane: "native", Indexed: false},
 		{Label: "CTX", Class: glue.LintStandalone, Lane: "boxed", Reason: "window function (OVER ...) -- runs standalone"},
 	}
-	score := glue.CorpusScore{Total: 4, Fused: 3, Standalone: 1}
+	score := glue.MultiQueryScore{Total: 4, Fused: 3, Standalone: 1}
 
 	var out bytes.Buffer
-	(&cli{prog: "n1k1", out: &out, stderr: &out, style: cmd.Style{}}).renderCorpusExplainSQL(dets, report, score)
+	(&cli{prog: "n1k1", out: &out, stderr: &out, style: cmd.Style{}}).renderMultiQueryExplainSQL(dets, report, score)
 	s := out.String()
 
 	want := []string{

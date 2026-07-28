@@ -13,9 +13,9 @@
 
 package glue
 
-// corpus_recipe.go is PREPARE++ phase 7's TESTABLE detector recipe format
-// (DESIGN-prepare.md "AI-authored recipes need a test harness first" +
-// "Shaping SQL++ for fusion + authoring"). A recipe is a SINGLE file (best for git
+// multiquery_entry.go is PREPARE++ phase 7's TESTABLE entry format
+// (DESIGN-prepare.md "AI-authored entries need a test harness first" +
+// "Shaping SQL++ for fusion + authoring"). A entry is a SINGLE file (best for git
 // provenance) that carries three things at once:
 //
 //   1. FRONT-MATTER metadata as leading `-- key: value` SQL comments (so it parses
@@ -32,7 +32,7 @@ package glue
 //        -- @fixture   -> JSONL input rows for the query's `source` keyspace
 //        -- @expect    -> the golden findings, one {"label":...,"result":...} per line
 //
-// Example (round-trips through ParseRecipe / RewriteExpect):
+// Example (round-trips through ParseMultiQueryEntry / RewriteExpect):
 //
 //	-- label: ET-12345
 //	-- description: disk-full errors
@@ -54,7 +54,7 @@ package glue
 // Front-matter and both sections are OPTIONAL. A plain `.sql++` file with none of them
 // loads as a query whose Label is the filename stem and whose Stmt is the whole body.
 //
-// SCOPE (MVP, deferred -- noted here and honored by RunFixture / .rules test):
+// SCOPE (MVP, deferred -- noted here and honored by RunFixture / .multi test):
 //   - MULTI-KEYSPACE fixtures: a fixture feeds the query's single `source` keyspace
 //     only. A query that joins/correlates a second keyspace can't be fixtured yet.
 //   - SHA-keyed cache / re-run delta: unrelated build-economics concerns.
@@ -68,18 +68,18 @@ import (
 	"strings"
 )
 
-// Recipe is one parsed query recipe: the SQL++ statement plus its front-matter
-// metadata and (optional) golden fixture. Label + Stmt are all CorpusCompile / CorpusLint
-// need (see AsDetector); the rest drives routing (Source), reporting (Description, Tags,
+// MultiQueryEntry is one parsed query entry: the SQL++ statement plus its front-matter
+// metadata and (optional) golden fixture. Label + Stmt are all MultiQueryCompile / MultiQueryLint
+// need (see the entry projection); the rest drives routing (Source), reporting (Description, Tags,
 // Meta), and the golden-fixture test harness (Fixture / HasFixture / HasExpect).
-type Recipe struct {
+type MultiQueryEntry struct {
 	Label       string   // query id: the `label` front-matter, else the filename stem.
 	Stmt        string   // the SQL++ query statement (front-matter + fixture/expect stripped).
 	Source      string   // `source` front-matter: the LOGICAL keyspace this query targets.
 	Description string   // `description` front-matter: a free-form summary (advisory, reported).
 	Tags        []string // `tags` front-matter: freeform labels (a JSON array or comma-separated).
 	Gate        string   // `gate` front-matter: a cheap NECESSARY precondition (a boolean SQL++
-	// expression over the Source keyspace). A STANDALONE detector (window / GROUP BY / join --
+	// expression over the Source keyspace). A STANDALONE entry (window / GROUP BY / join --
 	// one that gets its own scan, not the fused shared scan) is SKIPPED when its Source has no
 	// row satisfying Gate, so an expensive sort/window never runs over a keyspace that cannot
 	// possibly match. The author asserts necessity (no finding is possible unless some row
@@ -89,70 +89,63 @@ type Recipe struct {
 	HasFixture bool    // the `-- @fixture` marker was present.
 	HasExpect  bool    // the `-- @expect` marker was present.
 
-	Path string            // the file this recipe was read from (provenance).
+	Path string            // the file this entry was read from (provenance).
 	Meta map[string]string // any front-matter key not promoted to a field above (raw string value).
 }
 
-// Fixture is a recipe's golden test data: JSONL input Rows fed into the detector's
-// `source` keyspace, and the Expect golden findings that running the detector over
+// Fixture is an entry's golden test data: JSONL input Rows fed into the entry's
+// `source` keyspace, and the Expect golden findings that running the entry over
 // those rows must reproduce (compared as a set -- see DiffFindings).
 type Fixture struct {
 	Rows   [][]byte  // input rows (one raw-JSON document per fixture line).
 	Expect []Finding // golden findings ({label, result}); empty when @expect is absent.
 }
 
-// AsDetector projects a Recipe onto the CorpusDetector{Label,Stmt} that CorpusCompile /
-// CorpusLint consume -- the bridge that lets the richer recipe format feed the existing
-// corpus machinery unchanged.
-func (r *Recipe) AsDetector() CorpusDetector {
-	return CorpusDetector{Label: r.Label, Stmt: r.Stmt, Source: r.Source, Gate: r.Gate}
-}
-
-// LoadCorpus reads every *.sql++ file in dir as one Recipe (see ParseRecipe for the
-// format), returned sorted by Path for deterministic output. An empty corpus (no
-// *.sql++ files) is an error -- a silent no-op corpus would falsely read as a clean
-// bundle. This is the single reusable loader shared by the CLI (.rules run/lint/test),
+// LoadMultiQueryEntries reads every *.sql++ file in dir as one MultiQueryEntry (see ParseMultiQueryEntry for the
+// format), returned sorted by Path for deterministic output. An empty pack (no
+// *.sql++ files) is an error -- a silent no-op pack would falsely read as a clean
+// bundle. This is the single reusable loader shared by the CLI (.multi run/lint/test),
 // the tests, and any future CI driver.
-func LoadCorpus(dir string) ([]Recipe, error) {
+func LoadMultiQueryEntries(dir string) ([]MultiQueryEntry, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.sql++"))
 	if err != nil {
-		return nil, fmt.Errorf("scanning corpus %q: %v", dir, err)
+		return nil, fmt.Errorf("scanning pack %q: %v", dir, err)
 	}
 	sort.Strings(paths)
-	var recipes []Recipe
+	var entries []MultiQueryEntry
 	for _, p := range paths {
 		body, rerr := os.ReadFile(p)
 		if rerr != nil {
 			return nil, fmt.Errorf("reading %q: %v", p, rerr)
 		}
-		r, perr := ParseRecipe(p, string(body))
+		r, perr := ParseMultiQueryEntry(p, string(body))
 		if perr != nil {
-			return nil, fmt.Errorf("parsing recipe %q: %v", p, perr)
+			return nil, fmt.Errorf("parsing entry %q: %v", p, perr)
 		}
-		recipes = append(recipes, r)
+		entries = append(entries, r)
 	}
-	if len(recipes) == 0 {
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("no *.sql++ queries in %q", dir)
 	}
-	return recipes, nil
+	return entries, nil
 }
 
-// LoadCorpusDirs loads several corpus dirs and concatenates their recipes, so multiple
-// query tiers (e.g. an index-free `detectors/` and a `detectors-indexing/`) compile into
+// LoadMultiQueryEntriesDirs loads several pack dirs and concatenates their entries, so multiple
+// query tiers (e.g. an index-free `entries/` and a `entries-indexing/`) compile into
 // ONE multi-query pack that fuses over a shared scan -- the point of "multi" (IDEA-0034).
-// Each dir must contain at least one *.sql++ (LoadCorpus fails loudly on an empty/typo'd
-// dir); a single dir behaves exactly like LoadCorpus.
-func LoadCorpusDirs(dirs []string) ([]Recipe, error) {
+// Each dir must contain at least one *.sql++ (LoadMultiQueryEntries fails loudly on an empty/typo'd
+// dir); a single dir behaves exactly like LoadMultiQueryEntries.
+func LoadMultiQueryEntriesDirs(dirs []string) ([]MultiQueryEntry, error) {
 	if len(dirs) == 0 {
 		return nil, fmt.Errorf("no query directory given")
 	}
-	var all []Recipe
+	var all []MultiQueryEntry
 	for _, dir := range dirs {
-		recipes, err := LoadCorpus(dir)
+		entries, err := LoadMultiQueryEntries(dir)
 		if err != nil {
 			return nil, err
 		}
-		all = append(all, recipes...)
+		all = append(all, entries...)
 	}
 	return all, nil
 }
@@ -163,12 +156,12 @@ const (
 	markerExpect  = "-- @expect"
 )
 
-// ParseRecipe parses one recipe file's text (see the file header for the format). path
+// ParseMultiQueryEntry parses one entry file's text (see the file header for the format). path
 // supplies the fallback Label (filename stem) and the recorded provenance. It never fails
 // on a plain `.sql++` (no front-matter / no fixture); a parse error is returned only for
 // a malformed @expect finding (bad JSON) so a broken golden is loud, not silently empty.
-func ParseRecipe(path, text string) (Recipe, error) {
-	r := Recipe{
+func ParseMultiQueryEntry(path, text string) (MultiQueryEntry, error) {
+	r := MultiQueryEntry{
 		Path:  path,
 		Label: strings.TrimSuffix(filepath.Base(path), ".sql++"),
 		Meta:  map[string]string{},
@@ -224,7 +217,7 @@ func ParseRecipe(path, text string) (Recipe, error) {
 	r.HasExpect = sawExpect
 
 	// Fixture rows: each data line is a JSON document written as an SQL comment
-	// (`-- {...}`), so the whole recipe file stays valid SQL++. uncommentFixtureJSON
+	// (`-- {...}`), so the whole entry file stays valid SQL++. uncommentFixtureJSON
 	// strips the comment prefix; blank lines and prose (non-JSON) comments are skipped.
 	for _, ln := range fixtureRaw {
 		if j, ok := uncommentFixtureJSON(ln); ok {
@@ -266,7 +259,7 @@ func uncommentFixtureJSON(ln string) (string, bool) {
 	return "", false
 }
 
-// findingJSON is the on-disk shape of an @expect / .rules run finding row.
+// findingJSON is the on-disk shape of an @expect / .multi run finding row.
 type findingJSON struct {
 	Label  string          `json:"label"`
 	Result json.RawMessage `json:"result"`
@@ -304,10 +297,10 @@ func isIdent(s string) bool {
 	return true
 }
 
-// applyFrontMatter promotes a recognized front-matter key to its Recipe field; any
+// applyFrontMatter promotes a recognized front-matter key to its MultiQueryEntry field; any
 // other key is stashed in Meta (reported, not interpreted). `label` becomes the Label;
 // `tags` accepts either a JSON array (["disk","io"]) or a comma-separated scalar.
-func (r *Recipe) applyFrontMatter(key, val string) {
+func (r *MultiQueryEntry) applyFrontMatter(key, val string) {
 	switch strings.ToLower(key) {
 	case "label":
 		if val != "" {
@@ -355,7 +348,7 @@ func parseListValue(val string) []string {
 	return out
 }
 
-// RewriteExpect returns raw (a recipe file's full text) with its `-- @expect` section
+// RewriteExpect returns raw (an entry file's full text) with its `-- @expect` section
 // replaced by the given findings, serialized one canonical {"label","result"} per line
 // (sorted for a stable, review-friendly diff). Everything before the expect block is
 // left BYTE-IDENTICAL. If the file has a `-- @fixture` but no `-- @expect`, the expect
@@ -386,7 +379,7 @@ func RewriteExpect(raw string, findings []Finding) string {
 
 // serializeFindings renders findings as one canonical {"label","result"} JSON object
 // per line, sorted by (label, result) so the recorded golden is deterministic (findings
-// order is not guaranteed at run time -- see CompiledCorpus.Run).
+// order is not guaranteed at run time -- see CompiledMultiQueryEntries.Run).
 func serializeFindings(findings []Finding) string {
 	sorted := make([]Finding, len(findings))
 	copy(sorted, findings)
@@ -395,7 +388,7 @@ func serializeFindings(findings []Finding) string {
 	var b strings.Builder
 	for _, f := range sorted {
 		label, _ := json.Marshal(f.Label)
-		b.WriteString(`-- {"label":`) // commented so the recipe file stays valid SQL++.
+		b.WriteString(`-- {"label":`) // commented so the entry file stays valid SQL++.
 		b.Write(label)
 		b.WriteString(`,"result":`)
 		b.WriteString(canonicalJSON(f.Result))
@@ -405,10 +398,10 @@ func serializeFindings(findings []Finding) string {
 }
 
 // DiffFindings compares expected vs actual findings as SORTED SETS (findings order is
-// not guaranteed -- see CompiledCorpus.Run), returning the missing (expected but not
+// not guaranteed -- see CompiledMultiQueryEntries.Run), returning the missing (expected but not
 // produced) and unexpected (produced but not expected) findings. Result is compared
 // canonically (JSON re-serialized with sorted keys), so object key order / whitespace
-// differences never cause a spurious diff. A recipe PASSES iff both slices are empty.
+// differences never cause a spurious diff. A entry PASSES iff both slices are empty.
 func DiffFindings(expected, actual []Finding) (missing, unexpected []Finding) {
 	exp := map[string]int{}
 	for _, f := range expected {

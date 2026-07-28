@@ -26,14 +26,14 @@ import (
 	"github.com/couchbase/query/value"
 )
 
-// writeRuleMatchesCorpus writes a small detector corpus (recipe .sql++ files) into
+// writeMultiMatchesEntries writes a small entry pack (entry .sql++ files) into
 // a FRESH temp dir (a sibling of the data dir, so it is never scanned as data) and
-// returns that dir. The detectors target the corpusTestSession logs/events
+// returns that dir. The entries target the corpusTestSession logs/events
 // keyspaces so they resolve against the current session's datastore at eval time.
-func writeRuleMatchesCorpus(t *testing.T) string {
+func writeMultiMatchesEntries(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	recipes := map[string]string{
+	entries := map[string]string{
 		"error.sql++": "-- label: T1_error\n" +
 			`SELECT * FROM logs l WHERE l.sev = "ERROR"`,
 		"rare.sql++": "-- label: T3_rare\n" +
@@ -41,7 +41,7 @@ func writeRuleMatchesCorpus(t *testing.T) string {
 		"login.sql++": "-- label: T5_login\n" +
 			`SELECT * FROM events e WHERE e.act = "login"`,
 	}
-	for name, body := range recipes {
+	for name, body := range entries {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -50,7 +50,7 @@ func writeRuleMatchesCorpus(t *testing.T) string {
 }
 
 // findingsFromRows turns `SELECT f.label, f.result` result rows into the Finding
-// set they represent (so it compares against CompiledCorpus.Run's findings).
+// set they represent (so it compares against CompiledMultiQueryEntries.Run's findings).
 func findingsFromRows(t *testing.T, rows []json.RawMessage) []Finding {
 	t.Helper()
 	var out []Finding
@@ -77,25 +77,25 @@ func findingSetKeys(t *testing.T, fs []Finding) []string {
 	return keys
 }
 
-// TestRuleMatchesFromSource is the headline: `SELECT f.label, f.result FROM
-// multi_matches('<corpus>') f` returns EXACTLY the same tagged matches as running
-// the corpus directly via CorpusCompile().Run() (compared as sorted sets).
-func TestRuleMatchesFromSource(t *testing.T) {
-	sess := corpusTestSession(t)
-	corpus := writeRuleMatchesCorpus(t)
+// TestMultiMatchesFromSource is the headline: `SELECT f.label, f.result FROM
+// multi_matches('<pack>') f` returns EXACTLY the same tagged matches as running
+// the pack directly via MultiQueryCompile().Run() (compared as sorted sets).
+func TestMultiMatchesFromSource(t *testing.T) {
+	sess := multiQueryTestSession(t)
+	dir := writeMultiMatchesEntries(t)
 
-	// Baseline: run the corpus directly.
-	recipes, err := LoadCorpus(corpus)
+	// Baseline: run the pack directly.
+	entries, err := LoadMultiQueryEntries(dir)
 	if err != nil {
-		t.Fatalf("LoadCorpus: %v", err)
+		t.Fatalf("LoadMultiQueryEntries: %v", err)
 	}
-	dets := make([]CorpusDetector, 0, len(recipes))
-	for i := range recipes {
-		dets = append(dets, recipes[i].AsDetector())
+	dets := make([]MultiQueryEntry, 0, len(entries))
+	for i := range entries {
+		dets = append(dets, entries[i])
 	}
-	cc, err := sess.CorpusCompile(dets)
+	cc, err := sess.MultiQueryCompile(dets)
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	baseline, err := cc.Run()
 	if err != nil {
@@ -105,8 +105,8 @@ func TestRuleMatchesFromSource(t *testing.T) {
 		t.Fatal("baseline produced no findings -- fixture invalid")
 	}
 
-	// Via the RULE_MATCHES FROM-source.
-	q := fmt.Sprintf("SELECT f.label, f.result FROM multi_matches(%q) AS f", corpus)
+	// Via the MULTI_MATCHES FROM-source.
+	q := fmt.Sprintf("SELECT f.label, f.result FROM multi_matches(%q) AS f", dir)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -127,11 +127,11 @@ func TestRuleMatchesFromSource(t *testing.T) {
 	// t.Logf("FROM multi_matches() matched %d findings", len(gotKeys))
 }
 
-// TestRuleMatchesMultipleDirs: multi_matches accepts several query dirs -- as an ARRAY
-// arg or a comma-list string -- and fuses their recipes into one shared-scan pack, so
-// tiers stay organized on disk yet run as one detector set (IDEA-0034). Both spellings
+// TestMultiMatchesMultipleDirs: multi_matches accepts several query dirs -- as an ARRAY
+// arg or a comma-list string -- and fuses their entries into one shared-scan pack, so
+// tiers stay organized on disk yet run as one entry set (IDEA-0034). Both spellings
 // must match exactly the same findings as running the tiers' union directly.
-func TestRuleMatchesMultipleDirs(t *testing.T) {
+func TestMultiMatchesMultipleDirs(t *testing.T) {
 	mkTier := func(name, body string) string {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, name+".sql++"), []byte(body), 0o644); err != nil {
@@ -144,17 +144,17 @@ func TestRuleMatchesMultipleDirs(t *testing.T) {
 
 	// Baseline: both tiers loaded together.
 	baseKeys := func() []string {
-		recipes, err := LoadCorpusDirs([]string{tierA, tierB})
+		entries, err := LoadMultiQueryEntriesDirs([]string{tierA, tierB})
 		if err != nil {
-			t.Fatalf("LoadCorpusDirs: %v", err)
+			t.Fatalf("LoadMultiQueryEntriesDirs: %v", err)
 		}
-		dets := make([]CorpusDetector, 0, len(recipes))
-		for i := range recipes {
-			dets = append(dets, recipes[i].AsDetector())
+		dets := make([]MultiQueryEntry, 0, len(entries))
+		for i := range entries {
+			dets = append(dets, entries[i])
 		}
-		cc, err := corpusTestSession(t).CorpusCompile(dets)
+		cc, err := multiQueryTestSession(t).MultiQueryCompile(dets)
 		if err != nil {
-			t.Fatalf("CorpusCompile: %v", err)
+			t.Fatalf("MultiQueryCompile: %v", err)
 		}
 		found, err := cc.Run()
 		if err != nil {
@@ -175,7 +175,7 @@ func TestRuleMatchesMultipleDirs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q := fmt.Sprintf("SELECT f.label, f.result FROM multi_matches(%s) AS f", tc.arg)
-			res, err := corpusTestSession(t).Run(q)
+			res, err := multiQueryTestSession(t).Run(q)
 			if err != nil {
 				t.Fatalf("Run %q: %v", q, err)
 			}
@@ -187,15 +187,15 @@ func TestRuleMatchesMultipleDirs(t *testing.T) {
 	}
 }
 
-// TestRuleMatchesStreamsViaStreamFnOp proves FROM multi_matches(...) converts to the
+// TestMultiMatchesStreamsViaStreamFnOp proves FROM multi_matches(...) converts to the
 // generic STREAMING stream-fn op (op_stream_fn.go), NOT the materializing expr-scan
 // -- so findings flow into the pipeline at bounded memory. It also checks LIMIT
 // composes over the streaming source.
-func TestRuleMatchesStreamsViaStreamFnOp(t *testing.T) {
-	sess := corpusTestSession(t)
-	corpus := writeRuleMatchesCorpus(t)
+func TestMultiMatchesStreamsViaStreamFnOp(t *testing.T) {
+	sess := multiQueryTestSession(t)
+	dir := writeMultiMatchesEntries(t)
 
-	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, corpus)
+	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, dir)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -209,7 +209,7 @@ func TestRuleMatchesStreamsViaStreamFnOp(t *testing.T) {
 	}
 
 	// LIMIT composes with the streaming source (yields exactly the limited rows).
-	q = fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f LIMIT 1`, corpus)
+	q = fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f LIMIT 1`, dir)
 	res, err = sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run LIMIT %q: %v", q, err)
@@ -219,14 +219,14 @@ func TestRuleMatchesStreamsViaStreamFnOp(t *testing.T) {
 	}
 }
 
-// TestRuleMatchesComposable: RULE_MATCHES composes with WHERE (filter) and GROUP BY
+// TestMultiMatchesComposable: MULTI_MATCHES composes with WHERE (filter) and GROUP BY
 // (aggregate) like any FROM source.
-func TestRuleMatchesComposable(t *testing.T) {
-	sess := corpusTestSession(t)
-	corpus := writeRuleMatchesCorpus(t)
+func TestMultiMatchesComposable(t *testing.T) {
+	sess := multiQueryTestSession(t)
+	dir := writeMultiMatchesEntries(t)
 
-	// WHERE filter on the label: only the login detector's matches survive.
-	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f WHERE f.label = "T5_login"`, corpus)
+	// WHERE filter on the label: only the login entry's matches survive.
+	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f WHERE f.label = "T5_login"`, dir)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -246,9 +246,9 @@ func TestRuleMatchesComposable(t *testing.T) {
 		}
 	}
 
-	// GROUP BY label with COUNT(*): one row per detector that produced matches.
+	// GROUP BY label with COUNT(*): one row per entry that produced matches.
 	q = fmt.Sprintf(`SELECT f.label, COUNT(*) AS hits FROM multi_matches(%q) AS f `+
-		`GROUP BY f.label ORDER BY f.label`, corpus)
+		`GROUP BY f.label ORDER BY f.label`, dir)
 	res, err = sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
@@ -277,20 +277,20 @@ func TestRuleMatchesComposable(t *testing.T) {
 	}
 }
 
-// TestRuleMatchesPrepareExecute: because FROM multi_matches(...) is a plain SELECT,
+// TestMultiMatchesPrepareExecute: because FROM multi_matches(...) is a plain SELECT,
 // it PREPAREs and EXECUTEs for free, returning the same rows.
-func TestRuleMatchesPrepareExecute(t *testing.T) {
-	sess := corpusTestSession(t)
-	corpus := writeRuleMatchesCorpus(t)
+func TestMultiMatchesPrepareExecute(t *testing.T) {
+	sess := multiQueryTestSession(t)
+	dir := writeMultiMatchesEntries(t)
 
-	direct := fmt.Sprintf(`SELECT f.label, f.result FROM multi_matches(%q) AS f`, corpus)
+	direct := fmt.Sprintf(`SELECT f.label, f.result FROM multi_matches(%q) AS f`, dir)
 	dres, err := sess.Run(direct)
 	if err != nil {
 		t.Fatalf("direct Run: %v", err)
 	}
 	wantKeys := findingSetKeys(t, findingsFromRows(t, dres.Rows))
 
-	prep := fmt.Sprintf(`PREPARE fp AS SELECT f.label, f.result FROM multi_matches(%q) AS f`, corpus)
+	prep := fmt.Sprintf(`PREPARE fp AS SELECT f.label, f.result FROM multi_matches(%q) AS f`, dir)
 	if _, err := sess.Run(prep); err != nil {
 		t.Fatalf("PREPARE: %v", err)
 	}
@@ -310,16 +310,16 @@ func TestRuleMatchesPrepareExecute(t *testing.T) {
 	}
 }
 
-// TestRuleMatchesBindOpt: the opts object's `bind` resolves a logical-keyspace
-// corpus against this data source via a manifest (OpenSessionBound). The detector
+// TestMultiMatchesBindOpt: the opts object's `bind` resolves a logical-keyspace
+// pack against this data source via a manifest (OpenSessionBound). The entry
 // says `FROM app_logs` (logical); the manifest maps app_logs -> the logs glob.
-func TestRuleMatchesBindOpt(t *testing.T) {
-	sess := corpusTestSession(t)
+func TestMultiMatchesBindOpt(t *testing.T) {
+	sess := multiQueryTestSession(t)
 	root := dataRootOfSession(t, sess)
 
-	// A corpus authored against a LOGICAL keyspace name.
-	corpus := t.TempDir()
-	if err := os.WriteFile(filepath.Join(corpus, "logical.sql++"),
+	// A pack authored against a LOGICAL keyspace name.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "logical.sql++"),
 		[]byte("-- label: B1_error\n"+`SELECT * FROM app_logs a WHERE a.sev = "ERROR"`),
 		0o644); err != nil {
 		t.Fatal(err)
@@ -333,48 +333,48 @@ func TestRuleMatchesBindOpt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q := fmt.Sprintf(`SELECT f.label, f.result FROM multi_matches(%q, {"bind": %q}) AS f`, corpus, manifest)
+	q := fmt.Sprintf(`SELECT f.label, f.result FROM multi_matches(%q, {"bind": %q}) AS f`, dir, manifest)
 	res, err := sess.Run(q)
 	if err != nil {
 		t.Fatalf("Run bound %q: %v", q, err)
 	}
 	got := findingsFromRows(t, res.Rows)
 	if len(got) != 2 { // 2 ERROR rows in the logs fixture
-		t.Fatalf("bound RULE_MATCHES: got %d matches, want 2 (rows=%v)", len(got), res.Rows)
+		t.Fatalf("bound MULTI_MATCHES: got %d matches, want 2 (rows=%v)", len(got), res.Rows)
 	}
 	for _, f := range got {
 		if f.Label != "B1_error" {
-			t.Fatalf("bound RULE_MATCHES: unexpected label %q", f.Label)
+			t.Fatalf("bound MULTI_MATCHES: unexpected label %q", f.Label)
 		}
 	}
 }
 
-// TestRuleMatchesEmptyCorpusErrors: an empty/missing corpus dir is a HARD error
+// TestMultiMatchesEmptyCorpusErrors: an empty/missing pack dir is a HARD error
 // (not a silent empty result), consistent with fail-loud.
-func TestRuleMatchesEmptyCorpusErrors(t *testing.T) {
-	sess := corpusTestSession(t)
+func TestMultiMatchesEmptyCorpusErrors(t *testing.T) {
+	sess := multiQueryTestSession(t)
 
 	// A dir with no *.sql++ files.
 	empty := t.TempDir()
 	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, empty)
 	if _, err := sess.Run(q); err == nil {
-		t.Fatal("empty corpus dir: expected an error, got nil")
+		t.Fatal("empty pack dir: expected an error, got nil")
 	}
 
 	// A missing dir.
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	q = fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, missing)
 	if _, err := sess.Run(q); err == nil {
-		t.Fatal("missing corpus dir: expected an error, got nil")
+		t.Fatal("missing pack dir: expected an error, got nil")
 	}
 }
 
-// TestRuleMatchesAllRejectedErrors is the IDEA-0017 gate: a corpus whose detectors
+// TestMultiMatchesAllRejectedErrors is the IDEA-0017 gate: a pack whose entries
 // ALL fail to compile (here: an unresolvable keyspace, the "logical name without a
-// bind" case) must ERROR loudly from RULE_MATCHES, not return a silent empty array
+// bind" case) must ERROR loudly from MULTI_MATCHES, not return a silent empty array
 // that reads as a clean bundle.
-func TestRuleMatchesAllRejectedErrors(t *testing.T) {
-	sess := corpusTestSession(t)
+func TestMultiMatchesAllRejectedErrors(t *testing.T) {
+	sess := multiQueryTestSession(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "bad.sql++"),
 		[]byte("-- label: T_BAD\nSELECT * FROM nosuch_ks x WHERE x.a = 1"), 0o644); err != nil {
@@ -383,7 +383,7 @@ func TestRuleMatchesAllRejectedErrors(t *testing.T) {
 	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, dir)
 	_, err := sess.Run(q)
 	if err == nil {
-		t.Fatal("all-rejected corpus: expected an error, got nil (the silent-empty bug)")
+		t.Fatal("all-rejected pack: expected an error, got nil (the silent-empty bug)")
 	}
 	msg := err.Error()
 	for _, want := range []string{"no query", "rejected", "bind"} {
@@ -393,10 +393,10 @@ func TestRuleMatchesAllRejectedErrors(t *testing.T) {
 	}
 }
 
-// TestRuleMatchesPartialRejectWarns: when only SOME detectors reject, RULE_MATCHES
+// TestMultiMatchesPartialRejectWarns: when only SOME entries reject, MULTI_MATCHES
 // still streams the runnable rest AND records a warning naming the skipped ones.
-func TestRuleMatchesPartialRejectWarns(t *testing.T) {
-	sess := corpusTestSession(t)
+func TestMultiMatchesPartialRejectWarns(t *testing.T) {
+	sess := multiQueryTestSession(t)
 	dir := t.TempDir()
 	write := func(name, body string) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
@@ -409,10 +409,10 @@ func TestRuleMatchesPartialRejectWarns(t *testing.T) {
 	q := fmt.Sprintf(`SELECT f.label FROM multi_matches(%q) AS f`, dir)
 	res, err := sess.Run(q)
 	if err != nil {
-		t.Fatalf("partial-reject corpus should still run the good detector: %v", err)
+		t.Fatalf("partial-reject pack should still run the good entry: %v", err)
 	}
 	if len(res.Rows) == 0 {
-		t.Fatal("expected findings from the runnable detector")
+		t.Fatal("expected findings from the runnable entry")
 	}
 	warned := false
 	for _, w := range res.Warnings {
@@ -421,12 +421,12 @@ func TestRuleMatchesPartialRejectWarns(t *testing.T) {
 		}
 	}
 	if !warned {
-		t.Errorf("expected a warning naming the skipped T_BAD detector; warnings=%v", res.Warnings)
+		t.Errorf("expected a warning naming the skipped T_BAD entry; warnings=%v", res.Warnings)
 	}
 }
 
 // dataRootOfSession recovers the on-disk root of a session's file datastore (the
-// same file:// URL trick ruleMatchesSession uses for the bind path).
+// same file:// URL trick multiMatchesSession uses for the bind path).
 func dataRootOfSession(t *testing.T, sess *Session) string {
 	t.Helper()
 	url := sess.Store.Datastore.URL()
@@ -437,14 +437,14 @@ func dataRootOfSession(t *testing.T, sess *Session) string {
 	return url[len(p):]
 }
 
-// --- RULE_MATCHES manifest binding + option parsing (multi_matches.go) ---
-// These pure/file-based helpers were the thinnest part of the TVF (loadRuleMatchesBinding
-// 32%, parseRuleMatchesOpts 43%): the happy paths run via the corpus tests above, but the
+// --- MULTI_MATCHES manifest binding + option parsing (multi_matches.go) ---
+// These pure/file-based helpers were the thinnest part of the TVF (loadMultiMatchesBinding
+// 32%, parseMultiMatchesOpts 43%): the happy paths run via the pack tests above, but the
 // manifest formats and the many rejection branches were unexercised. Test them directly.
 
-// TestLoadRuleMatchesBinding covers both manifest formats (JSON object and
+// TestLoadMultiMatchesBinding covers both manifest formats (JSON object and
 // `logical = glob` lines with comments/blanks) plus every error branch.
-func TestLoadRuleMatchesBinding(t *testing.T) {
+func TestLoadMultiMatchesBinding(t *testing.T) {
 	write := func(name, body string) string {
 		p := filepath.Join(t.TempDir(), name)
 		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
@@ -454,12 +454,12 @@ func TestLoadRuleMatchesBinding(t *testing.T) {
 	}
 
 	// JSON object form.
-	if b, err := loadRuleMatchesBinding(write("m.json", `{"logs":"logs/*.json","ev":"events/*"}`)); err != nil ||
+	if b, err := loadMultiMatchesBinding(write("m.json", `{"logs":"logs/*.json","ev":"events/*"}`)); err != nil ||
 		b["logs"] != "logs/*.json" || b["ev"] != "events/*" {
 		t.Fatalf("json manifest: b=%v err=%v", b, err)
 	}
 	// `logical = glob` line form, with a comment and a blank line and stray whitespace.
-	if b, err := loadRuleMatchesBinding(write("m.txt", "# manifest\n\nlogs = logs/*.json\n  ev =  events/*  \n")); err != nil ||
+	if b, err := loadMultiMatchesBinding(write("m.txt", "# manifest\n\nlogs = logs/*.json\n  ev =  events/*  \n")); err != nil ||
 		b["logs"] != "logs/*.json" || b["ev"] != "events/*" {
 		t.Fatalf("line manifest: b=%v err=%v", b, err)
 	}
@@ -479,17 +479,17 @@ func TestLoadRuleMatchesBinding(t *testing.T) {
 		if !c.missing {
 			path = write(c.name+".txt", c.body)
 		}
-		_, err := loadRuleMatchesBinding(path)
+		_, err := loadMultiMatchesBinding(path)
 		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 			t.Errorf("%s: err = %v, want containing %q", c.name, err, c.wantErr)
 		}
 	}
 }
 
-// TestParseRuleMatchesOpts covers the lenient arg-1 object reader: bind, non-object
+// TestParseMultiMatchesOpts covers the lenient arg-1 object reader: bind, non-object
 // input, a wrong-typed bind (ignored), and unknown keys (forward-compat).
-func TestParseRuleMatchesOpts(t *testing.T) {
-	o := parseRuleMatchesOpts(value.NewValue(map[string]interface{}{
+func TestParseMultiMatchesOpts(t *testing.T) {
+	o := parseMultiMatchesOpts(value.NewValue(map[string]interface{}{
 		"bind": "manifest.txt",
 	}))
 	if o.bind != "manifest.txt" {
@@ -497,21 +497,21 @@ func TestParseRuleMatchesOpts(t *testing.T) {
 	}
 
 	// Non-object / nil -> zero opts.
-	if got := parseRuleMatchesOpts(value.NewValue("a string")); got.bind != "" {
+	if got := parseMultiMatchesOpts(value.NewValue("a string")); got.bind != "" {
 		t.Errorf("non-object -> %+v, want zero", got)
 	}
-	if got := parseRuleMatchesOpts(nil); got.bind != "" {
+	if got := parseMultiMatchesOpts(nil); got.bind != "" {
 		t.Errorf("nil -> %+v, want zero", got)
 	}
 
 	// Wrong-typed bind is ignored.
-	o = parseRuleMatchesOpts(value.NewValue(map[string]interface{}{"bind": 123}))
+	o = parseMultiMatchesOpts(value.NewValue(map[string]interface{}{"bind": 123}))
 	if o.bind != "" {
 		t.Errorf("non-string bind should be ignored, got %q", o.bind)
 	}
 
 	// Unknown key ignored (forward-compatible opts).
-	if got := parseRuleMatchesOpts(value.NewValue(map[string]interface{}{"future": "x"})); got.bind != "" {
+	if got := parseMultiMatchesOpts(value.NewValue(map[string]interface{}{"future": "x"})); got.bind != "" {
 		t.Errorf("unknown key -> %+v, want zero", got)
 	}
 }
@@ -519,10 +519,10 @@ func TestParseRuleMatchesOpts(t *testing.T) {
 // TestRejectsMentionKeyspace / warnSink: the bind-hint heuristic and the no-op warn
 // callback when the eval context isn't a *GlueContext.
 func TestRejectsMentionKeyspaceAndWarnSink(t *testing.T) {
-	if !rejectsMentionKeyspace([]RejectedDetector{{Label: "d1", Reason: "no such KEYSPACE `logs`"}}) {
+	if !rejectsMentionKeyspace([]RejectedEntry{{Label: "d1", Reason: "no such KEYSPACE `logs`"}}) {
 		t.Error("a keyspace-resolution reason should trigger the bind hint")
 	}
-	if rejectsMentionKeyspace([]RejectedDetector{{Label: "d1", Reason: "syntax error near FROM"}}) {
+	if rejectsMentionKeyspace([]RejectedEntry{{Label: "d1", Reason: "syntax error near FROM"}}) {
 		t.Error("a non-keyspace reason should not trigger the hint")
 	}
 	if rejectsMentionKeyspace(nil) {

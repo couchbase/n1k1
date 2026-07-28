@@ -46,7 +46,7 @@ const (
 )
 
 // theManifest is the ONE bundle-independent manifest both bundles resolve through:
-// the stable logical vocabulary the detector corpus is authored against. Bare
+// the stable logical vocabulary the entry pack is authored against. Bare
 // (root-relative) `**` globs, so each bundle's differently-named files are matched.
 func theManifest() Binding {
 	return Binding{
@@ -55,10 +55,10 @@ func theManifest() Binding {
 	}
 }
 
-// theCorpus is the bundle-independent detector corpus. TWO detectors on the logical
+// theCorpus is the bundle-independent entry pack. TWO entries on the logical
 // keyspace `indexer_log` (must FUSE into one shared scan) plus one on `orders`.
-func theCorpus() []CorpusDetector {
-	return []CorpusDetector{
+func theMultiQueryEntries() []MultiQueryEntry {
+	return []MultiQueryEntry{
 		{Label: "idx_error", Stmt: `SELECT * FROM indexer_log l WHERE l.sev = "ERROR"`},
 		{Label: "idx_timeout", Stmt: `SELECT * FROM indexer_log l WHERE l.msg = "scan timeout"`},
 		{Label: "big_order", Stmt: `SELECT * FROM orders o WHERE o.total > 100`},
@@ -73,10 +73,10 @@ func findingTags(fs []Finding) map[string]int {
 	return m
 }
 
-// TestBindingTwoBundles is THE payoff: the SAME detector corpus + SAME manifest,
+// TestBindingTwoBundles is THE payoff: the SAME entry pack + SAME manifest,
 // run against TWO differently-named bundles, produces the expected findings from
-// each -- with NO detector edits, only a re-bind to the new bundle root. It also
-// asserts the two `FROM indexer_log` detectors FUSE into a single shared scan (the
+// each -- with NO entry edits, only a re-bind to the new bundle root. It also
+// asserts the two `FROM indexer_log` entries FUSE into a single shared scan (the
 // union-all has exactly TWO children -- one per logical keyspace -- not three).
 func TestBindingTwoBundles(t *testing.T) {
 	// Bundle A: files named indexer.jsonl / orders.jsonl, under subdirs.
@@ -101,19 +101,19 @@ func TestBindingTwoBundles(t *testing.T) {
 			}
 			defer sess.Close()
 
-			cc, err := sess.CorpusCompile(theCorpus())
+			cc, err := sess.MultiQueryCompile(theMultiQueryEntries())
 			if err != nil {
-				t.Fatalf("CorpusCompile: %v", err)
+				t.Fatalf("MultiQueryCompile: %v", err)
 			}
 			if len(cc.Rejected) != 0 {
-				t.Fatalf("unexpected rejected detectors: %+v", cc.Rejected)
+				t.Fatalf("unexpected rejected entries: %+v", cc.Rejected)
 			}
 			if len(cc.Standalone) != 0 {
-				t.Fatalf("unexpected standalone detectors: %+v", cc.Standalone)
+				t.Fatalf("unexpected standalone entries: %+v", cc.Standalone)
 			}
 
 			// FUSION: two logical keyspaces (indexer_log, orders) -> union-all of TWO
-			// broadcast-indexed fan-outs. If the two `FROM indexer_log` detectors had
+			// broadcast-indexed fan-outs. If the two `FROM indexer_log` entries had
 			// NOT fused (distinct QualifiedName each), there would be THREE children.
 			if cc.Plan == nil || cc.Plan.Kind != "union-all" || len(cc.Plan.Children) != 2 {
 				t.Fatalf("plan = %s; want union-all of 2 (indexer_log fused + orders)", dumpPlan(cc.Plan))
@@ -262,7 +262,7 @@ func TestBindingDelegationIntact(t *testing.T) {
 	}
 }
 
-// TestBindingSameLogicalFusesScanOnce is a focused fusion check: several detectors
+// TestBindingSameLogicalFusesScanOnce is a focused fusion check: several entries
 // all on ONE logical keyspace collapse to a single-keyspace broadcast with exactly
 // one shared scan (no union-all wrapper).
 func TestBindingSameLogicalFusesScanOnce(t *testing.T) {
@@ -275,20 +275,20 @@ func TestBindingSameLogicalFusesScanOnce(t *testing.T) {
 	}
 	defer sess.Close()
 
-	cc, err := sess.CorpusCompile([]CorpusDetector{
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{
 		{Label: "a", Stmt: `SELECT * FROM indexer_log l WHERE l.sev = "ERROR"`},
 		{Label: "b", Stmt: `SELECT * FROM indexer_log l WHERE l.msg = "scan timeout"`},
 		{Label: "c", Stmt: `SELECT * FROM indexer_log l`},
 	})
 	if err != nil {
-		t.Fatalf("CorpusCompile: %v", err)
+		t.Fatalf("MultiQueryCompile: %v", err)
 	}
 	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
 		t.Fatalf("unexpected non-fused: standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
 	}
 	// One logical keyspace -> a bare broadcast-indexed (no union-all), one shared scan.
 	if cc.Plan == nil || cc.Plan.Kind != "broadcast-indexed" {
-		t.Fatalf("plan = %s; want a single broadcast-indexed (all detectors share one scan)", dumpPlan(cc.Plan))
+		t.Fatalf("plan = %s; want a single broadcast-indexed (all entries share one scan)", dumpPlan(cc.Plan))
 	}
 	if n := countScans(cc.Plan); n != 1 {
 		t.Fatalf("shared plan has %d scans, want exactly 1", n)

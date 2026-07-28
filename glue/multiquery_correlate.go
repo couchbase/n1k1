@@ -13,17 +13,17 @@
 
 package glue
 
-// Correlation-detector recognition + grouping -- the FOUNDATION of Part B of the shared
+// Correlation-entry recognition + grouping -- the FOUNDATION of Part B of the shared
 // sorted-stream substrate (DESIGN-sorting.md, "correlation consumers on the shared
-// substrate"). A temporal cross-keyspace detector ("XYZ in log1, then ABC in log2") is a
-// correlated argmax subquery (the ASOF shape, MatchArgmaxAsof); K such detectors over the
+// substrate"). A temporal cross-keyspace entry ("XYZ in log1, then ABC in log2") is a
+// correlated argmax subquery (the ASOF shape, MatchArgmaxAsof); K such entries over the
 // SAME (left keyspace, right keyspace, time key, direction) all sort+scan those two
 // keyspaces separately today. This recognizer groups them by that signature so the
-// sharing opportunity is visible now and the corpus can, in a later slice, feed the group
+// sharing opportunity is visible now and the pack can, in a later slice, feed the group
 // from ONE shared sorted materialization of each keyspace (see the design note's Part B
-// execution sub-slices). This slice does NOT change execution -- correlation detectors
-// still run standalone; it surfaces the grouping (CompiledCorpus.CorrelationGroups + the
-// `.rules run` report).
+// execution sub-slices). This slice does NOT change execution -- correlation entries
+// still run standalone; it surfaces the grouping (CompiledMultiQueryEntries.CorrelationGroups + the
+// `.multi run` report).
 
 import (
 	"strings"
@@ -31,14 +31,14 @@ import (
 	"github.com/couchbase/query/algebra"
 )
 
-// analyzeCorrelationDetector recognizes a temporal-correlation detector (a projected
+// analyzeCorrelationDetector recognizes a temporal-correlation entry (a projected
 // correlated argmax subquery, the ASOF shape) purely from its parsed algebra -- no plan
 // or convert needed, and independent of whether it is ASOF-lowerable (that needs sorted-
 // source metadata). It returns the sharing SIGNATURE: the outer (left/probe) keyspace, the
-// subquery (right/build) keyspace, the correlation key field, and the direction. Detectors
+// subquery (right/build) keyspace, the correlation key field, and the direction. Entries
 // with the same signature scan+sort the same two keyspaces the same way, so they can share
-// that work. ok=false for a non-correlation detector.
-func (s *Session) analyzeCorrelationDetector(stmt string) (sig string, ok bool) {
+// that work. ok=false for a non-correlation entry.
+func (s *Session) analyzeCorrelationEntry(stmt string) (sig string, ok bool) {
 	parsed, err := ParseStatement(stmt, s.Namespace, true)
 	if err != nil {
 		return "", false
@@ -82,7 +82,7 @@ func (s *Session) analyzeCorrelationDetector(stmt string) (sig string, ok bool) 
 
 // fromKeyspaceName returns the qualified keyspace path of a single plain-keyspace FROM
 // term (the correlation grouping key), or ok=false for a join / derived-table / expression
-// source (not a plain-keyspace correlation). An unqualified keyspace (e.g. a recipe-framed
+// source (not a plain-keyspace correlation). An unqualified keyspace (e.g. an entry-framed
 // `FROM memcached r`) parses to an *algebra.ExpressionTerm that WRAPS a KeyspaceTerm
 // (isKeyspace), not a bare KeyspaceTerm -- so unwrap that too, else the correlation is
 // unrecognized and the shared-scan cache never fires (real bundles use unqualified names).

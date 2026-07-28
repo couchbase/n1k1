@@ -14,14 +14,14 @@
 package glue
 
 // Late binding via logical keyspaces (DESIGN-prepare.md phases 1-2, "Late binding:
-// a prepared corpus over a new, differently-named bundle"). A PREPARE++ detector
-// corpus is authored ONCE against a stable *logical* vocabulary (`indexer_log`,
+// a prepared pack over a new, differently-named bundle"). A PREPARE++ entry
+// pack is authored ONCE against a stable *logical* vocabulary (`indexer_log`,
 // `orders`), but every incoming support bundle lays its files out differently
 // (`indexer.log.3`, `indexer_2024.log`, `orders_2024Q4.json`). Rather than edit the
-// detectors per bundle, this is ordinary prepared-statement late binding applied to
-// FILES: a detector says `FROM <logical>`, and a per-bundle MANIFEST resolves the
+// entries per bundle, this is ordinary prepared-statement late binding applied to
+// FILES: an entry says `FROM <logical>`, and a per-bundle MANIFEST resolves the
 // LOGICAL name to a PHYSICAL glob pattern at bind time. Point the manifest at the
-// next bundle's root and re-resolve -- same corpus, new bundle, no detector edits.
+// next bundle's root and re-resolve -- same pack, new bundle, no entry edits.
 //
 // This is a NEAR-PARALLEL of glob.go's inline-glob wrapper (globDatastore /
 // globNamespace / newGlobKeyspace), with ONE added indirection: where glob.go treats
@@ -30,9 +30,9 @@ package glue
 // the very same newGlobKeyspace machinery (a metadata-only virtual keyspace whose
 // records-scan expands the pattern at scan time). The one twist: the bound keyspace's
 // IDENTITY (Name/Id/QualifiedName) is the LOGICAL name, NOT the glob pattern -- so
-// CorpusCompile, which groups detectors by keyspace.QualifiedName() to build one
-// shared fused scan per keyspace, FUSES two detectors that both say `FROM indexer_log`
-// into a single scan (see corpus.go). newBoundKeyspace achieves this by building the
+// MultiQueryCompile, which groups entries by keyspace.QualifiedName() to build one
+// shared fused scan per keyspace, FUSES two entries that both say `FROM indexer_log`
+// into a single scan (see multiquery.go). newBoundKeyspace achieves this by building the
 // virtual keyspace's path from the LOGICAL name while stashing the resolved glob in
 // the flatKeyspace's dir/glob fields (which drive RecordsGlob/RecordsDir at scan
 // time) -- no wrapper keyspace needed.
@@ -40,7 +40,7 @@ package glue
 // FAIL LOUDLY (the crucial safety property): a bound logical keyspace whose glob
 // matches ZERO files is a HARD ERROR at resolution/bind (surfaced as a plan error),
 // NOT an empty keyspace -- "resolves to nothing should error at EXECUTE, not quietly
-// yield an empty (falsely 'clean') findings table." A logical name a detector
+// yield an empty (falsely 'clean') findings table." A logical name an entry
 // references that is neither bound nor a real keyspace hits the normal "no keyspace"
 // error (already loud) -- the binding wrapper simply delegates it down and doesn't
 // swallow it.
@@ -58,12 +58,12 @@ package glue
 // DEFERRED (phase-2 "field drift" half, and the rest of the resolution ladder; noted,
 // not built here):
 //   - Field-shape ADAPTERS / normalization -- a bundle names a field `severity` where
-//     the detector reads `level`. MVP handles NAME/FILE drift (this binding) only.
+//     the entry reads `level`. MVP handles NAME/FILE drift (this binding) only.
 //   - CONVENTION (regex) and CONTENT-SNIFFING (schema / line-shape) resolution rungs
 //     -- glob is the one explicit rung of the ladder for now.
 //   - A bind-invariant COMPILED (go-build) artifact -- at the interpreter tier a
-//     "rebind" is just: point at a new bundle root + re-resolve + re-CorpusCompile
-//     (cheap). The manifest + detectors are the durable artifacts.
+//     "rebind" is just: point at a new bundle root + re-resolve + re-MultiQueryCompile
+//     (cheap). The manifest + entries are the durable artifacts.
 
 import (
 	"fmt"
@@ -78,17 +78,17 @@ import (
 )
 
 // Binding is a per-bundle manifest: a LOGICAL keyspace name (a plain identifier the
-// detector corpus references via `FROM <logical>`) mapped to a PHYSICAL glob pattern
+// entry pack references via `FROM <logical>`) mapped to a PHYSICAL glob pattern
 // (relative to the bundle root, using the same base-dir convention as an inline glob
 // -- see globAbsPattern: bare = root-relative, ./ or ../ = CWD, / = absolute). An
 // explicit single file path is a degenerate glob (no metacharacters), so it is
-// covered too. The binding is per-bundle (per Store/root); the detector corpus is
+// covered too. The binding is per-bundle (per Store/root); the entry pack is
 // bundle-INDEPENDENT.
 type Binding map[string]string
 
 // maybeBind wraps ds so a keyspace name present in the manifest resolves to a
 // union-of-matches keyspace whose IDENTITY is the logical name (so same-logical
-// detectors fuse in CorpusCompile) but whose data is the glob's matches. dataRoot
+// entries fuse in MultiQueryCompile) but whose data is the glob's matches. dataRoot
 // anchors bare (root-relative) patterns. A name NOT in the manifest delegates down
 // unchanged. Returns ds untouched when the manifest is empty (the plain,
 // binding-free path pays nothing).
@@ -195,8 +195,8 @@ func (p *bindingNamespace) KeyspaceIds() ([]string, errors.Error) { return p.Key
 // metadata-only virtual keyspace backed by the pattern's matches, PARALLEL to
 // newGlobKeyspace but with two differences: (1) the virtual keyspace's path is built
 // from the LOGICAL name, so Name()/Id()/QualifiedName() report the logical name
-// (giving same-logical detectors one shared QualifiedName -> one fused scan in
-// CorpusCompile), while the resolved absolute glob rides in the flatKeyspace's
+// (giving same-logical entries one shared QualifiedName -> one fused scan in
+// MultiQueryCompile), while the resolved absolute glob rides in the flatKeyspace's
 // dir/glob fields (which drive RecordsDir/RecordsGlob at scan time); and (2) it
 // FAILS LOUDLY -- a pattern that matches zero files is a hard error, not an empty
 // keyspace. The zero-match walk here is the bind-time resolution cost (a bound

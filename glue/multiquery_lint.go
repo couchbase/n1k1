@@ -13,22 +13,22 @@
 
 package glue
 
-// corpus_lint.go is the "report card" companion to corpus.go's CorpusCompile
-// (DESIGN-prepare.md phase 7, "Detector authoring & ops"). Where CorpusCompile
-// FUSES a corpus into one runnable plan, CorpusLint COMPILES each detector and
+// multiquery_lint.go is the "report card" companion to multiquery.go's MultiQueryCompile
+// (DESIGN-prepare.md phase 7, "Entry authoring & ops"). Where MultiQueryCompile
+// FUSES a pack into one runnable plan, MultiQueryLint COMPILES each entry and
 // SURFACES the signals n1k1 already computes -- fuse/standalone/reject, the eval
 // lane (native vs boxed, via ExprCoverage), and the predicate index verdict
 // (index-pruned by a necessary literal vs always-wake, via engine.PrefilterLiteral)
 // -- plus mechanical, deterministic authoring advice. The load-bearing point of the
-// design: "most of this is reporting what exists, not new machinery." So CorpusLint
-// reuses corpus.go's exact classifier (parse/plan/convert + recognizeCorpusDetector +
-// normalizeCorpusPred) so a detector's lint verdict matches how CorpusCompile would
+// design: "most of this is reporting what exists, not new machinery." So MultiQueryLint
+// reuses multiquery.go's exact classifier (parse/plan/convert + recognizeEntry +
+// normalizeCorpusPred) so an entry's lint verdict matches how MultiQueryCompile would
 // actually treat it.
 //
-// DEFERRED (noted, not built): CSE participation per detector (which shared terms it
-// contributes -- BroadcastCSE knows, but plumbing it per-detector is future work); a
+// DEFERRED (noted, not built): CSE participation per entry (which shared terms it
+// contributes -- BroadcastCSE knows, but plumbing it per-entry is future work); a
 // cost class / est. predicate-evals per row; and golden-fixture presence (phase 7's
-// recipe front-matter). The score line below covers % fused / native / index-pruned.
+// entry front-matter). The score line below covers % fused / native / index-pruned.
 
 import (
 	"fmt"
@@ -37,22 +37,22 @@ import (
 	"github.com/couchbase/n1k1/engine"
 )
 
-// Detector lint classes.
+// Entry lint classes.
 const (
 	LintFused      = "fused"      // the canonical single-source shape; folded into the shared-scan plan.
 	LintStandalone = "standalone" // valid but not fusable (join/group/window/subquery/index-scan); runs individually.
 	LintRejected   = "rejected"   // parse/plan/convert failed; surfaced, not run.
 )
 
-// DetectorLint is one detector's authoring report card: how CorpusCompile would
+// EntryLint is one entry's authoring report card: how MultiQueryCompile would
 // classify it, the keyspace it targets, whether its expressions evaluate on the
 // native byte lane or box to cbq, whether its predicate is index-pruned by a
 // necessary literal (or always-wakes), and mechanical advice for the author.
-type DetectorLint struct {
-	Label    string   // the detector id (its filename stem in the CLI).
+type EntryLint struct {
+	Label    string   // the entry id (its filename stem in the CLI).
 	Class    string   // LintFused | LintStandalone | LintRejected.
-	Reason   string   // why standalone / why rejected; "" for a clean fused detector.
-	Keyspace string   // the target keyspace (a fused detector's grouping key; a standalone's FROM); "" if none.
+	Reason   string   // why standalone / why rejected; "" for a clean fused entry.
+	Keyspace string   // the target keyspace (a fused entry's grouping key; a standalone's FROM); "" if none.
 	Lane     string   // "native" | "boxed" | "" (rejected/unconverted). "boxed" iff any expr falls back to cbq.
 	Native   int      // count of natively-evaluated project/filter expressions.
 	Boxed    int      // count of boxed (cbq value.Value) project/filter expressions.
@@ -61,26 +61,26 @@ type DetectorLint struct {
 	Advice   []string // mechanical, deterministic authoring advice (may be empty).
 }
 
-// CorpusScore is the corpus-level roll-up printed under a lint report: the fraction
-// of detectors that fuse, evaluate natively, and are index-pruned, plus the raw
-// counts behind each fraction. It is the guardrail that stops an AI-authored corpus
+// CorpusScore is the pack-level roll-up printed under a lint report: the fraction
+// of entries that fuse, evaluate natively, and are index-pruned, plus the raw
+// counts behind each fraction. It is the guardrail that stops an AI-authored pack
 // from silently bloating (all always-wake) or lying (rejected -> no findings).
-type CorpusScore struct {
-	Total         int // all detectors linted.
+type MultiQueryScore struct {
+	Total         int // all entries linted.
 	Fused         int // classified fused.
 	Standalone    int // classified standalone.
 	Rejected      int // classified rejected.
-	Native        int // converted detectors whose every expression stays native.
+	Native        int // converted entries whose every expression stays native.
 	Converted     int // fused + standalone (the denominator for Native).
-	IndexPruned   int // fused detectors with a necessary literal.
-	FusedForIndex int // fused detectors (the denominator for IndexPruned).
+	IndexPruned   int // fused entries with a necessary literal.
+	FusedForIndex int // fused entries (the denominator for IndexPruned).
 }
 
 // PctFused, PctNative, PctIndexPruned are the three headline percentages (0..100),
-// guarding against a zero denominator (an empty / all-rejected corpus reports 0).
-func (s CorpusScore) PctFused() int       { return pct(s.Fused, s.Total) }
-func (s CorpusScore) PctNative() int      { return pct(s.Native, s.Converted) }
-func (s CorpusScore) PctIndexPruned() int { return pct(s.IndexPruned, s.FusedForIndex) }
+// guarding against a zero denominator (an empty / all-rejected pack reports 0).
+func (s MultiQueryScore) PctFused() int       { return pct(s.Fused, s.Total) }
+func (s MultiQueryScore) PctNative() int      { return pct(s.Native, s.Converted) }
+func (s MultiQueryScore) PctIndexPruned() int { return pct(s.IndexPruned, s.FusedForIndex) }
 
 func pct(n, d int) int {
 	if d <= 0 {
@@ -89,20 +89,20 @@ func pct(n, d int) int {
 	return n * 100 / d
 }
 
-// CorpusLint compiles (does NOT run) each detector and returns its report card, in
-// the given order. It mirrors CorpusCompile's classifier exactly so the verdict is
-// faithful: a detector CorpusLint calls "fused" is one CorpusCompile would fuse. It
-// resolves keyspaces against this session's store (as CorpusCompile / Run do), so a
-// bound (late-binding) session lints the corpus the same way it would run it. A
-// per-detector failure never fails the call -- it becomes a LintRejected row; err is
+// MultiQueryLint compiles (does NOT run) each entry and returns its report card, in
+// the given order. It mirrors MultiQueryCompile's classifier exactly so the verdict is
+// faithful: an entry MultiQueryLint calls "fused" is one MultiQueryCompile would fuse. It
+// resolves keyspaces against this session's store (as MultiQueryCompile / Run do), so a
+// bound (late-binding) session lints the pack the same way it would run it. A
+// per-entry failure never fails the call -- it becomes a LintRejected row; err is
 // non-nil only for a setup-level problem (currently none, reserved).
-func (s *Session) CorpusLint(dets []CorpusDetector) ([]DetectorLint, CorpusScore, error) {
+func (s *Session) MultiQueryLint(dets []MultiQueryEntry) ([]EntryLint, MultiQueryScore, error) {
 	if s.Store != nil {
 		ensureDatastore(s.Store.Datastore)
 	}
 
-	out := make([]DetectorLint, 0, len(dets))
-	var score CorpusScore
+	out := make([]EntryLint, 0, len(dets))
+	var score MultiQueryScore
 	for _, d := range dets {
 		dl := s.lintOne(d)
 		out = append(out, dl)
@@ -132,14 +132,14 @@ func (s *Session) CorpusLint(dets []CorpusDetector) ([]DetectorLint, CorpusScore
 	return out, score, nil
 }
 
-// lintOne is the per-detector analysis: parse/plan/convert (a failure -> rejected),
-// then classify the converted shape exactly as analyzeCorpusDetector does, layering
+// lintOne is the per-entry analysis: parse/plan/convert (a failure -> rejected),
+// then classify the converted shape exactly as analyzeEntry does, layering
 // on the eval-lane (ExprCoverage) and predicate-index (engine.PrefilterLiteral)
 // signals plus mechanical advice.
-func (s *Session) lintOne(d CorpusDetector) DetectorLint {
-	dl := DetectorLint{Label: d.Label}
+func (s *Session) lintOne(d MultiQueryEntry) EntryLint {
+	dl := EntryLint{Label: d.Label}
 
-	conv, rejectReason := s.convertCorpusDetector(d.Stmt)
+	conv, rejectReason := s.convertEntry(d.Stmt)
 	if rejectReason != "" {
 		dl.Class = LintRejected
 		dl.Reason = rejectReason
@@ -148,7 +148,7 @@ func (s *Session) lintOne(d CorpusDetector) DetectorLint {
 	}
 	top := conv.TopOp
 
-	// The eval lane is a static ExprCoverage over the detector's OWN converted plan
+	// The eval lane is a static ExprCoverage over the entry's OWN converted plan
 	// (its project + filter expressions), uniform across fused and standalone.
 	dl.Native, dl.Boxed = ExprCoverage(top)
 	if dl.Boxed > 0 {
@@ -157,13 +157,13 @@ func (s *Session) lintOne(d CorpusDetector) DetectorLint {
 		dl.Lane = "native"
 	}
 
-	// Best-effort target keyspace (the FROM leaf). For a fused detector this is the
+	// Best-effort target keyspace (the FROM leaf). For a fused entry this is the
 	// shared-scan grouping key; for a standalone one it's informational.
 	if ks := branchScanKeyspace(top, conv.Temps); ks != nil {
 		dl.Keyspace = ks.QualifiedName()
 	}
 
-	scan, filter, ok := recognizeCorpusDetector(top)
+	scan, filter, ok := recognizeEntry(top)
 	if !ok || projectionHasSubquery(top) {
 		dl.Class = LintStandalone
 		dl.Reason = standaloneReason(top)
@@ -184,10 +184,10 @@ func (s *Session) lintOne(d CorpusDetector) DetectorLint {
 		return dl
 	}
 
-	// Fusable: normalize the predicate the same way CorpusCompile does, then ask the
+	// Fusable: normalize the predicate the same way MultiQueryCompile does, then ask the
 	// predicate index whether a necessary literal is extractable.
 	dl.Class = LintFused
-	pred := normalizeCorpusPred(filter, scan.Labels, alias, "."+LabelSuffix(alias))
+	pred := normalizeMultiQueryPred(filter, scan.Labels, alias, "."+LabelSuffix(alias))
 	if lit, has := engine.PrefilterLiteral(pred); has {
 		dl.Indexed = true
 		dl.Literal = lit
@@ -196,11 +196,11 @@ func (s *Session) lintOne(d CorpusDetector) DetectorLint {
 	return dl
 }
 
-// convertCorpusDetector is the parse/plan/convert prefix of analyzeCorpusDetector,
+// convertEntry is the parse/plan/convert prefix of analyzeEntry,
 // returning the converted top op (nil + a reason on any parse/plan/convert failure).
 // Kept separate so the lint can inspect the converted tree without re-deriving the
 // fused-scan bits.
-func (s *Session) convertCorpusDetector(stmt string) (conv *Conv, rejectReason string) {
+func (s *Session) convertEntry(stmt string) (conv *Conv, rejectReason string) {
 	parsed, err := ParseStatement(stmt, s.Namespace, true)
 	if err != nil {
 		return nil, "parse error: " + err.Error()
@@ -228,10 +228,10 @@ func (s *Session) convertCorpusDetector(stmt string) (conv *Conv, rejectReason s
 	return conv, ""
 }
 
-// standaloneReason describes WHY a converted-but-non-fusable detector runs standalone,
+// standaloneReason describes WHY a converted-but-non-fusable entry runs standalone,
 // by naming the first non-fusable feature in its op tree (a correlated subquery,
 // join, group, window, order/limit, distinct, or an index/FTS/keys scan leaf). It is
-// advisory -- CorpusCompile's authority is recognizeCorpusDetector; this just puts a
+// advisory -- MultiQueryCompile's authority is recognizeEntry; this just puts a
 // human-readable label on the miss.
 func standaloneReason(top *base.Op) string {
 	if projectionHasSubquery(top) {
@@ -277,9 +277,9 @@ func standaloneReason(top *base.Op) string {
 
 // adviceFor produces the mechanical, deterministic authoring nudges the report card
 // shows (DESIGN-prepare.md: "advice ... is mechanical"). A boxed predicate caps the
-// compile level and needs cbq; an always-wake fused detector wastes the predicate
-// index; a standalone detector doesn't share the fused scan.
-func adviceFor(dl DetectorLint) []string {
+// compile level and needs cbq; an always-wake fused entry wastes the predicate
+// index; a standalone entry doesn't share the fused scan.
+func adviceFor(dl EntryLint) []string {
 	var adv []string
 	if dl.Lane == "boxed" {
 		adv = append(adv, "predicate/projection boxes (needs cbq) -> caps compile level; prefer a native form "+

@@ -52,10 +52,10 @@ func init() {
 	}
 
 	// MULTI_MATCHES: a multi-query corpus as a composable, array-returning FROM source
-	// (rule_matches.go). Always-on (like the aggregates above), no grammar change --
-	// cbq resolves rule_matches(...) as a scalar function and VisitExpressionScan
-	// routes a FROM rule_matches(...) through the materializing expr-scan.
-	registerRuleMatchesFunc()
+	// (multi_matches.go). Always-on (like the aggregates above), no grammar change --
+	// cbq resolves multi_matches(...) as a scalar function and VisitExpressionScan
+	// routes a FROM multi_matches(...) through the materializing expr-scan.
+	registerMultiMatchesFunc()
 
 	// VECTORIZE_BATCH(batch, opts): batched text->vector embedding (DESIGN-vectors.md
 	// Phase 0). Always-on, no grammar change; offline/deterministic by default (only

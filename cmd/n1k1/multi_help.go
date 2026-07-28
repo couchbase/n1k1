@@ -15,21 +15,21 @@ package main
 
 import "fmt"
 
-// cmdRulesHelp prints the self-contained .multi guide to c.out: the subcommand +
-// flag one-liners, a sample collection directory layout, an annotated sample recipe (the
+// cmdMultiHelp prints the self-contained .multi guide to c.out: the subcommand +
+// flag one-liners, a sample collection directory layout, an annotated sample entry (the
 // real front-matter / SQL / @fixture / @expect format), TRUTHFUL example outputs (the
 // exact shapes .multi list/run/lint/test produce over the shipped testdata collection),
 // and authoring tips for getting the best out of a collection. It goes to stdout (not
 // stderr) so it can be piped/paged like any other document.
-func (c *cli) cmdRulesHelp() {
+func (c *cli) cmdMultiHelp() {
 	// Fprintf with "%s" (not Fprint) because the text embeds "%" tokens (e.g. LIKE
 	// '%panic%'), which vet's printf check would otherwise flag as format directives.
-	fmt.Fprintf(c.out, "%s", rulesHelpText)
+	fmt.Fprintf(c.out, "%s", multiHelpText)
 }
 
-// rulesHelpText avoids backticks so it can be one clean raw string literal; inline
+// multiHelpText avoids backticks so it can be one clean raw string literal; inline
 // code is shown quoted or as indented blocks.
-const rulesHelpText = `.multi -- run a multi-query pack of SQL++ queries over a dataset
+const multiHelpText = `.multi -- run a multi-query pack of SQL++ queries over a dataset
 
 "multi" is short for multi-query: a pack of related SELECTs run together with SHARED
 execution (multi-query optimization -- one scan feeds many queries: broadcast, predicate
@@ -77,7 +77,7 @@ QUERIES DIRECTORY LAYOUT
                            logs     = **/*.log
                            requests = http/*.json
 
-ANNOTATED RECIPE (my-queries/disk_full.sql++)
+ANNOTATED ENTRY (my-queries/disk_full.sql++)
 The front-matter of a *.sql++ file has leading '-- key: value' lines...
   -- label:       ET-12345          # label       -> the finding Label (else the filename stem)
   -- description: disk-full errors  # description -> a free-form summary, reported by list / lint
@@ -137,9 +137,9 @@ TIPS (get the best out of a collection)
   - Author against LOGICAL keyspaces + a --bind manifest, so ONE collection of *.sql++ queries can run
     across differently-named datasets (indexer.log vs indexer.0023.log) unchanged.
   - Data drift -- field-shape changes across source data releases are handled by evolving the
-    queries (or the *.extract.js recipes), not by writing per-version adapters.
+    queries (or the *.extract.js entries), not by writing per-version adapters.
   - RESERVED WORDS: field names that are SQL++ keywords must be BACKTICKED, or the query fails to
-    parse. The built-in log recipe emits "level" (reserved: ISOLATION LEVEL) -- write WHERE l.` + "`level`" + ` = "error".
+    parse. The built-in log entry emits "level" (reserved: ISOLATION LEVEL) -- write WHERE l.` + "`level`" + ` = "error".
     Common offenders: "level", "keys", and natural aliases like "prev" (... AS ` + "`prev`" + `).
 
 TEMPORAL (ASOF) -- nearest-preceding correlation across two log streams (correlate an
@@ -155,7 +155,7 @@ merge-join instead of an O(n^2) scan. To QUALIFY, the subquery must be:
   - optional CONTENT filter(s) on the inner stream referencing ONLY r (e.g.
     r.msg LIKE "%ABC%", r.state = "done") -- pushed onto the build scan so the merge finds
     the nearest matching row ("the last <ABC> before this error" / "the next <ABC> after");
-  - and BOTH keyspaces must expose SORTED-SOURCE metadata -- i.e. an extract recipe with
+  - and BOTH keyspaces must expose SORTED-SOURCE metadata -- i.e. an extract entry with
     a "time:" field (normalized to the int64 sort key) and an "order:" (.extract help).
 An outer WHERE on the driving stream is fine. If it does NOT lower, ".verbose on" prints
 "argmax subquery NOT lowered to ASOF ...: <the gate that stopped it>", e.g. an unproven
@@ -196,7 +196,7 @@ with "-meta on", or it is present for extracted docs).
 ("path" is a reserved word, hence backticked. A context query has an OVER clause, so it
 runs standalone -- its own scan, not fused; GATE it, below, so it only sorts keyspaces that
 can match.) For CHRONOLOGICAL context that spans rotated files, order instead by an
-extract-recipe "time:" key (.extract help) -- one sortable timeline across the whole keyspace.
+extract-entry "time:" key (.extract help) -- one sortable timeline across the whole keyspace.
 
 GATE (index-gate a standalone query) -- a fused filter+project query is pruned per
 row by the predicate index, but a STANDALONE query (window / GROUP BY / join -- anything

@@ -239,7 +239,7 @@ func (c *cli) dot(line string) bool {
 	case ".read":
 		c.readFile(arg)
 	case ".multi":
-		c.cmdRules(arg)
+		c.cmdMulti(arg)
 	case ".extensions", ".ext":
 		c.cmdExtensions(arg)
 	case ".extract":

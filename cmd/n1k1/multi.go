@@ -11,35 +11,35 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// cli .multi command family (PREPARE++ detector corpus: run + lint).
+// cli .multi command family (PREPARE++ entry pack: run + lint).
 //
-// .multi brings the corpus machinery (glue.CorpusCompile / glue.CorpusLint;
+// .multi brings the pack machinery (glue.MultiQueryCompile / glue.MultiQueryLint;
 // DESIGN-prepare.md phases 6-7) to the CLI so a tech-support team -- or an AI support
-// agent -- can run a corpus of SQL++ "detectors" over a support bundle (the open
-// datastore) and get findings, and lint the corpus for authoring feedback. It runs
+// agent -- can run a pack of SQL++ "entries" over a support bundle (the open
+// datastore) and get findings, and lint the pack for authoring feedback. It runs
 // interactively AND non-interactively (n1k1 <bundle> -c '.multi run --queries ./det'),
 // so CI / an agent drives it the same way.
 //
-// A CORPUS is a directory of *.sql++ RECIPE files (glue.LoadCorpus / glue.ParseRecipe).
-// A recipe is SQL++ plus optional `-- key: value` front-matter (label -> Label, source,
+// A PACK is a directory of *.sql++ ENTRY files (glue.LoadMultiQueryEntries / glue.ParseMultiQueryEntry).
+// A entry is SQL++ plus optional `-- key: value` front-matter (label -> Label, source,
 // description, tags) and an optional inline golden fixture (`-- @fixture` JSONL
 // input rows + `-- @expect` golden findings). A plain *.sql++ with none of these still
 // loads (Label = filename stem, Stmt = whole body) -- backward compatible.
 //
 // SUBCOMMANDS:
 //
-//	.multi run  --queries <dir> [--bind <manifest>]  -- compile the corpus over the
+//	.multi run  --queries <dir> [--bind <manifest>]  -- compile the pack over the
 //	    open bundle, print a fail-loud coverage/health summary to stderr, then render
 //	    the tagged findings to stdout in the current output mode.
 //	.multi lint --queries <dir> [--bind <manifest>]  -- the authoring report card:
-//	    per-detector class (fused/standalone/rejected), target keyspace, eval lane
+//	    per-entry class (fused/standalone/rejected), target keyspace, eval lane
 //	    (native/boxed), predicate-index verdict (literal vs always-wake) and advice,
-//	    plus a corpus score (% fused / native / index-pruned).
+//	    plus a pack score (% fused / native / index-pruned).
 //	.multi test [--queries <dir>] [--update]         -- the golden-fixture runner (CI):
-//	    for each recipe with a `-- @fixture`, build a temp keyspace from its input rows,
-//	    run JUST that detector, and (check mode) assert the produced findings equal the
-//	    recipe's `-- @expect` golden as a set -- or (--update) record the produced
-//	    findings back into the recipe's @expect block. Signals failure via c.failed so a
+//	    for each entry with a `-- @fixture`, build a temp keyspace from its input rows,
+//	    run JUST that entry, and (check mode) assert the produced findings equal the
+//	    entry's `-- @expect` golden as a set -- or (--update) record the produced
+//	    findings back into the entry's @expect block. Signals failure via c.failed so a
 //	    caller (make rules-test) exits non-zero on any FAIL. Hermetic: builds its own
 //	    temp datastores, so it needs no open bundle.
 //
@@ -47,7 +47,7 @@
 // per-finding STREAMING (findings are batch-rendered via the current output mode --
 // jsonlines still streams the row table; a per-finding OnRow hook is a nice-to-have);
 // the SHA-keyed build cache; the re-run delta report; and multi-keyspace / version-
-// specific fixtures (a fixture feeds the detector's single `source` keyspace).
+// specific fixtures (a fixture feeds the entry's single `source` keyspace).
 package main
 
 import (
@@ -62,45 +62,45 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// cmdRules dispatches the .multi command family (list | run | lint | explain | test | help).
-func (c *cli) cmdRules(arg string) {
+// cmdMulti dispatches the .multi command family (list | run | lint | explain | test | help).
+func (c *cli) cmdMulti(arg string) {
 	sub, rest := splitFirst(arg)
 	switch strings.ToLower(sub) {
 	case "list", "ls":
-		c.cmdRulesList(rest)
+		c.cmdMultiList(rest)
 	case "run":
-		c.cmdRulesRun(rest)
+		c.cmdMultiRun(rest)
 	case "lint":
-		c.cmdRulesLint(rest)
+		c.cmdMultiLint(rest)
 	case "explain":
-		c.cmdRulesExplain(rest)
+		c.cmdMultiExplain(rest)
 	case "test":
-		c.cmdRulesTest(rest)
+		c.cmdMultiTest(rest)
 	case "", "help":
-		c.cmdRulesHelp()
+		c.cmdMultiHelp()
 	default:
 		fmt.Fprintf(c.stderr, "unknown subcommand %q; try .multi help\n", sub)
 	}
 }
 
-// rulesArgs is the parsed flag set shared by run + lint + test: the queries dirs (each
+// multiArgs is the parsed flag set shared by run + lint + test: the queries dirs (each
 // a directory of *.sql++ files), an optional bind manifest path (run/lint), and the
 // --update boolean (test).
-type rulesArgs struct {
+type multiArgs struct {
 	queries []string
 	bind    string
-	update  bool // .multi test: record produced findings back into each recipe's @expect
+	update  bool // .multi test: record produced findings back into each entry's @expect
 	sql     bool // .multi explain: render the pretty SQL++ + provenance view instead of the op tree
 }
 
-// parseRulesArgs parses `--queries <dir>... [--bind <file>] [--update]` (also accepting
+// parseMultiArgs parses `--queries <dir>... [--bind <file>] [--update]` (also accepting
 // the bare/`=` forms `-queries=x`). --queries is REPEATABLE and accepts a comma-separated
 // list, so several query tiers (`--queries a --queries b`, or `--queries a,b`) compile
 // into one shared-scan multi-query pack (IDEA-0034). Unknown tokens are an error so a typo
 // fails loudly rather than being silently ignored. --queries is required (validated by the
 // caller for run/lint; test errors on its absence too).
-func parseRulesArgs(arg string) (rulesArgs, error) {
-	var a rulesArgs
+func parseMultiArgs(arg string) (multiArgs, error) {
+	var a multiArgs
 	toks := strings.Fields(arg)
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
@@ -147,29 +147,12 @@ func parseRulesArgs(arg string) (rulesArgs, error) {
 	return a, nil
 }
 
-// loadRecipes loads one or more corpus dirs as parsed recipes (front-matter + fixtures),
-// the reusable glue loader. loadCorpus below projects these onto the Label+Stmt detectors
-// run/lint consume; .multi test needs the full recipe (source, fixture, expect). Multiple
-// dirs concatenate into one pack (IDEA-0034).
-func loadRecipes(dirs []string) ([]glue.Recipe, error) {
-	return glue.LoadCorpusDirs(dirs)
-}
-
-// loadCorpus reads corpus dirs as the Label+Stmt detectors run/lint consume: it loads
-// the recipes (front-matter + fixtures stripped from the SQL body) via loadRecipes and
-// projects each onto its CorpusDetector. Returned sorted by path for deterministic
-// output. An empty corpus (no *.sql++ files) is an error -- a silent no-op corpus would
-// falsely read as a clean bundle.
-func loadCorpus(dirs []string) ([]glue.CorpusDetector, error) {
-	recipes, err := loadRecipes(dirs)
-	if err != nil {
-		return nil, err
-	}
-	dets := make([]glue.CorpusDetector, 0, len(recipes))
-	for i := range recipes {
-		dets = append(dets, recipes[i].AsDetector())
-	}
-	return dets, nil
+// loadMultiQueryEntries loads one or more pack dirs as parsed entries (front-matter +
+// fixtures), the reusable glue loader. The full entry is what compile / lint / .multi test
+// all consume (Label+Stmt for run/lint; source+fixture+expect for test). Multiple dirs
+// concatenate into one pack (IDEA-0034).
+func loadMultiQueryEntries(dirs []string) ([]glue.MultiQueryEntry, error) {
+	return glue.LoadMultiQueryEntriesDirs(dirs)
 }
 
 // loadBinding reads a per-bundle manifest into a glue.Binding. Two minimal formats:
@@ -216,7 +199,7 @@ func loadBinding(path string) (glue.Binding, error) {
 // rulesSession opens a fresh session over the open bundle (c.dir), bound with the
 // manifest when --bind was given. It is separate from c.sess so .multi never
 // disturbs the interactive session's state.
-func (c *cli) rulesSession(bind string) (*glue.Session, glue.Binding, error) {
+func (c *cli) multiSession(bind string) (*glue.Session, glue.Binding, error) {
 	if c.dir == "" {
 		return nil, nil, fmt.Errorf("no bundle open -- open a datastore directory first (.open <dir>)")
 	}
@@ -231,38 +214,38 @@ func (c *cli) rulesSession(bind string) (*glue.Session, glue.Binding, error) {
 	return sess, b, nil
 }
 
-// cmdRulesList implements `.multi list`: a metadata-only inventory of the corpus --
-// one row per recipe (label / source / description / tags / fixture? / golden? / path),
+// cmdMultiList implements `.multi list`: a metadata-only inventory of the pack --
+// one row per entry (label / source / description / tags / fixture? / golden? / path),
 // rendered in the current output mode (box at a TTY, jsonlines when piped). It is the
-// fast "what's in my corpus" landing page: it only reads recipe front-matter (pure
-// glue.LoadCorpus), so it needs NO open bundle and does NOT compile -- distinct from
+// fast "what's in my pack" landing page: it only reads entry front-matter (pure
+// glue.LoadMultiQueryEntries), so it needs NO open bundle and does NOT compile -- distinct from
 // `lint`, which compiles for a health report card.
-func (c *cli) cmdRulesList(arg string) {
-	args, err := parseRulesArgs(arg)
+func (c *cli) cmdMultiList(arg string) {
+	args, err := parseMultiArgs(arg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi list: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	recipes, err := loadRecipes(args.queries)
+	entries, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi list: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	// LoadCorpus returns recipes sorted by path (deterministic); sort by label with path
+	// LoadMultiQueryEntries returns entries sorted by path (deterministic); sort by label with path
 	// as the tiebreak so the inventory reads in label order regardless of file naming.
-	sort.SliceStable(recipes, func(i, j int) bool {
-		if recipes[i].Label != recipes[j].Label {
-			return recipes[i].Label < recipes[j].Label
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Label != entries[j].Label {
+			return entries[i].Label < entries[j].Label
 		}
-		return recipes[i].Path < recipes[j].Path
+		return entries[i].Path < entries[j].Path
 	})
 
-	rows := make([]json.RawMessage, 0, len(recipes))
+	rows := make([]json.RawMessage, 0, len(entries))
 	fixtures, goldens := 0, 0
-	for i := range recipes {
-		r := recipes[i]
+	for i := range entries {
+		r := entries[i]
 		if r.HasFixture {
 			fixtures++
 		}
@@ -281,7 +264,7 @@ func (c *cli) cmdRulesList(arg string) {
 	}
 	c.renderRows(rows, "", false)
 	fmt.Fprintf(c.stderr, "%s%d query/queries in %s -- %d with a fixture, %d with a golden (run .multi lint for a health report)\n",
-		c.icon("📋 "), len(recipes), strings.Join(args.queries, ", "), fixtures, goldens)
+		c.icon("📋 "), len(entries), strings.Join(args.queries, ", "), fixtures, goldens)
 }
 
 // yesNo renders a boolean flag column as "yes"/"no" (kept short so the box stays tight).
@@ -292,23 +275,23 @@ func yesNo(b bool) string {
 	return "no"
 }
 
-// cmdRulesRun implements `.multi run`: compile the corpus over the open bundle,
+// cmdMultiRun implements `.multi run`: compile the pack over the open bundle,
 // print a fail-loud coverage/health summary to stderr, then render the tagged
 // findings to stdout in the current output mode.
-func (c *cli) cmdRulesRun(arg string) {
-	args, err := parseRulesArgs(arg)
+func (c *cli) cmdMultiRun(arg string) {
+	args, err := parseMultiArgs(arg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	dets, err := loadCorpus(args.queries)
+	dets, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	sess, binding, err := c.rulesSession(args.bind)
+	sess, binding, err := c.multiSession(args.bind)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)
 		c.failed = true
@@ -324,13 +307,13 @@ func (c *cli) cmdRulesRun(arg string) {
 		return
 	}
 
-	cc, err := sess.CorpusCompile(dets)
+	cc, err := sess.MultiQueryCompile(dets)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run: compile: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	c.reportCorpusHealth(cc, len(dets))
+	c.reportMultiQueryHealth(cc, len(dets))
 
 	findings, report, err := cc.RunReport()
 	if err != nil {
@@ -353,7 +336,7 @@ func (c *cli) cmdRulesRun(arg string) {
 	c.renderRows(rows, "", false)
 	fmt.Fprintf(c.stderr, "%s%d finding(s) from %d query/queries\n", c.icon("🔎 "), len(findings), len(dets))
 	if n := len(cc.GatedSkipped); n > 0 {
-		// A gated skip means the detector's `gate:` precondition matched no row in its
+		// A gated skip means the entry's `gate:` precondition matched no row in its
 		// keyspace, so its (expensive, standalone) sort/window was not run. Surfaced so
 		// the skip is visible -- a mis-declared gate reads as "0 findings", not silence.
 		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(fmt.Sprintf(
@@ -361,8 +344,8 @@ func (c *cli) cmdRulesRun(arg string) {
 			n, strings.Join(cc.GatedSkipped, ", "))))
 	}
 	if shareable, nDets := correlationShareable(cc.CorrelationGroups); shareable > 0 {
-		// A group of >1 correlation detector over the same (left,right,key) shares ONE
-		// sorted scan+decode of each keyspace via the corpus scan cache (Part B).
+		// A group of >1 correlation entry over the same (left,right,key) shares ONE
+		// sorted scan+decode of each keyspace via the pack scan cache (Part B).
 		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(fmt.Sprintf(
 			"correlation: %d query/queries in %d shareable group(s) -- sharing a sorted scan per keyspace",
 			nDets, shareable)))
@@ -370,7 +353,7 @@ func (c *cli) cmdRulesRun(arg string) {
 	if line := mergeStatsLine(cc.MergeStats); line != "" {
 		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(line))
 	}
-	c.reportDetectorHits(dets, findings, cc, report)
+	c.reportEntryHits(dets, findings, cc, report)
 }
 
 // mergeStatsLine summarizes the run's sorted-merge behavior for the user (memory-relevant:
@@ -401,27 +384,27 @@ func mergeStatsLine(m *base.MergeStats) string {
 	return b.String()
 }
 
-// reportDetectorHits prints the per-detector hit stats (IDEA-0015): for each detector,
-// how many findings it matched and -- for a fused detector -- how many rows its
-// keyspace scanned. The point is a debuggable 0-findings run: a detector that matched
+// reportDetectorHits prints the per-entry hit stats (IDEA-0015): for each entry,
+// how many findings it matched and -- for a fused entry -- how many rows its
+// keyspace scanned. The point is a debuggable 0-findings run: an entry that matched
 // 0 gets an annotation distinguishing "the keyspace scanned ~0 rows" (a whole-file
 // blob / empty scan -- the real cause is upstream framing) from "the predicate matched
 // none of N scanned rows" (a predicate bug). Goes to stderr so it never pollutes the
 // findings on stdout.
-// correlationShareable counts, over the correlation groups, the groups with >1 detector
-// (the ones that could share a scan) and the total detectors in those groups.
-func correlationShareable(groups map[string][]string) (shareableGroups, detectors int) {
+// correlationShareable counts, over the correlation groups, the groups with >1 entry
+// (the ones that could share a scan) and the total entries in those groups.
+func correlationShareable(groups map[string][]string) (shareableGroups, entries int) {
 	for _, tags := range groups {
 		if len(tags) > 1 {
 			shareableGroups++
-			detectors += len(tags)
+			entries += len(tags)
 		}
 	}
-	return shareableGroups, detectors
+	return shareableGroups, entries
 }
 
-func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Finding,
-	cc *glue.CompiledCorpus, report *glue.CorpusRunReport) {
+func (c *cli) reportEntryHits(dets []glue.MultiQueryEntry, findings []glue.Finding,
+	cc *glue.CompiledMultiQueryEntries, report *glue.MultiQueryRunReport) {
 	if len(dets) == 0 {
 		return
 	}
@@ -431,12 +414,12 @@ func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Fin
 	}
 	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-query hits (scanned = keyspace rows; woken = rows that woke it; matched = findings):"))
 	for _, d := range dets {
-		ks, fused := cc.DetKeyspace[d.Label]
+		ks, fused := cc.EntryKeyspace[d.Label]
 		m := matched[d.Label]
 		var line string
 		if fused {
 			scanned := report.ScannedByKeyspace[ks]
-			woken := report.WokenByDetector[d.Label]
+			woken := report.WokenByEntry[d.Label]
 			line = fmt.Sprintf("%-24s matched=%-5d woken=%-7d %s scanned=%d", d.Label, m, woken, ks, scanned)
 			if m == 0 {
 				line += "   " + zeroMatchHint(scanned, woken)
@@ -449,7 +432,7 @@ func (c *cli) reportDetectorHits(dets []glue.CorpusDetector, findings []glue.Fin
 	}
 }
 
-// zeroMatchHint explains a 0-findings fused detector from its keyspace's scanned-row
+// zeroMatchHint explains a 0-findings fused entry from its keyspace's scanned-row
 // count and how many rows woke it: ~0 scanned means the data never reached the
 // predicate (an empty scan, or a whole-file blob that isn't framed -- see .tables);
 // 0 woken over a scanned keyspace means the predicate-index literal never appears (a
@@ -471,7 +454,7 @@ func zeroMatchHint(scanned, woken int64) string {
 // reportBindingCoverage probes each manifest logical keyspace against the bundle and
 // reports resolved-vs-errored to stderr (the fail-loud coverage block). Returns true
 // if ANY logical keyspace failed to resolve (a gap). A nil/empty binding is a no-op
-// (returns false) -- an unbound corpus references real keyspace names directly.
+// (returns false) -- an unbound pack references real keyspace names directly.
 func (c *cli) reportBindingCoverage(sess *glue.Session, binding glue.Binding) bool {
 	if len(binding) == 0 {
 		return false
@@ -493,7 +476,7 @@ func (c *cli) reportBindingCoverage(sess *glue.Session, binding glue.Binding) bo
 		if _, err := ns.KeyspaceByName(n); err != nil {
 			fmt.Fprintf(c.stderr, "  %s %s = %q -> %s\n", c.icon("✗"), n, binding[n],
 				c.style.Red("UNRESOLVED: "+tidyMsg(err.Error())))
-			fmt.Fprintf(c.stderr, "      %s\n", rulesFix(fixUnresolved, n))
+			fmt.Fprintf(c.stderr, "      %s\n", multiFix(fixUnresolved, n))
 			gap = true
 		} else {
 			fmt.Fprintf(c.stderr, "  %s %s = %q -> resolved\n", c.icon("✓"), n, binding[n])
@@ -503,54 +486,54 @@ func (c *cli) reportBindingCoverage(sess *glue.Session, binding glue.Binding) bo
 }
 
 // reportCorpusHealth prints the coverage/health summary to stderr: fused / standalone
-// / rejected counts, and each rejected detector's label + reason (surfaced, never
-// silently dropped). total is the number of detectors loaded.
-func (c *cli) reportCorpusHealth(cc *glue.CompiledCorpus, total int) {
+// / rejected counts, and each rejected entry's label + reason (surfaced, never
+// silently dropped). total is the number of entries loaded.
+func (c *cli) reportMultiQueryHealth(cc *glue.CompiledMultiQueryEntries, total int) {
 	fused := total - len(cc.Standalone) - len(cc.Rejected)
 	fmt.Fprintf(c.stderr, "%sloaded: %d query/queries -- %d fused, %d standalone, %d rejected\n",
 		c.icon("📋 "), total, fused, len(cc.Standalone), len(cc.Rejected))
-	// A rejected detector never runs, so it can never fire: surface it with the reason
-	// AND the fix snippet (what a runnable detector looks like), never silently drop it.
+	// A rejected entry never runs, so it can never fire: surface it with the reason
+	// AND the fix snippet (what a runnable entry looks like), never silently drop it.
 	for _, r := range cc.Rejected {
 		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), r.Label, c.style.Yellow(r.Reason))
-		fmt.Fprintf(c.stderr, "      %s\n", rulesFix(fixRejected, r.Reason))
+		fmt.Fprintf(c.stderr, "      %s\n", multiFix(fixRejected, r.Reason))
 	}
-	// A standalone detector still runs (its own scan), just not fused into the shared
+	// A standalone entry still runs (its own scan), just not fused into the shared
 	// scan -- name each so the author knows it opted out of fusion, with the why/how.
 	for _, d := range cc.Standalone {
-		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("• "), d.Label, rulesFix(fixStandalone, ""))
+		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("• "), d.Label, multiFix(fixStandalone, ""))
 	}
 }
 
-// cmdRulesLint implements `.multi lint`: the authoring report card. It compiles
-// (does not run) each detector via glue.CorpusLint and renders a per-detector table
-// in the current output mode (box at a TTY, jsonlines when piped), then a corpus
+// cmdMultiLint implements `.multi lint`: the authoring report card. It compiles
+// (does not run) each entry via glue.MultiQueryLint and renders a per-entry table
+// in the current output mode (box at a TTY, jsonlines when piped), then a pack
 // score line to stderr.
-func (c *cli) cmdRulesLint(arg string) {
-	args, err := parseRulesArgs(arg)
+func (c *cli) cmdMultiLint(arg string) {
+	args, err := parseMultiArgs(arg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi lint: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	dets, err := loadCorpus(args.queries)
+	dets, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi lint: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	sess, binding, err := c.rulesSession(args.bind)
+	sess, binding, err := c.multiSession(args.bind)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi lint: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	// Lint compiles (plans) each detector, which resolves keyspaces -- so report the
+	// Lint compiles (plans) each entry, which resolves keyspaces -- so report the
 	// same fail-loud binding coverage, but here it is advisory (lint still reports the
 	// report card, where an unresolved keyspace shows up as a rejected row).
 	c.reportBindingCoverage(sess, binding)
 
-	report, score, err := sess.CorpusLint(dets)
+	report, score, err := sess.MultiQueryLint(dets)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi lint: %v\n", c.prog, err)
 		c.failed = true
@@ -563,7 +546,7 @@ func (c *cli) cmdRulesLint(arg string) {
 		if d.Indexed {
 			index = fmt.Sprintf("literal %q", d.Literal)
 		} else if d.Class != glue.LintFused {
-			index = "-" // only a fused detector uses the predicate index
+			index = "-" // only a fused entry uses the predicate index
 		}
 		rows = append(rows, orderedJSONRow(
 			[2]interface{}{"query", d.Label},
@@ -577,7 +560,7 @@ func (c *cli) cmdRulesLint(arg string) {
 	}
 	c.renderRows(rows, "", false)
 
-	// The corpus score line -- the guardrail against an AI-authored corpus silently
+	// The pack score line -- the guardrail against an AI-authored pack silently
 	// bloating (all always-wake) or lying (rejected -> no findings).
 	fmt.Fprintf(c.stderr,
 		"%sscore: %d%% fused (%d/%d), %d%% native (%d/%d converted), %d%% index-pruned (%d/%d fused)  [%d standalone, %d rejected]\n",
@@ -588,10 +571,10 @@ func (c *cli) cmdRulesLint(arg string) {
 		score.Standalone, score.Rejected)
 }
 
-// cmdRulesExplain implements `.multi explain`: it surfaces the fused MQO / shared-scan
+// cmdMultiExplain implements `.multi explain`: it surfaces the fused MQO / shared-scan
 // PLAN that a `MULTI_MATCHES()` query otherwise hides behind one opaque `stream-fn` node
 // (IDEA-0036 -- the machinery `.multi` advertises was invisible in `.explain`). It
-// compiles (does NOT run) the corpus and prints three things:
+// compiles (does NOT run) the pack and prints three things:
 //
 //   - the fused op tree: the union-all(broadcast-indexed(cse(scan))) shape, ONE shared
 //     scan per keyspace, with per-expression native/boxed verdicts (via FormatConvPlan);
@@ -601,62 +584,62 @@ func (c *cli) cmdRulesLint(arg string) {
 //
 // It is the observability companion to `.multi lint` (which gives the scores): here you
 // see the actual plan, so you can confirm CSE + the shared scan + which literal the index
-// picked. The per-query facts come from CorpusLint, whose classifier mirrors CorpusCompile
+// picked. The per-query facts come from MultiQueryLint, whose classifier mirrors MultiQueryCompile
 // exactly, so the fusion map is faithful to the tree above.
-func (c *cli) cmdRulesExplain(arg string) {
-	args, err := parseRulesArgs(arg)
+func (c *cli) cmdMultiExplain(arg string) {
+	args, err := parseMultiArgs(arg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	dets, err := loadCorpus(args.queries)
+	dets, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	sess, binding, err := c.rulesSession(args.bind)
+	sess, binding, err := c.multiSession(args.bind)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	// Compiling plans each detector, resolving keyspaces -- report the same fail-loud
+	// Compiling plans each entry, resolving keyspaces -- report the same fail-loud
 	// binding coverage as lint, advisory here (an unresolved keyspace shows up as a
 	// rejected query in the map below).
 	c.reportBindingCoverage(sess, binding)
 
-	cc, err := sess.CorpusCompile(dets)
+	cc, err := sess.MultiQueryCompile(dets)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi explain: compile: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	report, score, err := sess.CorpusLint(dets)
+	report, score, err := sess.MultiQueryLint(dets)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
 	if args.sql {
-		c.renderCorpusExplainSQL(dets, report, score)
+		c.renderMultiQueryExplainSQL(dets, report, score)
 		return
 	}
-	c.renderCorpusExplain(cc, report, score)
+	c.renderMultiQueryExplain(cc, report, score)
 }
 
 // renderCorpusExplain prints the fused plan, the per-keyspace fusion map, and the
 // standalone/rejected queries. Free-form text to c.out (like `.explain`): a plan tree
 // isn't tabular, so it is not routed through renderRows.
-func (c *cli) renderCorpusExplain(cc *glue.CompiledCorpus, report []glue.DetectorLint, score glue.CorpusScore) {
+func (c *cli) renderMultiQueryExplain(cc *glue.CompiledMultiQueryEntries, report []glue.EntryLint, score glue.MultiQueryScore) {
 	w := c.out
 
-	// Fused detectors grouped by their shared-scan keyspace, in first-seen order (so
-	// the map lists keyspaces in the order queries reference them). A fused detector
+	// Fused entries grouped by their shared-scan keyspace, in first-seen order (so
+	// the map lists keyspaces in the order queries reference them). A fused entry
 	// always has a keyspace; guard defensively.
 	ksOrder := []string{}
-	byKS := map[string][]glue.DetectorLint{}
+	byKS := map[string][]glue.EntryLint{}
 	for _, d := range report {
 		if d.Class != glue.LintFused {
 			continue
@@ -722,26 +705,26 @@ func (c *cli) renderCorpusExplain(cc *glue.CompiledCorpus, report []glue.Detecto
 
 // renderCorpusExplainSQL is `.multi explain --sql` (IDEA-0037): the author-facing
 // companion to the op tree. For each query it prints a provenance header comment (how
-// CorpusCompile classifies it: fused into which shared-scan keyspace / standalone /
+// MultiQueryCompile classifies it: fused into which shared-scan keyspace / standalone /
 // rejected, its eval lane, and the index literal it keys on), any mechanical lint hints
 // as `-- hint:` comments, then the query itself re-laid-out by PrettySQL so a
 // gensym-heavy / nested statement reads as a plan. The rendered SQL++ is the SAME
 // statement (whitespace only), so it stays copy-paste runnable. (Deeper per-expression
 // CSE-origin attribution -- which shared sub-expression came from which query -- is
-// noted future work in corpus_lint.go; this surfaces the provenance that already exists.)
-func (c *cli) renderCorpusExplainSQL(dets []glue.CorpusDetector, report []glue.DetectorLint, score glue.CorpusScore) {
+// noted future work in multiquery_lint.go; this surfaces the provenance that already exists.)
+func (c *cli) renderMultiQueryExplainSQL(dets []glue.MultiQueryEntry, report []glue.EntryLint, score glue.MultiQueryScore) {
 	w := c.out
-	byLabel := make(map[string]glue.DetectorLint, len(report))
+	byLabel := make(map[string]glue.EntryLint, len(report))
 	for _, d := range report {
 		byLabel[d.Label] = d
 	}
 
 	// Partition by how MQO classified each query; group the FUSED ones by the shared scan
 	// (keyspace) they fuse into, so the SQL view SHOWS which queries share one pass -- the
-	// point the flat list missed. Preserve detector order within each group.
-	fusedByKS := map[string][]glue.CorpusDetector{}
+	// point the flat list missed. Preserve entry order within each group.
+	fusedByKS := map[string][]glue.MultiQueryEntry{}
 	var ksOrder []string
-	var standalone, rejected []glue.CorpusDetector
+	var standalone, rejected []glue.MultiQueryEntry
 	for _, det := range dets {
 		switch byLabel[det.Label].Class {
 		case glue.LintFused:
@@ -835,7 +818,7 @@ func (c *cli) renderCorpusExplainSQL(dets []glue.CorpusDetector, report []glue.D
 // SQL++ (macros expanded) re-laid-out by PrettySQL. When the query invoked macro(s), the
 // expanded SQL is bracketed by `-- BEGIN/END expansion of @macro` so the generated region
 // is obvious (and the original @call is shown first, so the before→after is legible).
-func (c *cli) explainSQLOne(det glue.CorpusDetector, d glue.DetectorLint) {
+func (c *cli) explainSQLOne(det glue.MultiQueryEntry, d glue.EntryLint) {
 	w := c.out
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, c.style.Cyan(explainProvenanceComment(d, det.Label)))
@@ -882,7 +865,7 @@ func macrosUsed(stmt string) []string {
 // sharedScanNotes summarizes the ONE shared pass MQO built: the union of predicate-index
 // wake literals across the fused members (the shared gate that makes the single scan cheap),
 // or that it must wake every row when a member has no necessary literal.
-func sharedScanNotes(members []glue.CorpusDetector, byLabel map[string]glue.DetectorLint) []string {
+func sharedScanNotes(members []glue.MultiQueryEntry, byLabel map[string]glue.EntryLint) []string {
 	seen := map[string]bool{}
 	var lits []string
 	always := false
@@ -912,8 +895,8 @@ func sharedScanNotes(members []glue.CorpusDetector, byLabel map[string]glue.Dete
 // explainProvenanceComment is the one-line `--` header above a query in the --sql view:
 // how it is classified, the shared-scan keyspace it fuses into (or its own), its eval
 // lane, and its predicate-index literal (or always-wake). label is passed explicitly so
-// a detector missing from the lint report (should not happen) still prints its name.
-func explainProvenanceComment(d glue.DetectorLint, label string) string {
+// an entry missing from the lint report (should not happen) still prints its name.
+func explainProvenanceComment(d glue.EntryLint, label string) string {
 	if label == "" {
 		label = orEmptyDash(d.Label)
 	}
@@ -931,11 +914,11 @@ func explainProvenanceComment(d glue.DetectorLint, label string) string {
 	}
 }
 
-// explainIndexCell renders a fused detector's predicate-index status: the necessary
+// explainIndexCell renders a fused entry's predicate-index status: the necessary
 // literal the Aho-Corasick index keys on (so only rows carrying it wake the query), or
 // "always-wake" when no discriminating literal was found (the query is evaluated on
 // every scanned row -- the thing `.multi lint` advises adding a literal to fix).
-func explainIndexCell(d glue.DetectorLint) string {
+func explainIndexCell(d glue.EntryLint) string {
 	if d.Indexed {
 		return fmt.Sprintf("literal %q", d.Literal)
 	}
@@ -966,30 +949,30 @@ func orEmptyDash(s string) string {
 	return s
 }
 
-// cmdRulesTest implements `.multi test`: the golden-fixture runner (DESIGN-prepare.md
-// phase 7, "a golden-fixture diff ... is the detector's unit test"; the AI-authoring CI
-// point). For each recipe that carries a `-- @fixture`, it builds a temp keyspace from
-// the fixture's input rows, runs JUST that detector (glue.Recipe.RunFixture -> the same
-// CorpusCompile/Run path .multi run uses), and then:
+// cmdMultiTest implements `.multi test`: the golden-fixture runner (DESIGN-prepare.md
+// phase 7, "a golden-fixture diff ... is the entry's unit test"; the AI-authoring CI
+// point). For each entry that carries a `-- @fixture`, it builds a temp keyspace from
+// the fixture's input rows, runs JUST that entry (glue.MultiQueryEntry.RunFixture -> the same
+// MultiQueryCompile/Run path .multi run uses), and then:
 //
-//   - CHECK mode (default): asserts the produced findings equal the recipe's `-- @expect`
+//   - CHECK mode (default): asserts the produced findings equal the entry's `-- @expect`
 //     golden as a SORTED SET (order isn't guaranteed). A fixture with no @expect is a
 //     FAIL ("no golden recorded"). A FAIL prints a compact missing/unexpected diff.
-//   - --update mode: writes the produced findings back into the recipe's @expect block
+//   - --update mode: writes the produced findings back into the entry's @expect block
 //     (golden-master capture) so the author reviews the diff and commits.
 //
-// It is HERMETIC (each recipe runs over its own temp datastore), so it needs no open
+// It is HERMETIC (each entry runs over its own temp datastore), so it needs no open
 // bundle. On any FAIL it sets c.failed so a non-interactive caller (make rules-test)
-// exits non-zero. A recipe with no fixture is counted, never a hard failure; a fixture
+// exits non-zero. A entry with no fixture is counted, never a hard failure; a fixture
 // whose keyspace can't resolve (a deferred multi-source fixture) is SKIPPED with a note.
-func (c *cli) cmdRulesTest(arg string) {
-	args, err := parseRulesArgs(arg)
+func (c *cli) cmdMultiTest(arg string) {
+	args, err := parseMultiArgs(arg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi test: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-	recipes, err := loadRecipes(args.queries)
+	entries, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi test: %v\n", c.prog, err)
 		c.failed = true
@@ -997,8 +980,8 @@ func (c *cli) cmdRulesTest(arg string) {
 	}
 
 	var passed, failed, noFixture, skipped, updated int
-	for i := range recipes {
-		r := recipes[i]
+	for i := range entries {
+		r := entries[i]
 
 		if !r.HasFixture {
 			noFixture++
@@ -1022,7 +1005,7 @@ func (c *cli) cmdRulesTest(arg string) {
 		}
 
 		if args.update {
-			if uerr := updateRecipeExpect(r.Path, actual); uerr != nil {
+			if uerr := updateMultiQueryEntryExpect(r.Path, actual); uerr != nil {
 				failed++
 				fmt.Fprintf(c.stderr, "  %s %s: %s -- writing golden: %v\n", c.icon("✗ "), r.Label,
 					c.style.Red("FAIL"), uerr)
@@ -1036,7 +1019,7 @@ func (c *cli) cmdRulesTest(arg string) {
 		if !r.HasExpect {
 			failed++
 			fmt.Fprintf(c.stderr, "  %s %s: %s -- %s\n",
-				c.icon("✗ "), r.Label, c.style.Red("FAIL"), rulesFix(fixNoGolden, ""))
+				c.icon("✗ "), r.Label, c.style.Red("FAIL"), multiFix(fixNoGolden, ""))
 			continue
 		}
 
@@ -1056,7 +1039,7 @@ func (c *cli) cmdRulesTest(arg string) {
 		for _, f := range unexpected {
 			fmt.Fprintf(c.stderr, "      %s unexpected: %s\n", c.style.Cyan("+"), findingLine(f))
 		}
-		fmt.Fprintf(c.stderr, "      %s\n", rulesFix(fixFixtureFail, ""))
+		fmt.Fprintf(c.stderr, "      %s\n", multiFix(fixFixtureFail, ""))
 	}
 
 	// Summary + CI signal. --update mode never "fails" a diff (it is recording), but a
@@ -1076,7 +1059,7 @@ func (c *cli) cmdRulesTest(arg string) {
 // updateRecipeExpect rewrites path's `-- @expect` block in place with findings (leaving
 // everything before it byte-identical -- glue.RewriteExpect), the golden-master capture
 // for `.multi test --update`.
-func updateRecipeExpect(path string, findings []glue.Finding) error {
+func updateMultiQueryEntryExpect(path string, findings []glue.Finding) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err

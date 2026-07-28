@@ -65,7 +65,7 @@ type Session struct {
 
 	// MergeStats, when set, is the shared race-safe sorted-merge counter set that every
 	// Run of this session bumps (propagated to each Run's Ctx by PlanExec, like Pipe), so
-	// a corpus run can aggregate merge/spill/skip stats across its detectors. nil = off.
+	// a pack run can aggregate merge/spill/skip stats across its entries. nil = off.
 	MergeStats *base.MergeStats
 
 	// prepareds is this session's prepared-statement store (PREPARE ... AS <stmt> /
@@ -125,11 +125,11 @@ func OpenSession(datastoreDir, namespace string) (*Session, error) {
 }
 
 // OpenSessionBound opens a file-datastore directory with a per-bundle late-binding
-// manifest (binding.go): a detector corpus authored against a stable LOGICAL
+// manifest (binding.go): a multi-query pack authored against a stable LOGICAL
 // vocabulary (`FROM indexer_log`) runs against THIS bundle by resolving each logical
-// name to the manifest's glob pattern at bind time. To run the same corpus against
+// name to the manifest's glob pattern at bind time. To run the same pack against
 // the NEXT bundle, OpenSessionBound its root with the same manifest and re-run (or
-// re-CorpusCompile) -- no detector edits. A nil/empty manifest is exactly OpenSession.
+// re-MultiQueryCompile) -- no entry edits. A nil/empty manifest is exactly OpenSession.
 func OpenSessionBound(datastoreDir, namespace string, b Binding) (*Session, error) {
 	store, err := FileStoreBound(datastoreDir, b)
 	if err != nil {

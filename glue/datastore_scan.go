@@ -550,7 +550,7 @@ func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *
 			// ".". That makes the extract plugin's match-path "." -> ExtractPluginFor misses
 			// -> the file falls back to a whole-file blob (0 framed records, a silent
 			// "clean" read). Binding must change WHICH files, never HOW they frame, so
-			// re-anchor the walk base at the corpus data root -- exactly what the auto
+			// re-anchor the walk base at the pack data root -- exactly what the auto
 			// keyspace and the describe path (extractPluginMatchPath) use -- when the base
 			// collapsed onto a file. Multi-file globs (base is a real dir) are untouched.
 			if fi, statErr := os.Stat(base); statErr == nil && !fi.IsDir() {
