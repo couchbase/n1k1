@@ -90,6 +90,28 @@ jobs:
         continue-on-error: ${{ matrix.os == 'windows-latest' }}
         run: go test -tags n1ql ./cmd/n1k1
 
+  # Cross-compile the BROWSER engine (GOOS=js/GOARCH=wasm) via web/wasm/build.sh, so a
+  # dep bump or build-tag change that breaks the wasm build is caught in CI -- e.g. the
+  # edsrzf/mmap-go v1.2.0 bump that added a colliding mmap_wasm.go, which silently broke
+  # the demo until build.sh learned to skip its stub. One Linux runner suffices: the
+  # output is GOOS=js regardless of the runner OS. This is what powers the (future)
+  # browser SQL++ playground on Pages; see web/README.md + web/DESIGN.md.
+  wasm:
+    name: wasm build (browser engine)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/bootstrap-go
+      - name: build web/n1k1.wasm
+        run: |
+          set -euo pipefail
+          sh web/wasm/build.sh
+          test -f web/n1k1.wasm
+          test -f web/wasm_exec.js
+          ls -lh web/n1k1.wasm web/wasm_exec.js
+
   # Every SQL++ example in docs/recipes.yaml, executed against a freshly built CLI.
   # This is the automated test for the recipes doc. Linux only: the checker looks for
   # ./n1k1 at the repo root (n1k1.exe on Windows would simply be skipped).

@@ -1,11 +1,14 @@
-name: Pages (SQL++ recipes)
+name: Pages (SQL++ recipes + playground)
 
-# Publishes the generated SQL++ recipes doc to GitHub Pages. This job needs NO Go
-# toolchain and no private modules -- docs/recipes_build.py is pure Python stdlib --
-# so it works on a stock public runner with no secrets.
+# Publishes to GitHub Pages:
+#   /            the generated SQL++ recipes doc (docs/recipes.html, pure Python).
+#   /play/       the browser SQL++ playground -- n1k1's engine compiled to wasm
+#                (web/wasm/build.sh), so queries run 100% client-side; Pages only
+#                serves static assets. This is what a recipe's "Try It Now" links to.
 #
-# One-time repo setup: Settings -> Pages -> "Build and deployment" -> Source =
-# "GitHub Actions". See .github/README.md.
+# Building the playground needs the Go toolchain + the EE-module bootstrap (no secrets;
+# see .github/actions/bootstrap-go). One-time repo setup: Settings -> Pages -> Source =
+# "GitHub Actions". See .github/README.md, web/README.md.
 
 on:
   push:
@@ -13,6 +16,7 @@ on:
     paths:
       - docs/recipes.yaml
       - docs/recipes_build.py
+      - web/**
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -31,27 +35,40 @@ jobs:
   build:
     name: build site
     runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
+      # The playground half needs Go + the EE bootstrap (the recipes half stays pure Python).
+      - uses: ./.github/actions/bootstrap-go
 
       # Regenerate rather than trusting the committed HTML, so the published page
       # always reflects docs/recipes.yaml (CI's `docs` job enforces they match).
       - name: Generate the recipes doc
         run: python3 docs/recipes_build.py --all
 
+      # Compile the engine to wasm (web/n1k1.wasm + web/wasm_exec.js). Runs the same
+      # script devs use; its go.mod replaces are ephemeral on the CI checkout.
+      - name: Build the wasm playground
+        run: sh web/wasm/build.sh
+
       - name: Assemble the site
         run: |
           set -euo pipefail
-          mkdir -p _site
+          mkdir -p _site _site/play/wasm
           # recipes.html is fully self-contained (inlined CSS/JS, no external
           # requests), so it stands alone as the site root.
           cp docs/recipes.html _site/index.html
           cp docs/recipes.md   _site/recipes.md
+          # The playground under /play/ -- preserve web/'s layout so its relative asset
+          # paths resolve (index.html -> samples.js + wasm/worker.js -> ../n1k1.wasm etc).
+          cp web/index.html web/samples.js web/n1k1.wasm web/wasm_exec.js _site/play/
+          cp web/wasm/worker.js web/wasm/fs_mem.js web/wasm/ingest.js web/wasm/opfs.js _site/play/wasm/
           touch _site/.nojekyll   # serve files verbatim; skip Jekyll processing
-          ls -lh _site
+          echo "--- site tree ---"; find _site -type f -exec ls -lh {} + | awk '{print $5, $NF}'
 
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
