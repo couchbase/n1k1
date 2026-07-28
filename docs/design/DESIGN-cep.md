@@ -17,14 +17,27 @@ standing rules and evaluate them at sub-linear cost in N* — is **built and ben
 shared-scan MQO stack. What's missing is continuous operation. The gap is real engine work but
 each piece grows from something that already exists.
 
-**Remaining (headline, none started):**
-- [ ] **Unbounded source** — a `records.Source` that blocks/yields as data arrives instead of
-  returning `io.EOF` (tail-follow a file, watch a directory, a socket, a Kafka/Redpanda consumer,
-  a Debezium CDC topic).
+**The API insight** (see [Control surface & APIs](#control-surface--apis-design-brainstorm)): the
+first thing to build is **not** a `tail -f` daemon — it's the **durable cursor + `poll` mode**, so a
+cron/harness **AI agent** can ask *"what changed since I last looked?"*, get a token-sized delta, and
+exit. Stateless process, stateful cursor; crash-safe (at-least-once); no daemon. `follow`/daemon is
+a later escalation. Query stays pure SQL++; **liveness rides the binding, cadence rides a run
+modifier** — the grammar never changes (no `FROM tail(…)` TVF).
+
+**Remaining, roughly in build order (none started):**
+- [ ] **Cursor + `poll` mode + the `monitor` object** — the low-lift, high-value first ship: a
+  persisted per-source cursor, a since-filter at the scan, `append`-offset **and** `snapshot`/`diff`
+  delta strategies (Debezium `{op,id,before,after}` envelope), and `.monitor` CRUD (create/list/show/
+  poll/pause/reset/delete). No daemon required.
+- [ ] **Unbounded source** (for `follow`) — a `records.Source` that blocks/yields as data arrives
+  instead of returning `io.EOF` (tail-follow a file, watch a directory, a socket, a Kafka/Redpanda
+  consumer, a Debezium CDC topic).
 - [ ] **Continuous emit / triggers** — emit-on-watermark for windowed/aggregate detectors (fused
   filter+project detectors already emit per row, so they're free once the source is unbounded).
 - [ ] **Incremental standing state** — generalize the O(N) incremental window fold to long-running
   aggregates; hang state on the spill-backed rhmap.
+- [ ] **Daemon + wire API** — `n1k1 serve`, with an **MCP** transport (monitors as resources +
+  `resources/subscribe`; the AI-native surface) and a CouchDB-style long-poll HTTP `_changes`.
 - [ ] **Event-time + watermarks + out-of-order**, **retention/TTL on unbounded state**, and
   **restart-from-source-offset** (at-least-once; *not* distributed exactly-once — see Positioning).
 
@@ -107,6 +120,207 @@ Two natural first beachheads — the user's own two examples:
 - **Dataset monitoring.** Freshness/volume/schema-drift/distribution monitors *are* detectors —
   `COUNT(*) per window < threshold`, a schema-change predicate, a distribution-shift check — so
   **the corpus IS the monitor library** (the Monte-Carlo/Anomalo job, but embeddable and in SQL).
+
+## Control surface & APIs (design brainstorm)
+
+This is the meat of the CEP direction: *what new API surface does n1k1 grow, and what do we call
+it?* The design below is a proposal, not settled — but it rests on one load-bearing realization.
+
+### The core realization: the CURSOR is the primitive, the daemon is optional
+
+The obvious first instinct is a `tail -f` flag (`n1k1 -f`) or a long-running daemon. That's the
+*push/follow* half. But the more important half for the stated primary user — **an AI agent waking
+on a cron/harness tick** — is not "stay running forever," it's *"what changed since I last
+looked?"* That is a **durable cursor** question, and it needs **no daemon at all**: persist a
+position, and on each wake scan only what's new since it, emit the delta, advance the position,
+exit. Stateless process, stateful cursor. This is cheaper, crash-safe by construction (crash before
+advancing ⇒ re-poll re-delivers ⇒ at-least-once), and a far smaller lift than a fault-tolerant
+daemon. So the primitive to design first is the cursor; `follow`/daemon is a later escalation.
+
+A `tail -f` CLI flag is also **too limiting** for the reason the user suspected: it hard-codes one
+source, one query, one mode. The right factoring is three **orthogonal axes**, none of which touch
+the SQL++ grammar (the dialect stays frozen — [DESIGN-prepare.md](DESIGN-prepare.md)):
+
+1. **The query** stays *pure stock SQL++* — a detector, unchanged whether run once, polled, or
+   followed.
+2. **Source liveness** is a property of the **binding** (data, not code), via the existing
+   logical→physical late-binding manifest: `orders → glob("*.json")` (static) vs `orders →
+   tail("app.log")` / `kafka://…` / `cdc://…` / `poll("https://api.github.com/…", every="5m")`
+   (live). Same detector; the manifest decides where bytes come from.
+3. **Run cadence** is an *execution modifier* around the query — `once` | `poll` | `follow` —
+   supplied by a CLI flag / dot-command / monitor policy, exactly like `-mode` or a `LIMIT` flag.
+
+⚠ **Why not a `FROM tail(…)` table-valued function or a streaming `UDF()`** (the user's second
+idea): n1k1's extensions are **scalar-only**; a TVF-in-`FROM` needs fork grammar changes (called
+out as "the one gap" in [DESIGN-prepare.md](DESIGN-prepare.md)), which the grammar-freeze forbids.
+And a scalar UDF can't change a query's execution mode. So liveness/cadence must live *outside* the
+SQL text — in the binding and the run modifier — which is also cleaner (the same rule is reusable
+across static replay, catch-up poll, and live follow).
+
+### The three run modes
+
+| mode | behavior | who it's for | lift |
+|---|---|---|---|
+| **`once`** (today's default) | scan to EOF, emit, exit | ad-hoc humans, batch | done |
+| **`poll`** (a.k.a. `catch-up`, `tick`, `since`) | scan only what's new since the cursor, emit the delta, advance + persist the cursor, exit | **the cron/harness AI agent** — "what changed since I last looked" | small — just the cursor + a source-level since-filter |
+| **`follow`** (a.k.a. `tail`, `watch`) | block on the source, emit continuously as data arrives; process stays alive | live dashboards, alerting daemons | large — unbounded source + watermark emit ([the gap](#the-gap-to-continuous-operation-ranked-by-lift-each-with-its-seed)) |
+
+Poll is the sweet spot: high value, low lift, no daemon. Ship it first.
+
+### The monitor object + its lifecycle (CRUD)
+
+A **monitor** is the manageable, persisted unit: a *detector* (or a whole corpus) + a *source
+binding* + a *cursor* + a *run policy* (`once`/`poll`/`follow`, optional schedule) + an optional
+*action* + *status*. It reuses the existing recipe/corpus format for the "what to look for" and adds
+the live-operation state. Proposed dot-command family (a sibling of the existing `.multi` family;
+verbs deliberately borrowed from tools devs & agents already know — see Prior art):
+
+```
+.monitor create <name> [from a recipe/corpus + binding + policy]   # arm / add / define
+.monitor list                       # ls / ps  — table: name, source, mode, cursor, last-tick,
+                                     #            #findings, status(armed|active|paused|errored|lagging), sha
+.monitor show <name>                # describe / inspect / status — definition + cursor + last-N findings
+.monitor poll <name>                # tick / check / catch-up — run from cursor, emit delta, advance
+.monitor follow <name>              # tail / watch — long-running
+.monitor pause | resume <name>      # suspend/resume (Snowflake TASK) / disable/enable (systemd)
+.monitor edit <name>                # update / set
+.monitor reset <name> [--since …]   # seek / rewind the cursor (Kafka seek, --from-beginning)
+.monitor snooze <name> <dur>        # silence (Alertmanager) — an agent muting a noisy monitor
+.monitor test <name>                # dry-run vs a golden fixture (reuse .multi test)
+.monitor log <name>                 # history — past ticks & findings
+.monitor delete <name>              # rm / drop / disarm / cancel
+```
+
+Same verbs over the wire (daemon mode): `GET/POST /monitors`, `POST /monitors/{name}/poll`,
+`DELETE /monitors/{name}`, `GET /monitors/{name}/findings?since=…`.
+
+### State layout — split definition (git) from cursor (local)
+
+Monitors live under `<dir>/.n1k1/monitors/<name>/` (alongside the existing index catalog at
+`<dir>/.n1k1/catalog.json`). ⚠ **Split the git-committed definition from the per-deployment cursor
+state** — the same split as Terraform config vs `tfstate`, or dbt models vs `target/`: the detector
+recipe + binding + policy are shareable and versioned (they're just the corpus); the **cursor +
+tick log are local and gitignored** (they mean nothing on another machine / another data root). A
+monitor's identity for caching/delta is `(recipe SHA, binding, source-fingerprint)`.
+
+### Two delta strategies (this is what makes "what changed" real)
+
+Sources differ in how "new" is even defined; a monitor declares one:
+
+- **`append`** (logs, new files, new issues/tickets/emails) — cursor is a high-water **offset**
+  (byte/line for a file; a set of seen file-ids+mtime for a directory; a Kafka offset; a CDC LSN).
+  "New rows since the offset." Cheap, stateless beyond the offset. Covers the user's *"new GitHub
+  issues, new support tickets, new emails."*
+- **`snapshot`/`diff`** (a customer record was updated, an issue moved to *closed*) — no natural
+  offset, so n1k1 keeps a prior **snapshot keyed by doc-id**, and on poll diffs current-vs-prior to
+  emit change events in the **Debezium envelope** shape: `{op: insert|update|delete, id, before,
+  after}`. This is `git diff` / `kubectl diff` / `terraform plan` / dbt-snapshot for arbitrary
+  keyspaces, and it's what lets an agent polling a plain REST API (which returns *current state*,
+  no change feed) still learn *"issue #42 → closed, #57 is new, #12 deleted."* The stored snapshot
+  can spill (reuse the rhmap store) so it scales past RAM.
+
+### Cursor semantics: at-least-once + optional ack
+
+Default: **auto-advance** the cursor when `poll` returns (simple; at-most-once loss only if the
+agent crashes mid-consume). For agents that must not miss a finding, a **two-phase** option: `poll`
+returns findings + a *candidate* cursor; a later `ack`/`commit` advances it — Kafka manual commit /
+SQS delete-after-process / a `_changes` checkpoint. `reset --since` re-seeks (replay/backfill).
+Expose **lag** (cursor distance behind head) in `.monitor list` — the universal "am I keeping up?"
+signal.
+
+### Daemon mode & the AI-native wire API
+
+When following many monitors or serving multiple clients, n1k1 becomes long-running:
+`n1k1 serve <dir>` (a.k.a. `daemon`). Two transports, both worth having:
+- **MCP** (the important one — the primary users are AI agents whose harnesses already speak it):
+  expose each monitor as an **MCP resource**; `resources/subscribe` + `notifications/
+  resources/updated` = `follow`; MCP **tools** = `monitor.poll` / `list` / `create` / `delete`. A
+  cron agent calls the `monitor.poll` tool; a long-running agent subscribes. This makes n1k1 a
+  drop-in **standing-query server for agents**, no bespoke client.
+- **Long-poll HTTP** (CouchDB `_changes?feed=longpoll|continuous|normal`) for everything else, so a
+  plain `curl` / shell agent works too.
+
+### "What changed since I last looked" — the exact cron-agent loop
+
+```
+# agent wakes on its cron tick; no daemon anywhere
+$ n1k1 monitor poll new-github-issues        # or MCP tool call monitor.poll{name}
+→ { "since": "cursor@2026-07-27T09:00Z", "now": "cursor@2026-07-27T14:00Z",
+    "findings": [ {op:insert, id:"#57", title:"…", detector:"triage@a1b2"} , … ],
+    "count": 3, "lagging": false }
+# cursor advanced + persisted in .n1k1/monitors/new-github-issues/; agent acts on 3 items, exits
+```
+
+The agent supplies no cursor and manages no state — it names a monitor and gets a **compact,
+structured, token-sized delta** (change-type + provenance: `source_file`, `line_range`, `sha`).
+Re-polling after a crash is safe. This is the whole ask, and it needs only the cursor + `append`/
+`diff` delta — *not* the daemon.
+
+### The AI-agent's-eye view (why this matters for "future me")
+
+Speaking as a likely primary user: the single most valuable property is that **the monitor store
+becomes my externalized standing memory.** An agent on a cron schedule has *no memory between
+wakes* — my context resets. Today I'd rediscover "what am I even watching, and where did I leave
+off?" every tick. If n1k1 holds `(what I watch, where I left off, what already fired)` durably and
+keyed by a stable name, then `monitor list` + `monitor poll <name>` *is* my working memory of the
+watch — I don't have to reconstruct it. That reframes n1k1 from "a query tool I call" to "the
+persistent standing-query memory for episodic agents."
+
+Corollaries I'd want, in priority order:
+1. **Deltas, not re-scans** — return only what changed, token-sized, with a `--summary` (counts +
+   drill-down) so a big change set doesn't blow my context.
+2. **Idempotent + at-least-once** — I will crash and retry; re-`poll` must be safe.
+3. **Author → test → arm in one loop** — I write the detector in SQL++ (from a natural-language
+   ask), `monitor test` it against a fixture, then `create` it; `.multi lint` tells me if it's
+   sound/cheap *before* it goes live.
+4. **Introspectable across wakes** — `list`/`show` let a *fresh* me reason about the watches a
+   *previous* me armed (and hand them off to a human or another agent).
+5. **Guard rails** — a monitor declares bounds (max findings/tick, cost ceiling, rate limit) so a
+   runaway source can't flood or bankrupt me; `.multi lint`'s cost signals feed this.
+
+## Vocabulary — nouns & verbs (a proposal to react to)
+
+Naming is half the design; the words leak into every command and API. Proposed core lexicon,
+with the runners-up and where each is borrowed from:
+
+| concept | **recommended** | alternatives considered | borrowed from |
+|---|---|---|---|
+| the saved standing query + binding + cursor + policy | **monitor** | watch, subscription, continuous-query/CQ, standing-query, sensor, task, trigger | Datadog *monitors*; Snowflake TASK; Dagster *sensor* |
+| the SQL++ rule itself (already n1k1's term) | **detector** | rule, detection, check, probe | Sigma/Panther/Elastic *detections*; DESIGN-prepare |
+| the durable position per source | **cursor** | watermark, offset, checkpoint, bookmark, since-token, high-water-mark, replication-slot | CouchDB `since`; Kafka *offset*; Dagster sensor *cursor*; Datomic `since` |
+| one wake/execution of a monitor | **tick** | poll, check, run, fire, catch-up, pass | Dagster *tick*; cron |
+| an emitted result row (already n1k1's term) | **finding** | hit, alert, event, change, match | Sigma/SIEM; DESIGN-prepare |
+| a detected change on a mutable doc | **change** `{op,id,before,after}` | delta, diff, mutation, revision | Debezium *change event*; CouchDB `_changes` |
+| long-running process | **serve** / **daemon** | watch, listen, run | `n1k1 serve`; systemd |
+| run cadence | **once / poll / follow** | batch / catch-up / tail | `tail -f`; CouchDB `feed=`; `kubectl --watch` |
+
+Recommendation: lead with **monitor** (CRUD-friendly, observability-native, unambiguous), keep
+**detector**/**finding** (already in the corpus), and use **cursor** + **tick** for the
+poll machinery. Reserve *"task"* for a monitor whose policy includes an **action** (Snowflake's
+STREAM-vs-TASK split: the cursor-bearing thing vs the scheduled thing) rather than as a second
+noun — i.e. a task is "a monitor that also *does* something."
+
+## Prior art we (and agents) already use — steal the nouns & verbs
+
+- **CouchDB/Couchbase `_changes` feed** (on-brand — Couchbase heritage): `?since=<seq>` +
+  `feed=normal|longpoll|continuous` + `limit` + `include_docs`. This is *the* canonical
+  "what changed since seq N" API and maps almost 1:1 onto `poll`/`follow` + cursor.
+- **Snowflake Streams + Tasks**: a `STREAM` is a table's change-cursor that **advances on
+  consumption**; a `TASK` is scheduled SQL (`SHOW TASKS`, `ALTER TASK RESUME/SUSPEND`, `EXECUTE
+  TASK`). The clean STREAM-vs-TASK (cursor vs action) split is worth copying.
+- **Watchman** (file-watch): `watch` / `subscribe` / `trigger` + a `since` clockspec + named
+  subscriptions — a near-exact shape for named monitors with cursors and actions.
+- **Dagster sensors**: a `@sensor` wakes on a tick and persists a **cursor** string between ticks to
+  track "what's new" — *the* precedent for the cron-agent poll model.
+- **Kafka consumer groups**: durable **offset**, `commit`, `seek`, `--from-beginning`/`latest`,
+  consumer **lag** — the append-cursor vocabulary and at-least-once/manual-commit semantics.
+- **Datomic** `as-of` / `since` DB filters — elegant temporal-cursor naming (`since` = only what was
+  added after T).
+- **MCP** resources + `resources/subscribe` + `notifications/resources/updated` — the AI-native
+  transport; monitors-as-resources is the natural binding for agent harnesses.
+- **cron / systemd / `crontab -l`**, **`docker ps`**, **`kubectl get --watch`** (+ resourceVersion
+  cursor), **Prometheus/Alertmanager** (`ALERT`/`expr`/`for:` duration, *silence*/snooze) — the
+  management-CRUD and alerting verbs (`list/ls/ps`, `enable/disable`, `pause/resume`, `silence`).
 
 ## Positioning — the open niche: "the DuckDB of CEP"
 
