@@ -294,7 +294,7 @@ A few scenarios where you might want to "SQL over the files":
   via vectorized expression evaluation (e.g., aggregates like SUM(float), etc.),
   and along with leveraging any associated nulls-bitmap metadata.
 - **Push-down** - n1k1 can push expressions down to advanced backend datasources,
-  like Parquet / Iceberg, for evaluting expressions as close as possible to the data. And,
+  like Parquet / Iceberg, for evaluating expressions as close as possible to the data. And,
   advanced datasources, like Parquet / Iceberg, which provide metadata (e.g., min/max values)
   allow n1k1 to skip entire files during query execution, including COUNT() optimizations.
 
