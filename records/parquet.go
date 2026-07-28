@@ -1,4 +1,4 @@
-//go:build !js
+//go:build !js && !trim
 
 //  Copyright (c) 2026 Couchbase, Inc.
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -53,19 +53,10 @@ var DisableFastTranspose bool
 // record batch at a time, renders it to newline-delimited JSON (one object per
 // row via array.RecordToJSON), and yields each line. Doc borrows the render
 // buffer and is valid only until the batch is exhausted and the next one loads.
-// VariantFidelity toggles the Phase-1 VARIANT fidelity scan mode (DESIGN-variant.md
-// §4.1): when true, a batch that carries a VARIANT column is emitted as whole-row
-// VARIANT `V`-carrier objects (base.SigilVariant), preserving typed-scalar fidelity,
-// instead of the Phase-0 JSON projection. Default false (Phase-0 read-as-JSON). A
-// process-wide dev/testing knob for comparative + differential testing and
-// benchmarking, intended to become the default once validated; not safe to toggle
-// while a scan is running.
-var VariantFidelity bool
-
 type parquetSource struct {
-	pf       *file.Reader
-	pr       *pqarrow.FileReader
-	rr       pqarrow.RecordReader
+	pf          *file.Reader
+	pr          *pqarrow.FileReader
+	rr          pqarrow.RecordReader
 	proj        []int // leaf column indices to read; nil => all columns
 	idPrefix    string
 	loneVariant bool // file schema is exactly one VARIANT column -> unwrapped rows

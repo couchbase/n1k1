@@ -1,4 +1,4 @@
-//go:build n1ql && js
+//go:build n1ql && (js || trim)
 
 //  Copyright (c) 2026 Couchbase, Inc.
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,7 +25,7 @@ import (
 
 func newInsertWriter(path, seedFrom, mode string) (insertWriter, error) {
 	if strings.EqualFold(filepath.Ext(path), ".parquet") {
-		return nil, fmt.Errorf("INSERT INTO %q: .parquet targets are not supported in the wasm build", path)
+		return nil, fmt.Errorf("INSERT INTO %q: .parquet targets are not supported in this build (trim/wasm)", path)
 	}
 	return newJSONLWriter(path, seedFrom)
 }

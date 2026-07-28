@@ -1,4 +1,4 @@
-//go:build js
+//go:build js || trim
 
 //  Copyright (c) 2026 Couchbase, Inc.
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,10 +19,10 @@ import "fmt"
 // Parquet reader does not compile for GOOS=js. Native builds get the real
 // source in parquet.go. See DESIGN-col.md and the wasm build-tag guards.
 func newParquetSource(path, idPrefix string) (Source, error) {
-	return nil, fmt.Errorf("records: parquet is not supported in the wasm/js build: %s", path)
+	return nil, fmt.Errorf("records: parquet is not supported in this build (trim/wasm): %s", path)
 }
 
 // OpenParquetSourceRemote is unavailable in the wasm/js build (see newParquetSource).
 func OpenParquetSourceRemote(loc, idPrefix string) (Source, error) {
-	return nil, fmt.Errorf("records: remote parquet is not supported in the wasm/js build: %s", loc)
+	return nil, fmt.Errorf("records: remote parquet is not supported in this build (trim/wasm): %s", loc)
 }

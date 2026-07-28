@@ -1,6 +1,6 @@
 default: test
 
-.PHONY: bootstrap test test-all test-core test-glue test-compiler test-suite test-suite-all rules-test cli install-cli build build-glue build-intermed run-intermed-build
+.PHONY: bootstrap test test-all test-core test-glue test-compiler test-suite test-suite-all rules-test cli cli-trim install-cli build build-glue build-intermed run-intermed-build
 
 # bootstrap prepares a FRESH checkout / worktree / CI runner: it stubs go.mod's
 # placeholder EE requires (whose go.mod files live only in Couchbase's internal
@@ -32,6 +32,17 @@ CLI_LDFLAGS := -s -w $(VERSION_LDFLAGS)
 cli: build-glue
 	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags n1ql -ldflags "$(CLI_LDFLAGS)" -o n1k1 ./cmd/n1k1
 	@echo 'built ./n1k1 -- try: ./n1k1 ./test/suite/json (or: ./n1k1 -c "SELECT 1+1" .)'
+
+# cli-trim builds a much smaller binary (~41MB vs ~102MB) by dropping the columnar/
+# lakehouse tier -- Parquet, Iceberg, and S3/GCS/Azure object-store reads (and the
+# heavy apache/arrow-go + iceberg-go + aws/grpc/xds deps they drag in). Everything
+# else stays: the full SQL++ engine, local file formats (JSON/CSV/YAML/...), GSI +
+# FTS indexes, macros, and JS extensions. Selected by the `trim` build tag (mirrors
+# the wasm exclusions); Parquet/Iceberg/s3:// sources error gracefully. See DESIGN-cli.md.
+cli-trim: build-intermed
+	mkdir -p test/tmp
+	CGO_ENABLED=0 GOPRIVATE='github.com/couchbase/*' go build -tags "n1ql trim" -ldflags "$(CLI_LDFLAGS)" -o n1k1-trim ./cmd/n1k1
+	@echo 'built ./n1k1-trim (no Parquet/Iceberg/object-store) -- try: ./n1k1-trim -c "SELECT 1+1" .'
 
 # install-cli installs the n1k1 binary into $(GOBIN) (or $(GOPATH)/bin).
 install-cli:

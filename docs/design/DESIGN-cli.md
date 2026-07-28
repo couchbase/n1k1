@@ -58,6 +58,24 @@ engine knowledge stays in `glue/`, `cmd/n1k1` is a pure front-end.
 `cmd/n1k1/main.go`, behind `//go:build n1ql`. Build: `CGO_ENABLED=0 go build -tags n1ql ./cmd/n1k1`
 (cross-compiles).
 
+**Full vs trim (`make cli` / `make cli-trim`).** The default (`-tags n1ql`) is
+**n1k1-full** (~102 MB stripped). **n1k1-trim** (`-tags "n1ql trim"`, ~41 MB) drops the
+columnar/lakehouse tier — Parquet, Iceberg, and S3/GCS/Azure object-store reads — and with
+it the heavy transitive deps they alone pull: `apache/arrow-go` (whose `pqarrow` also drags
+in Arrow *Flight* → grpc → cncf/xds), `apache/iceberg-go`, and the AWS/Azure/GCP SDKs +
+`gocloud.dev`. Removing ~21 MB of that code sheds ~60 MB total once its proportional
+`gopclntab`/rodata/type-metadata goes with it (the cloud SDKs are type-heavy). Everything
+else stays: the full SQL++ engine, all local file formats (JSON/JSONL/CSV/YAML/…), GSI +
+in-memory + **FTS (bleve)** indexes, macros, and JS extensions. The `trim` tag mirrors the
+existing wasm exclusions — the `!js` arrow files become `!js && !trim` and their stubs
+(`records/*_stub.go`, `glue/insert_writer_stub.go`) become `js || trim` — so a
+Parquet/Iceberg/`s3://` source in a trim binary errors gracefully ("not supported in this
+build"). The irreducible floor (~40 MB) is the cbq fork's language surface (parser + 279
+built-in expression functions + planner) plus the Go runtime, not any single dependency.
+*Follow-up:* `go test -tags trim` doesn't yet pass (feature-test helpers like
+`writeColTestParquet` are shared into non-feature tests); the trim variant is build- +
+smoke-verified, and CI would build+smoke it rather than run the full tagged unit suite.
+
 ```
 n1k1 [flags] [datastore-dir]
 n1k1                         # REPL on cwd (or no store until .open)

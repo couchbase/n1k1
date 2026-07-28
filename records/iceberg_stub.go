@@ -1,4 +1,4 @@
-//go:build js
+//go:build js || trim
 
 //  Copyright (c) 2026 Couchbase, Inc.
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,15 +18,15 @@ import "fmt"
 // OpenIcebergTable is unavailable in the wasm build (arrow-go's Parquet reader + iceberg-go
 // don't build for GOOS=js); mirrors parquet_js.go.
 func OpenIcebergTable(metadataLocation, idPrefix string) (Source, error) {
-	return nil, fmt.Errorf("records: Iceberg tables are not supported in the wasm build")
+	return nil, fmt.Errorf("records: Iceberg tables are not supported in this build (trim/wasm)")
 }
 
 // OpenIcebergTableProps mirrors OpenIcebergTable in the wasm build (unsupported).
 func OpenIcebergTableProps(metadataLocation, idPrefix string, props map[string]string) (Source, error) {
-	return nil, fmt.Errorf("records: Iceberg tables are not supported in the wasm build")
+	return nil, fmt.Errorf("records: Iceberg tables are not supported in this build (trim/wasm)")
 }
 
 // ResolveObjectStoreIcebergMetadata is unavailable in the wasm build.
 func ResolveObjectStoreIcebergMetadata(dirLoc string) (string, error) {
-	return "", fmt.Errorf("records: object-store Iceberg tables are not supported in the wasm build")
+	return "", fmt.Errorf("records: object-store Iceberg tables are not supported in this build (trim/wasm)")
 }
