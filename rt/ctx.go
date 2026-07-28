@@ -61,9 +61,14 @@ type SpillState struct {
 // NewSpillState makes a spill state rooted at tmpDir (created lazily on first spill).
 func NewSpillState(tmpDir string) *SpillState { return &SpillState{tmpDir: tmpDir} }
 
-// ensureDir creates tmpDir the first time an allocator actually needs to put a file there --
-// so scan/filter/project queries, and any GROUP/ORDER that stays within the in-memory
-// StartSize, pay no mkdir. See DESIGN-concurrency.md.
+// ensureDir creates tmpDir the first time an allocator is asked for a spill-backed store --
+// so scan/filter/project queries pay no mkdir. It is BEST-EFFORT: the stores are in-memory
+// until they actually spill (the initial slots + first heap/chunk use an anonymous, path-less
+// mmap; only a 2nd chunk touches the filesystem), so a failed mkdir must NOT fail the alloc.
+// On GOOS=js/wasm there is no writable filesystem, so this always fails -- and that's fine,
+// because browser-sized data never spills; a genuine spill would surface the error later at
+// file-creation time. (Restores the pre-spill-refactor "silent MkdirTemp" behavior that kept
+// the wasm demo working; the callers ignore the error.) See DESIGN-concurrency.md.
 func (st *SpillState) ensureDir() error {
 	st.dirOnce.Do(func() {
 		if st.tmpDir != "" {
@@ -105,9 +110,7 @@ func (st *SpillState) allocMap() (*store.RHStore, error) {
 		st.recycledMap = nil
 		return rv, nil
 	}
-	if err := st.ensureDir(); err != nil {
-		return nil, err
-	}
+	st.ensureDir() // best-effort: stores are in-memory until a real spill (see ensureDir).
 
 	options := store.DefaultRHStoreFileOptions
 	pathPrefix := fmt.Sprintf("%s/%d", st.tmpDir, atomic.AddUint64(&st.counter, 1))
@@ -142,9 +145,7 @@ func (st *SpillState) allocHeap() (*store.Heap, error) {
 		st.recycledHeap = nil
 		return rv, nil
 	}
-	if err := st.ensureDir(); err != nil {
-		return nil, err
-	}
+	st.ensureDir() // best-effort: stores are in-memory until a real spill (see ensureDir).
 
 	pathPrefix := fmt.Sprintf("%s/%d", st.tmpDir, atomic.AddUint64(&st.counter, 1))
 
@@ -192,9 +193,7 @@ func (st *SpillState) allocChunks() (*store.Chunks, error) {
 		st.recycledChunks = nil
 		return rv, nil
 	}
-	if err := st.ensureDir(); err != nil {
-		return nil, err
-	}
+	st.ensureDir() // best-effort: stores are in-memory until a real spill (see ensureDir).
 
 	options := store.DefaultRHStoreFileOptions
 	pathPrefix := fmt.Sprintf("%s/%d", st.tmpDir, atomic.AddUint64(&st.counter, 1))
