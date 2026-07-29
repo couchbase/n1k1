@@ -50,19 +50,16 @@ am I watching and where did I leave off?" from nothing.
 
 ## Model & vocabulary
 
-The key distinction (and the answer to "does *monitor* fit the run-and-done CLI?" — it doesn't):
-
 - **cursor** — a small **named, durable high-water position** (`NAME → {source → offset}`), **bound
-  to the query-pack it polls** (a cursor without a query is meaningless, so its record also holds the
-  `(pack, binding)` identity — see Command taxonomy). This is the *only* thing that persists in
-  lightweight poll mode; nothing is "monitoring." A `.multi run <pack> --cursor=NAME` reads-since it
-  and advances it on success, then the process exits. **The poll-mode primitive.**
-- **detector** — the SQL++ rule (existing n1k1 term); **finding** — an emitted result row (existing).
+  to the query-pack it polls** (its record also holds the `(pack, binding)` identity — see Command
+  taxonomy). The *only* thing that persists in poll mode (nothing is "monitoring"): `.multi run
+  <pack> --cursor=NAME` binds it, then `.multi cursor peek`/`advance` drive it. **The poll-mode
+  primitive.**
+- **detector** — the SQL++ rule; **finding** — an emitted result row (both existing n1k1 terms).
 - **monitor** — the **serve-mode** live entity: *a cursor that also carries its query + schedule and
   runs itself* — a cursor with a heartbeat. Only exists inside `n1k1 serve`.
-- **Graduation:** named cursors (CLI, run-and-done) **→** monitors (server, self-running). Same
-  cursor underneath; a monitor is "a cursor that hangs around." So "monitor" is reserved for the
-  server, where it's the right word, and never imposed on the run-and-done CLI.
+- **Graduation:** named cursors (CLI, run-and-done) **→** monitors (server, self-running) — same
+  cursor underneath; a monitor is "a cursor that hangs around," so the word is reserved for `serve`.
 
 Every cursor/monitor also carries metadata (a NAME alone can't be an agent's memory — it loses the
 *why*), using the Kubernetes labels-vs-annotations split:
@@ -94,46 +91,31 @@ The query is *pure stock SQL++*, unchanged across all three; cadence is an execu
 | **`peek`/`advance`** (poll cadence) | one caller-driven step: run the bound pack from the named cursor, emit the delta. `peek` does *not* move the cursor; `advance` moves it (and echoes what it passed) | **the cron/harness agent** | small |
 | **`follow`** | block on a live source, emit continuously; process stays alive | dashboards, alerting daemons | large (engine work — see the gap) |
 
-### Verbs: `peek` / `advance` (+ `--quiet`) — plain cursor/stream, not git
+### Verbs: `peek` / `advance` (+ `--quiet`)
 
-What we're building is a **durable consumer reading forward over a change stream** — a cursor with a
-committed position, lag, and at-least-once redelivery. That's the queue/stream-consumer model (Kafka
-offsets, message acks), **not git's content-DAG** — so beyond the one useful borrow (git's
-`fetch`-vs-`pull` = "safe get" vs "get + advance"), git words (`commit`, `reset --hard`, a
-commit/stage-id) drag in versioning baggage that doesn't fit. Two honest verbs, cleanly split by
+n1k1 here is a **durable consumer reading forward over a change stream** — a cursor with a committed
+position, lag, and at-least-once redelivery (the queue/stream-consumer model). Two verbs, split by
 whether they move the cursor — **`peek` never moves, `advance` always moves**:
 
-- **`.multi cursor peek NAME`** — look: return the pending delta (everything since the committed
-  position); the cursor does **not** move. It is **non-advancing**, *not* idempotent-in-result:
-  re-`peek` dutifully reports whatever is pending *as of now* — the same rows if nothing changed, or
-  a **superset** if the source grew — so it **never misses** anything (at-least-once), though it isn't
-  byte-identical unless the optional journal is on. Inviolably non-mutating (queue/stack *peek* =
-  look at the head without consuming) — the "safe read".
+- **`.multi cursor peek NAME`** — look: the pending delta (everything since the committed position);
+  the cursor does **not** move. It's **non-advancing**, not idempotent — re-`peek` reports whatever
+  is pending *as of now* (a **superset** if the source grew), so it **never misses** anything
+  (at-least-once). Inviolably non-mutating (queue/stack *peek* = look at the head without consuming).
 - **`.multi cursor advance NAME [--to <pos>]`** — move the cursor forward **and return the delta it
-  passed**. So a one-call `advance` (get + move, the fire-and-forget) still *shows you what it
-  skipped* — **fail-safe**: the dangerous act is moving past data you never saw, and echoing it by
-  default prevents a silent skip. `--to` pins the target (from a prior `peek`; errors if the
-  committed position moved under you — optimistic concurrency); bare `advance` goes to the current
-  head. This is Kafka's *commit-offset*, said plainly.
-- **`.multi cursor advance --quiet NAME --to <pos>`** — same move, but return only the ack
-  (`from`/`to`/`count`, no findings). For the safe two-step (`peek` → act → `advance --quiet`) where
-  you already have the delta and just want a lightweight commit (token economy for agents). The flag
-  trims *output*, never changes the mutation.
+  passed**, so a one-call `advance` (get + move, the fire-and-forget) still *shows you what it
+  skipped* — **fail-safe** (echoing by default prevents silently moving past unseen data). `--to`
+  pins the target from a prior `peek` (errors if the committed position moved under you); bare
+  `advance` goes to the current head. This is Kafka's *commit-offset*, said plainly.
+- **`.multi cursor advance --quiet NAME --to <pos>`** — same move, ack only (`from`/`to`/`count`, no
+  findings): the lightweight commit for the safe two-step `peek` → act → `advance --quiet` where you
+  already hold the delta (token economy). The flag trims *output*, never the mutation.
 - **`--cursor=NAME`** on `.multi run <pack>` is the **first-run bind** (establishes the cursor + does
   the first peek); thereafter you name the cursor, not the pack.
 
-Why the flag is on `advance` (not a `peek --advance`): it keeps `peek` inviolably non-mutating (no
-"safe verb that sometimes mutates"), and `--quiet` controls only verbosity. Why return-by-default
-(not an opt-in `--with-peek`): **fail-safe** — an opt-in default would let a bare fire-and-forget
-`advance` silently skip unseen data; echo-by-default means you always see what you moved past, and
-you opt *out* only when you already peeked.
-
-**No tick-id.** You don't identify a batch; you commit a *position* (`advance --to <pos>`), exactly
-as a stream consumer commits an offset — so the earlier `tick`/`tick-id` noun is dropped. (An
-internal per-cursor journal can make replay exact + re-scan-free, but that's an optimization, not a
-user-facing handle.) Concepts still borrowed from the stream-consumer world: **lag** (how far
-behind), **`reset`/`seek`** (jump to an arbitrary position — distinct from forward `advance`),
-**at-least-once** + **fingerprint-dedup**.
+You commit a *position* (`advance --to <pos>`), as a stream consumer commits an offset — no batch id
+to track. Other stream-consumer concepts carry over: **lag** (how far behind), **`reset`/`seek`**
+(jump to an arbitrary position, distinct from forward `advance`), **at-least-once** +
+**fingerprint-dedup**.
 
 Optional read-only escape hatch inside SQL: the scalar **`SINCE(NAME)`** UDF for authors who want the
 mark visible in a predicate (`WHERE log.ts > SINCE('daily')`). Grammar-legal (scalar UDFs exist; a
@@ -144,21 +126,15 @@ Prefer the verbs; keep `SINCE()` as sugar.
 ### Command taxonomy — cursors live under `.multi` (a cursor is meaningless without a query)
 
 A cursor is the persisted state of *polling a particular query-pack*, so it has no meaning on its
-own — which settles where it lives: **under `.multi`**, never as a separate top-level `.cursor`.
-The first `.multi run <pack> --cursor=NAME` **binds** NAME to that pack's identity (`query+binding
-SHA`) alongside its positions; thereafter the cursor record knows its own query (`.multi cursor
-show NAME` reveals the bound pack), so `.multi cursor peek NAME` re-runs it without re-naming
-the pack, and pointing NAME at a *different* pack is an **error, not a silent meaningless reuse**.
+own — hence it lives **under `.multi`**, not as a top-level `.cursor`. The first `.multi run <pack>
+--cursor=NAME` **binds** NAME to that pack's identity (`query+binding SHA`) alongside its position;
+thereafter the cursor knows its own query (`.multi cursor show NAME` reveals the bound pack), so
+`.multi cursor peek NAME` re-runs it without re-naming the pack — and pointing NAME at a *different*
+pack is an **error**, not a silent meaningless reuse.
 
-Taxonomy choice: keep the **pack verbs flat** (`run`/`lint`/`explain`/`test`/`list`) — they *are*
-what `.multi` operates on — and give ancillary state its own **sub-noun** `.multi cursor <verb>`
-(and later `.multi monitor <verb>`). This is the **git model**: core verbs flat (`git commit`,
-`git log`), ancillary areas grouped (`git remote …`, `git stash …`) — rather than nesting everything
-under `.multi query <verb>` (which doubles "query" and churns every existing call). The one honest
-counter-argument is Docker's migration from flat `docker ps`/`docker images` → grouped `docker
-container ls`/`docker image ls` once its surface sprawled; if `.multi` grows many noun-areas, full
-`.multi <noun> <verb>` symmetry becomes defensible. For now, flat-core + `.multi cursor`. (This
-replaces the earlier muddle of a top-level `.cursor` + a bare `.multi cursors`.)
+The pack verbs stay flat (`run`/`lint`/`explain`/`test`/`list`); ancillary state gets a sub-noun,
+`.multi cursor <verb>` (later `.multi monitor <verb>`) — the git model (`git commit`/`git log` flat,
+`git remote`/`git stash` grouped).
 
 ```
 .multi run <pack> --cursor=NAME         # first-run BIND: NAME→(pack,binding)+position, then a peek
@@ -215,24 +191,19 @@ agent crashes *before* durably acting → lost, never redelivered (Kafka's `enab
 foot-gun). The fix is the two-step, and its whole content is: **getting the delta must not move the
 cursor.**
 
-- **`peek` computes the pending delta from the committed position and returns it — without moving
-  the cursor.** It is **non-advancing** (not idempotent-in-result): re-`peek` returns whatever is
-  pending *as of now* — the same rows if nothing changed, or a **superset** if the source grew. So a
-  crash any time before `advance` **never misses** anything — the next `peek` still returns it (at-
-  least-once); it's byte-identical only if the optional journal is on.
-- **`advance --to <pos> --quiet`** commits the position forward, once you've durably acted (the
-  two-step commit). Bare **`advance`** (get + move, echoing the delta) is the one-call fire-and-forget
-  (at-most-once — fine for "I don't mind missing some").
+- **`peek` returns the pending delta without moving the cursor**, so a crash any time before
+  `advance` **never misses** anything — the next `peek` still returns it (a superset if the source
+  grew) = at-least-once. (Byte-identical replay is what the optional journal adds.)
+- **`advance --to <pos> --quiet`** commits once you've durably acted (the two-step); bare **`advance`**
+  (get + move, echoing the delta) is the one-call fire-and-forget (at-most-once).
 - **Finding fingerprints** (the `dedup_key`) make redelivery safe: since re-`peek` can hand back
-  rows the agent already acted on (plus newer ones), it dedupes by fingerprint → at-least-once
-  delivery + idempotent consumer = exactly-once *effect*.
+  rows already acted on, the agent dedupes by fingerprint → at-least-once + idempotent consumer =
+  exactly-once *effect*.
 
-So the agent needn't `tee` its own `.out`, and there's **no batch id / staged "tick"** to track —
-durability *is* the committed position (n1k1's), and the pending delta is recomputable on demand.
-*(Optional internal optimization: n1k1 may journal each pending delta under `.n1k1/journal/<NAME>/`
-so replay is exact + re-scan-free and `.multi cursor log` / `reset --back N` can show/rewind an
-advance history. That's under the hood — an optimization, not a user-facing handle. Prior art: Kafka
-seek-back, git `reflog`, the transactional outbox.)*
+So the agent needn't `tee` its own `.out` and there's **no batch id** to track — durability *is* the
+committed position (n1k1's); the pending delta is recomputable on demand. *(Optional: journal each
+pending delta under `.n1k1/journal/<NAME>/` for exact/re-scan-free replay + a `log`/`reset --back`
+history — an internal optimization. Prior art: Kafka seek-back, the transactional outbox.)*
 
 ### Worked example — the JSON an agent sees
 
@@ -405,11 +376,10 @@ scan + corpus machinery.
 **Phase 1 — Named cursors + `peek`/`advance` (poll cadence) (MVP).** *Build on:* push-based scan,
 `records.Source` over jsonl/dir, `.multi run`, `_meta.pos/offset`, the recipe loader. *New:* a
 cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the `--cursor=NAME` bind + the
-cursor verbs `.multi cursor {peek,advance,list,show,log,reset,rm}` (advance echoes by default,
-`--quiet` trims); **append**
-delta only; at-least-once by construction (peek is non-advancing → re-peek never misses). Optional: journal each pending
-delta (`.n1k1/journal/<NAME>/`, bounded ring) for exact/re-scan-free replay + a `log`/`reset --back`
-reflog. → The whole crash-safe run-and-done "what's new" loop for append sources.
+cursor verbs `.multi cursor {peek,advance,list,show,log,reset,rm}` (`advance` echoes by default,
+`--quiet` trims); **append** delta only; at-least-once by construction (peek is non-advancing).
+Optional: journal each pending delta (`.n1k1/journal/<NAME>/`) for exact/re-scan-free replay. → The
+whole crash-safe run-and-done "what's new" loop for append sources.
 
 **Phase 2 — `diff`/snapshot delta.** *Build on:* the spillable rhmap store, doc-id extraction.
 *New:* `mode: diff` — persist a prior snapshot keyed by id under the cursor, diff on run, emit the
@@ -427,7 +397,7 @@ cross-layer delta). → correlation/incident packs over primitive detections.
 
 **Phase 5 — `n1k1 serve` + MCP (scheduled monitors).** *New:* a long-running process holding the
 cursor store; the `monitor` object (cursor + query + schedule + status); server-driven scheduled
-scheduled `peek`+`advance`; the MCP resource/tool/subscribe surface + long-poll HTTP. No unbounded source yet
+`peek`+`advance`; the MCP resource/tool/subscribe surface + long-poll HTTP. No unbounded source yet
 (scheduled-poll reuses Phase 1). → self-running monitors, agent-subscribable.
 
 **Phase 6 — true `follow` / continuous.** The heavy engine work (see next section): unbounded
@@ -492,12 +462,10 @@ combination — embedded + SQL++ + AI-authored git corpus + MQO — not any sing
 
 ## Prior art — nouns & verbs we're borrowing (the a-ha takeaways)
 
-- **Kafka / queue-consumer model** — what we actually are: a durable consumer with a committed
-  **offset**, **lag**, **seek**, at-least-once + redelivery, and *commit-offset* (= `advance`). This,
-  not git, is the fitting mental model; `peek` (look, non-advancing) and `advance` (move + echo what
-  it passed; `--quiet` to trim) are the plain cursor words. (`git remote`/`git stash` still lend the flat-core-verbs + sub-noun
-  taxonomy; and git's `fetch`-vs-`pull` was the *inspiration* for the safe-get-vs-get-and-advance
-  split — but we say it plainly rather than force git's content-DAG verbs like `commit`/`reset --hard`.)
+- **Kafka / queue-consumer model** — what we are: a durable consumer with a committed **offset**,
+  **lag**, **seek**, at-least-once + redelivery, and *commit-offset* (= `advance`). The fitting
+  mental model, and the source of `peek`/`advance`/`lag`. (`git remote`/`git stash` lend the
+  flat-verbs-+-sub-noun command taxonomy.)
 - **CouchDB/Couchbase `_changes`** (on-brand): `?since=<seq>` + `feed=normal|longpoll|continuous`.
   *The* canonical "what changed since seq N" API — maps 1:1 onto peek/follow + cursor.
 - **Snowflake Streams + Tasks:** a `STREAM` is a change-cursor that **advances on consumption**; a
