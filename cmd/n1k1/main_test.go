@@ -14,6 +14,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -87,5 +88,45 @@ func TestResolveSessionFallbackWhenNotExplicit(t *testing.T) {
 	}
 	if effDir != "" {
 		t.Errorf("effDir = %q, want \"\" (signals the empty-store fallback)", effDir)
+	}
+}
+
+// TestResolveSessionNoPathNeverScansCwd: a bare invocation (no path -> explicit=false)
+// must start a FRESH EMPTY store, NOT scan the current working directory -- even when
+// cwd opens fine as a datastore (a dir with data files in it). Regression guard: a
+// bare `n1k1` used to expose the whole cwd as keyspaces because it opened the default
+// "." dir and only fell back to empty on an open *failure*.
+func TestResolveSessionNoPathNeverScansCwd(t *testing.T) {
+	// Run from a directory that is a perfectly openable datastore (holds a data file),
+	// so OpenSession(".") would succeed and scan it if the fix regressed.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "leak.jsonl"), []byte(`{"x":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dataDir); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, effDir, cleanup, err := resolveSession(".", false) // exactly what main() passes with no args
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("no-path resolve should succeed, got %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected an empty-store session")
+	}
+	if effDir != "" {
+		t.Errorf("effDir = %q, want \"\" -- a bare REPL must start empty, not scan cwd", effDir)
+	}
+	// And the empty store must expose NO keyspace from cwd.
+	if rows, rerr := sess.Run(`SELECT COUNT(*) AS n FROM leak`); rerr == nil {
+		t.Errorf("bare REPL saw a cwd keyspace %q; want a no-keyspace error, got rows %v", "leak", rows)
 	}
 }

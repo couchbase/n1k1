@@ -202,7 +202,9 @@ func main() {
 	})
 
 	formatsStr := *formatsFlag
-	if !formatsGiven && !multiSource { // multi-source has no single catalog root
+	if !formatsGiven && explicit { // a single explicit datastore root (multi-source and
+		// the bare-REPL no-path case have no catalog root to read -- and reading cwd's
+		// catalog.json for a bare `n1k1` would be the same cwd-scanning surprise).
 		if cf, cerr := glue.CatalogFormats(dir); cerr == nil {
 			formatsStr = cf
 		}
@@ -399,18 +401,24 @@ func main() {
 // path -- a typo, a missing/unreadable directory or file, or a file that isn't a
 // datastore -- is returned as an error so the caller exits non-zero; silently
 // querying an empty store would let a bad path in a script "succeed". When no path
-// was given (a bare REPL), an open failure instead falls back to a fresh empty
-// store so the user can still evaluate expressions and `.open` a datastore later;
-// in that case effDir is "" and cleanup removes the temp dir (it's a no-op
-// otherwise). Callers should always `defer cleanup()`.
+// was given (explicit=false, a bare REPL), it starts a fresh EMPTY store -- it does
+// NOT scan the current working directory -- so the user can evaluate expressions and
+// `.open` a datastore later; in that case effDir is "" and cleanup removes the temp
+// dir (it's a no-op otherwise). Callers should always `defer cleanup()`.
 func resolveSession(dir string, explicit bool) (sess *glue.Session, effDir string, cleanup func(), err error) {
-	if sess, err = glue.OpenSession(dir, defaultNamespace); err == nil {
+	if explicit {
+		// An explicitly-named path must open; a failure is fatal.
+		if sess, err = glue.OpenSession(dir, defaultNamespace); err != nil {
+			return nil, "", func() {}, fmt.Errorf("cannot open datastore %q: %s", dir, tidyMsg(err.Error()))
+		}
 		return sess, dir, func() {}, nil
 	}
-	if explicit {
-		return nil, "", func() {}, fmt.Errorf("cannot open datastore %q: %s", dir, tidyMsg(err.Error()))
-	}
-	// No path was named: keep going with an empty store.
+	// No path was named (a bare REPL): start with a fresh empty store rather than
+	// opening the default dir ("."). Opening "." would expose the whole current
+	// working directory as keyspaces -- `n1k1` with no args silently scanning cwd --
+	// which is never what a bare invocation intends. (`OpenSession(".")` usually
+	// succeeds, so the old "try dir, fall back on failure" logic only started empty
+	// when cwd happened not to open; now it always does.)
 	empty, e2 := os.MkdirTemp("", "n1k1-empty-")
 	if e2 != nil {
 		return nil, "", func() {}, e2
