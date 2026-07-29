@@ -53,13 +53,14 @@ func TestMultiCursorAppendLoop(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	store := t.TempDir()
 
 	// run executes a `.multi cursor ...` command and returns the parsed envelope.
 	run := func(cmd string) map[string]interface{} {
 		out.Reset()
 		errb.Reset()
 		c.failed = false
-		c.cmdMulti("cursor " + cmd)
+		c.cmdMulti("cursor " + cmd + " --cursor-store " + store)
 		line := strings.TrimSpace(out.String())
 		if line == "" {
 			t.Fatalf("cursor %q: no JSON output (stderr: %s)", cmd, errb.String())
@@ -135,14 +136,14 @@ func TestMultiCursorAppendLoop(t *testing.T) {
 		t.Fatalf("advance --quiet: labelResults should be suppressed, got %v", env["labelResults"])
 	}
 
-	// show: committed position is non-empty and metadata is present.
-	if env := run("show errs"); env["committed"].(string) == "" || env["mode"] != "append" {
-		t.Fatalf("show: want non-empty committed + append mode, got %v", env)
+	// show: committed position is present (a nested object, not a string) + append mode.
+	if env := run("show errs"); env["mode"] != "append" || env["committed"] == nil {
+		t.Fatalf("show: want append mode + non-nil committed object, got %v", env)
 	}
 
 	// list: includes our cursor.
 	out.Reset()
-	c.cmdMulti("cursor list")
+	c.cmdMulti("cursor list --cursor-store " + store)
 	if !strings.Contains(out.String(), `"cursor":"errs"`) {
 		t.Fatalf("list: missing errs: %s", out.String())
 	}
@@ -173,6 +174,7 @@ func TestMultiCursorCreateGuards(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	store := t.TempDir()
 	env := func() map[string]interface{} {
 		var e map[string]interface{}
 		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
@@ -180,25 +182,25 @@ func TestMultiCursorCreateGuards(t *testing.T) {
 	}
 
 	out.Reset()
-	c.cmdMulti("cursor create") // no name
+	c.cmdMulti("cursor create --cursor-store " + store) // no name
 	if env()["status"] != "error" {
 		t.Fatalf("create no-name: want error, got %s", out.String())
 	}
 
 	out.Reset()
-	c.cmdMulti("cursor create c1") // no pack
+	c.cmdMulti("cursor create c1 --cursor-store " + store) // no pack
 	if env()["status"] != "error" {
 		t.Fatalf("create no-pack: want error, got %s", out.String())
 	}
 
 	out.Reset()
-	c.cmdMulti("cursor create c1 --pack " + pack)
+	c.cmdMulti("cursor create c1 --pack " + pack + " --cursor-store " + store)
 	if env()["ok"] != true {
 		t.Fatalf("create c1: want ok, got %s", out.String())
 	}
 
 	out.Reset()
-	c.cmdMulti("cursor create c1 --pack " + pack) // duplicate
+	c.cmdMulti("cursor create c1 --pack " + pack + " --cursor-store " + store) // duplicate
 	if e := env(); e["status"] != "error" || e["error"].(map[string]interface{})["kind"] != "exists" {
 		t.Fatalf("create duplicate: want error/exists, got %s", out.String())
 	}
@@ -232,11 +234,12 @@ func TestMultiCursorDiffLoop(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	store := t.TempDir()
 	run := func(cmd string) map[string]interface{} {
 		out.Reset()
 		errb.Reset()
 		c.failed = false
-		c.cmdMulti("cursor " + cmd)
+		c.cmdMulti("cursor " + cmd + " --cursor-store " + store)
 		var env map[string]interface{}
 		if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env); err != nil {
 			t.Fatalf("cursor %q: bad JSON %q: %v (stderr %s)", cmd, out.String(), err, errb.String())
@@ -339,11 +342,12 @@ func TestMultiCursorGitOps(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	store := t.TempDir()
 	run := func(cmd string) map[string]interface{} {
 		out.Reset()
 		errb.Reset()
 		c.failed = false
-		c.cmdMulti("cursor " + cmd)
+		c.cmdMulti("cursor " + cmd + " --cursor-store " + store)
 		var env map[string]interface{}
 		if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env); err != nil {
 			t.Fatalf("cursor %q: bad JSON %q: %v (stderr %s)", cmd, out.String(), err, errb.String())
@@ -381,15 +385,16 @@ func TestMultiCursorGitOps(t *testing.T) {
 
 	// Advance log-errors past its seed, then grow the source.
 	run("advance log-errors")
-	committed := run("show log-errors")["committed"].(string)
+	committedB, _ := json.Marshal(run("show log-errors")["committed"])
 	if err := os.WriteFile(logsFile, []byte(`{"sev":"ERROR","msg":"boom"}`+"\n"+`{"sev":"ERROR","msg":"again"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	// Re-apply (unchanged files): must PRESERVE the committed position, NOT rebaseline.
 	run("apply " + monitors)
-	if got := run("show log-errors")["committed"].(string); got != committed {
-		t.Fatalf("re-apply rebased an unchanged cursor: committed %q -> %q", committed, got)
+	gotB, _ := json.Marshal(run("show log-errors")["committed"])
+	if string(gotB) != string(committedB) {
+		t.Fatalf("re-apply rebased an unchanged cursor: committed %s -> %s", committedB, gotB)
 	}
 	// Proof the position was preserved: peek still sees the appended ERROR as new.
 	if env := run("peek log-errors"); env["count"].(float64) != 1 {
@@ -427,7 +432,7 @@ func TestMultiCursorGitOps(t *testing.T) {
 	// manual (imperative) survived; open-incidents gone.
 	names := map[string]bool{}
 	out.Reset()
-	c.cmdMulti("cursor list")
+	c.cmdMulti("cursor list --cursor-store " + store)
 	var list []map[string]interface{}
 	json.Unmarshal([]byte(strings.TrimSpace(out.String())), &list)
 	for _, r := range list {
@@ -435,5 +440,105 @@ func TestMultiCursorGitOps(t *testing.T) {
 	}
 	if !names["manual"] || !names["log-errors"] || names["open-incidents"] {
 		t.Fatalf("after prune: want {manual,log-errors} present, open-incidents gone; got %v", names)
+	}
+}
+
+// TestMultiCursorMetadata covers ISSUE-03: labels (k=v and JSON) + annotations are
+// persisted and echoed by show; a metadata-only edit refreshes without moving the
+// position (retag/reword is a no-op for state); an unsupported front-matter key is
+// warned, not silently dropped.
+func TestMultiCursorMetadata(t *testing.T) {
+	root := t.TempDir()
+	logs := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logs, "l.jsonl"),
+		[]byte(`{"sev":"ERROR"}`+"\n"+`{"sev":"ERROR"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	store := t.TempDir()
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(dir, "m.sql++"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := "-- label: M\n-- labels: team=devinfra, sev=normal\n" +
+		`-- annotations: {"provenance":{"authored_by":"steve","git_sha":"abc123"}}` + "\n" +
+		"-- description: watch errors\n" +
+		`SELECT l.sev FROM logs l WHERE l.sev = "ERROR"`
+	write(base)
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	run := func(cmd string) map[string]interface{} {
+		out.Reset()
+		errb.Reset()
+		c.failed = false
+		c.cmdMulti("cursor " + cmd + " --cursor-store " + store)
+		var env map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env)
+		return env
+	}
+
+	run("apply " + dir)
+
+	// show echoes labels (k=v parsed) + annotations (verbatim).
+	env := run("show M")
+	labels, _ := env["labels"].(map[string]interface{})
+	if labels["team"] != "devinfra" || labels["sev"] != "normal" {
+		t.Fatalf("labels not persisted: %v", env["labels"])
+	}
+	ann, _ := json.Marshal(env["annotations"])
+	if !strings.Contains(string(ann), "abc123") {
+		t.Fatalf("annotations not persisted verbatim: %s", ann)
+	}
+
+	// Advance so total_advances>0 and the position moves off the baseline.
+	run("advance M")
+	before := run("show M")
+	beforeAdvances := before["total_advances"].(float64)
+	beforeCommitted, _ := json.Marshal(before["committed"])
+
+	// Metadata-only edit: reword description + retag. Identity (pack+mode+bind) is
+	// unchanged, so plan must classify it as metadata (not update), and apply must
+	// NOT move the position or reset total_advances.
+	write("-- label: M\n-- labels: team=devinfra, sev=high\n" +
+		`-- annotations: {"provenance":{"authored_by":"steve","git_sha":"def456"}}` + "\n" +
+		"-- description: watch ERROR events\n" +
+		`SELECT l.sev FROM logs l WHERE l.sev = "ERROR"`)
+
+	plan := run("plan " + dir)
+	if md, _ := plan["metadata"].([]interface{}); len(md) != 1 || md[0] != "M" {
+		t.Fatalf("plan: metadata-only edit should be classified 'metadata', got %v", plan)
+	}
+	if ch := plan["changes"].(float64); ch != 1 {
+		t.Fatalf("plan: want changes=1 (the metadata drift), got %v", ch)
+	}
+
+	run("apply " + dir)
+	after := run("show M")
+	afterCommitted, _ := json.Marshal(after["committed"])
+	if string(afterCommitted) != string(beforeCommitted) {
+		t.Fatalf("metadata edit moved the position: %s -> %s", beforeCommitted, afterCommitted)
+	}
+	if after["total_advances"].(float64) != beforeAdvances {
+		t.Fatalf("metadata edit reset total_advances: %v -> %v", beforeAdvances, after["total_advances"])
+	}
+	if lab, _ := after["labels"].(map[string]interface{}); lab["sev"] != "high" {
+		t.Fatalf("metadata edit not applied (sev should be high): %v", after["labels"])
+	}
+
+	// An unsupported front-matter key is warned, not silently dropped.
+	write("-- label: M\n-- flavour: strawberry\n" + `SELECT l.sev FROM logs l WHERE l.sev = "ERROR"`)
+	plan = run("plan " + dir)
+	warns, _ := plan["warnings"].([]interface{})
+	joined := ""
+	for _, w := range warns {
+		joined += w.(string) + "\n"
+	}
+	if !strings.Contains(joined, "flavour") {
+		t.Fatalf("plan should warn about unsupported key 'flavour', got warnings=%v", plan["warnings"])
 	}
 }

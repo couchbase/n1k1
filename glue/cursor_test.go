@@ -273,18 +273,20 @@ func TestReconcilePlanAndLoadPack(t *testing.T) {
 		t.Fatalf("LoadPack(dir): %v len=%d", err, len(es))
 	}
 
-	base := SpecHash("p@1", "append", "", "id", "desc", nil)
-	if base != SpecHash("p@1", "append", "", "id", "desc", nil) {
+	// SpecHash is the DELTA IDENTITY only (pack+mode+bind+id-field) — NOT metadata,
+	// so a retag/reword never changes it (see the metadata-drift path).
+	base := SpecHash("p@1", "append", "", "id")
+	if base != SpecHash("p@1", "append", "", "id") {
 		t.Fatal("SpecHash not stable")
 	}
 	for _, h := range []string{
-		SpecHash("p@2", "append", "", "id", "desc", nil),                         // pack changed
-		SpecHash("p@1", "diff", "", "id", "desc", nil),                           // mode changed
-		SpecHash("p@1", "append", "m", "id", "desc", nil),                        // bind changed
-		SpecHash("p@1", "append", "", "id", "desc", map[string]string{"k": "v"}), // labels changed
+		SpecHash("p@2", "append", "", "id"),  // pack changed
+		SpecHash("p@1", "diff", "", "id"),    // mode changed
+		SpecHash("p@1", "append", "m", "id"), // bind changed
+		SpecHash("p@1", "append", "", "key"), // id-field changed
 	} {
 		if h == base {
-			t.Fatal("SpecHash insensitive to a config change")
+			t.Fatal("SpecHash insensitive to an identity change")
 		}
 	}
 

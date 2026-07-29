@@ -428,25 +428,17 @@ func LoadPack(path string) ([]MultiQueryEntry, error) {
 	return []MultiQueryEntry{e}, nil
 }
 
-// SpecHash is the reconcile fingerprint of a cursor's DECLARED configuration: any
-// change to the pack content (packID), delta mode, binding, id-field, description,
-// or labels changes it, so `apply` can tell an unchanged cursor (whose committed
-// position must be preserved) from a drifted one that needs re-binding.
-func SpecHash(packID, mode, bind, idField, desc string, labels map[string]string) string {
+// SpecHash is the reconcile fingerprint of a cursor's DELTA IDENTITY — the pack
+// content (packID), delta mode, binding, and id-field. It deliberately EXCLUDES
+// description / labels / annotations: per DESIGN-cep.md the delta-identity is
+// "(query+binding SHA, source-fingerprint)", and "a retag/reword is a no-op for
+// state". So a metadata-only edit leaves SpecHash unchanged (the committed
+// position is never re-baselined by a comment change); `apply` refreshes such
+// metadata in place separately (see the metadata-drift pass).
+func SpecHash(packID, mode, bind, idField string) string {
 	h := sha256.New()
-	for _, s := range []string{packID, mode, bind, idField, desc} {
+	for _, s := range []string{packID, mode, bind, idField} {
 		h.Write([]byte(s))
-		h.Write([]byte{0})
-	}
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		h.Write([]byte(k))
-		h.Write([]byte{'='})
-		h.Write([]byte(labels[k]))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]

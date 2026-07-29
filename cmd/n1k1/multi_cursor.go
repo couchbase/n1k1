@@ -30,6 +30,7 @@ package main
 // TTY) — the shape an agent switches on. Diagnostics go to stderr.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -47,17 +48,18 @@ import (
 // the per-verb flags. Unlike parseMultiArgs it does NOT require --queries (a
 // peek/advance is addressed by cursor name; --pack is create-only).
 type cursorArgs struct {
-	name    string   // the cursor NAME (first positional)
-	pack    []string // --pack <dir> (repeatable / comma-list), create-only
-	bind    string   // --bind <manifest>
-	to      string   // --to <pos>, advance-only (the opaque position token)
-	from    string   // --from now|start, create-only (default: now)
-	desc    string   // --desc <text>, create-only
-	store   string   // --cursor-store <dir> (override the default state dir)
-	mode    string   // --mode append|diff, create-only (default: append)
-	idField string   // --id-field <name>, create-only diff (default: id)
-	quiet   bool     // --quiet, advance-only (ack only, no labelResults echo)
-	prune   bool     // --prune, apply-only (destroy managed cursors not declared)
+	name      string   // the cursor NAME (first positional)
+	pack      []string // --pack <dir> (repeatable / comma-list), create-only
+	bind      string   // --bind <manifest>
+	to        string   // --to <pos>, advance-only (the opaque position token)
+	from      string   // --from now|start, create-only (default: now)
+	desc      string   // --desc <text>, create-only
+	store     string   // --cursor-store <dir> (override the default state dir)
+	mode      string   // --mode append|diff, create-only (default: append)
+	idField   string   // --id-field <name>, create-only diff (default: id)
+	quiet     bool     // --quiet, advance-only (ack only, no labelResults echo)
+	prune     bool     // --prune, apply-only (destroy managed cursors not declared)
+	positions bool     // --positions, show-only (full position map, not a summary)
 }
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
@@ -152,6 +154,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.quiet = !hasEq || val == "true" || val == "1"
 		case "prune":
 			a.prune = !hasEq || val == "true" || val == "1"
+		case "positions", "verbose":
+			a.positions = !hasEq || val == "true" || val == "1"
 		default:
 			return a, fmt.Errorf("unknown flag %q", t)
 		}
@@ -229,14 +233,15 @@ func (c *cli) printJSON(v interface{}) {
 }
 
 // cursorStore roots the cursor state dir: --cursor-store if given, else the
-// gitignorable <bundle>/.n1k1-state/cursors (DESIGN-cep.md § State & idempotency).
+// gitignorable CWD-relative ./.n1k1-state/cursors (DESIGN-cep.md § State &
+// idempotency — tfstate lives next to your config, NOT inside the resource). It
+// deliberately does NOT default inside the datastore bundle: a bundle can be
+// read-only or owned by another live process (e.g. ~/.claude/projects, scanned by
+// Claude Code), where writing state either fails or corrupts that process's walks.
 func (c *cli) cursorStore(override string) (*glue.CursorStore, error) {
 	dir := override
 	if dir == "" {
-		if c.dir == "" {
-			return nil, fmt.Errorf("no bundle open -- open a datastore directory first (.open <dir>)")
-		}
-		dir = filepath.Join(c.dir, ".n1k1-state", "cursors")
+		dir = filepath.Join(".n1k1-state", "cursors")
 	}
 	return glue.NewCursorStore(dir), nil
 }
@@ -418,7 +423,7 @@ func (c *cli) cursorCreate(arg string) {
 
 	// Imperative create is unmanaged (never pruned by `apply`), but carries a
 	// SpecHash so a later `apply` declaring the same name can adopt it.
-	st.SpecHash = glue.SpecHash(st.PackID, st.Mode, st.Bind, st.IdField, st.Description, st.Labels)
+	st.SpecHash = glue.SpecHash(st.PackID, st.Mode, st.Bind, st.IdField)
 	st.Managed = false
 
 	if err := store.Save(st); err != nil {
@@ -567,13 +572,40 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	c.printJSON(env)
 }
 
-// positionToken renders a cursor's committed position for display / envelopes:
-// the `{container→offset}` water token for append, "snap:N" for diff.
+// positionToken renders a cursor's committed position as the OPAQUE from/to token
+// an agent passes back to `advance --to`: the `{container→offset}` water token for
+// append, "snap:N" for diff. (Display uses committedField instead.)
 func (c *cli) positionToken(st *glue.CursorState) string {
 	if st.Mode == "diff" {
 		return fmt.Sprintf("snap:%d", st.SnapVersion)
 	}
 	return encodeWater(st.Water)
+}
+
+// committedField renders a cursor's committed position for HUMAN display in
+// show/list: a nested object (never a double-encoded string). For an append cursor
+// with many containers it summarizes ({containers, min, max}) unless `verbose`
+// (--positions) asks for the full per-container map; a single-container cursor
+// shows the map directly. Diff cursors show the compact "snap:N".
+func committedField(st *glue.CursorState, verbose bool) interface{} {
+	if st.Mode == "diff" {
+		return fmt.Sprintf("snap:%d", st.SnapVersion)
+	}
+	if verbose || len(st.Water) <= 1 {
+		return st.Water
+	}
+	var lo, hi int64
+	first := true
+	for _, off := range st.Water {
+		if first || off < lo {
+			lo = off
+		}
+		if first || off > hi {
+			hi = off
+		}
+		first = false
+	}
+	return map[string]interface{}{"containers": len(st.Water), "min": lo, "max": hi}
 }
 
 // cursorDiffPeekAdvance is the diff-mode counterpart of the append peek/advance:
@@ -699,11 +731,12 @@ func (c *cli) cursorList(arg string) {
 		return
 	}
 	type listRow struct {
-		Cursor    string `json:"cursor"`
-		Pack      string `json:"pack"`
-		Mode      string `json:"mode"`
-		Committed string `json:"committed"`
-		Advances  int    `json:"total_advances"`
+		Cursor    string            `json:"cursor"`
+		Pack      string            `json:"pack"`
+		Mode      string            `json:"mode"`
+		Committed interface{}       `json:"committed"`
+		Labels    map[string]string `json:"labels,omitempty"`
+		Advances  int               `json:"total_advances"`
 	}
 	out := make([]listRow, 0, len(names))
 	for _, n := range names {
@@ -712,7 +745,7 @@ func (c *cli) cursorList(arg string) {
 			continue
 		}
 		out = append(out, listRow{Cursor: n, Pack: st.PackID, Mode: st.Mode,
-			Committed: c.positionToken(st), Advances: st.TotalAdvances})
+			Committed: committedField(st, a.positions), Labels: st.Labels, Advances: st.TotalAdvances})
 	}
 	c.printJSON(out)
 }
@@ -748,17 +781,18 @@ func (c *cli) cursorShow(arg string) {
 		Bind          string            `json:"bind,omitempty"`
 		Mode          string            `json:"mode"`
 		IdField       string            `json:"id_field,omitempty"`
-		Committed     string            `json:"committed"`
+		Committed     interface{}       `json:"committed"`
 		Description   string            `json:"description,omitempty"`
 		Labels        map[string]string `json:"labels,omitempty"`
+		Annotations   json.RawMessage   `json:"annotations,omitempty"`
 		Created       string            `json:"created,omitempty"`
 		Updated       string            `json:"updated,omitempty"`
 		LastCount     int               `json:"last_count"`
 		TotalAdvances int               `json:"total_advances"`
 	}{
 		Cursor: st.Name, Pack: st.PackID, PackDir: st.Pack, Bind: st.Bind,
-		Mode: st.Mode, IdField: st.IdField, Committed: c.positionToken(st), Description: st.Description,
-		Labels: st.Labels, Created: st.Created, Updated: st.Updated,
+		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions), Description: st.Description,
+		Labels: st.Labels, Annotations: st.Annotations, Created: st.Created, Updated: st.Updated,
 		LastCount: st.LastCount, TotalAdvances: st.TotalAdvances,
 	})
 }
@@ -797,17 +831,19 @@ func (c *cli) cursorRemove(arg string) {
 // desiredCursor is one cursor declared by a *.sql++ file in a desired-state dir:
 // name = the file stem, pack = the file itself, policy read from its front-matter.
 type desiredCursor struct {
-	name     string
-	file     string
-	mode     string
-	bind     string
-	idField  string
-	from     string
-	desc     string
-	labels   map[string]string
-	packID   string
-	specHash string
-	entries  []glue.MultiQueryEntry
+	name        string
+	file        string
+	mode        string
+	bind        string
+	idField     string
+	from        string
+	desc        string
+	labels      map[string]string
+	annotations json.RawMessage
+	packID      string
+	specHash    string
+	entries     []glue.MultiQueryEntry
+	unknownKeys []string // front-matter keys we don't consume (warned at plan)
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -819,15 +855,55 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// parseLabels accepts either a JSON object (`{"team":"x"}`) or the compact
+// `k=v, k2=v2` form. Returns nil for empty/unparseable input.
 func parseLabels(s string) map[string]string {
-	if strings.TrimSpace(s) == "" {
+	s = strings.TrimSpace(s)
+	if s == "" {
 		return nil
 	}
+	if strings.HasPrefix(s, "{") {
+		m := map[string]string{}
+		if json.Unmarshal([]byte(s), &m) != nil {
+			return nil
+		}
+		return m
+	}
 	m := map[string]string{}
-	if json.Unmarshal([]byte(s), &m) != nil {
+	for _, pair := range strings.Split(s, ",") {
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		k, v := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		if k != "" {
+			m[k] = v
+		}
+	}
+	if len(m) == 0 {
 		return nil
 	}
 	return m
+}
+
+// parseAnnotations validates a front-matter `annotations:` value as JSON and
+// returns it verbatim (stored/echoed uninterpreted). Invalid JSON => nil.
+func parseAnnotations(s string) json.RawMessage {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if !json.Valid([]byte(s)) {
+		return nil
+	}
+	return json.RawMessage(s)
+}
+
+// composePolicyKeys are the front-matter keys the cursor/compose loaders consume;
+// any other key is surfaced as an unknown-key warning at plan time.
+var cursorPolicyKeys = map[string]bool{
+	"mode": true, "bind": true, "from": true, "id-field": true, "id_field": true,
+	"labels": true, "annotations": true, "needs": true,
 }
 
 // buildDesired reads a desired-state dir: one *.sql++ file => one cursor (name =
@@ -864,8 +940,17 @@ func buildDesired(dir, globalBind string) (map[string]*desiredCursor, []string, 
 		d.from = firstNonEmpty(e.Meta["from"], "now")
 		d.desc = e.Description
 		d.labels = parseLabels(e.Meta["labels"])
+		d.annotations = parseAnnotations(e.Meta["annotations"])
 		d.packID = glue.PackID(name, d.entries)
-		d.specHash = glue.SpecHash(d.packID, d.mode, d.bind, d.idField, d.desc, d.labels)
+		d.specHash = glue.SpecHash(d.packID, d.mode, d.bind, d.idField)
+		// Surface front-matter keys we don't consume (typos, unsupported policy) so
+		// `plan` can warn rather than silently dropping declared config.
+		for k := range e.Meta {
+			if !cursorPolicyKeys[k] {
+				d.unknownKeys = append(d.unknownKeys, k)
+			}
+		}
+		sort.Strings(d.unknownKeys)
 		out[name] = d
 		names = append(names, name)
 	}
@@ -919,6 +1004,7 @@ func (c *cli) provisionCursor(store *glue.CursorStore, d *desiredCursor, prior *
 	st.IdField = d.idField
 	st.Description = d.desc
 	st.Labels = d.labels
+	st.Annotations = d.annotations
 	st.SpecHash = d.specHash
 	st.Managed = true
 	st.Updated = now
@@ -1007,14 +1093,28 @@ func (c *cli) cursorReconcile(arg string, apply bool) {
 		desiredHashes[n] = d.specHash
 	}
 
+	// Warn on declared-but-unsupported front-matter keys (typos, dropped policy) so
+	// nothing is silently discarded.
+	var warnings []string
+	for _, n := range names {
+		for _, k := range desired[n].unknownKeys {
+			warnings = append(warnings, fmt.Sprintf("%s: front-matter key %q is not supported and was ignored", n, k))
+		}
+	}
+
 	if !apply {
 		plan := glue.PlanReconcile(desiredHashes, live, true) // show prunable destroys
+		metaDrift, trueUnchanged := splitMetaDrift(plan.Unchanged, live, desired)
+		plan.Unchanged = trueUnchanged
 		c.printJSON(struct {
 			Plan     glue.ReconcilePlan  `json:"plan"`
+			Metadata []string            `json:"metadata,omitempty"` // identity unchanged, metadata drifted
 			Changes  int                 `json:"changes"`
 			Prunable int                 `json:"prunable"`
+			Warnings []string            `json:"warnings,omitempty"`
 			Errors   []map[string]string `json:"errors,omitempty"`
-		}{Plan: plan, Changes: len(plan.Create) + len(plan.Update), Prunable: len(plan.Destroy), Errors: probs})
+		}{Plan: plan, Metadata: metaDrift, Changes: len(plan.Create) + len(plan.Update) + len(metaDrift),
+			Prunable: len(plan.Destroy), Warnings: warnings, Errors: probs})
 		if len(probs) > 0 {
 			c.failed = true
 		}
@@ -1032,7 +1132,8 @@ func (c *cli) cursorReconcile(arg string, apply bool) {
 	}
 
 	plan := glue.PlanReconcile(desiredHashes, live, a.prune)
-	var created, updated, destroyed []string
+	metaDrift, trueUnchanged := splitMetaDrift(plan.Unchanged, live, desired)
+	var created, updated, metadata, destroyed []string
 	var execErrs []map[string]string
 	for _, n := range plan.Create {
 		if e := c.provisionCursor(store, desired[n], nil); e != nil {
@@ -1048,6 +1149,15 @@ func (c *cli) cursorReconcile(arg string, apply bool) {
 			updated = append(updated, n)
 		}
 	}
+	// Metadata-only drift: refresh labels/annotations/description in place WITHOUT
+	// re-validating or moving the position (the "retag/reword is a no-op for state" rule).
+	for _, n := range metaDrift {
+		if e := c.refreshMetadata(store, desired[n], live[n]); e != nil {
+			execErrs = append(execErrs, map[string]string{"cursor": n, "error": e.Error()})
+		} else {
+			metadata = append(metadata, n)
+		}
+	}
 	for _, n := range plan.Destroy {
 		if e := store.Remove(n); e != nil {
 			execErrs = append(execErrs, map[string]string{"cursor": n, "error": e.Error()})
@@ -1059,24 +1169,83 @@ func (c *cli) cursorReconcile(arg string, apply bool) {
 		Applied struct {
 			Created   []string `json:"created"`
 			Updated   []string `json:"updated"`
+			Metadata  []string `json:"metadata"`
 			Destroyed []string `json:"destroyed"`
 			Unchanged []string `json:"unchanged"`
 		} `json:"applied"`
-		Prune  bool                `json:"prune"`
-		OK     bool                `json:"ok"`
-		Errors []map[string]string `json:"errors,omitempty"`
+		Prune    bool                `json:"prune"`
+		Warnings []string            `json:"warnings,omitempty"`
+		OK       bool                `json:"ok"`
+		Errors   []map[string]string `json:"errors,omitempty"`
 	}{
 		Applied: struct {
 			Created   []string `json:"created"`
 			Updated   []string `json:"updated"`
+			Metadata  []string `json:"metadata"`
 			Destroyed []string `json:"destroyed"`
 			Unchanged []string `json:"unchanged"`
-		}{Created: created, Updated: updated, Destroyed: destroyed, Unchanged: plan.Unchanged},
-		Prune: a.prune, OK: len(execErrs) == 0, Errors: execErrs,
+		}{Created: created, Updated: updated, Metadata: metadata, Destroyed: destroyed, Unchanged: trueUnchanged},
+		Prune: a.prune, Warnings: warnings, OK: len(execErrs) == 0, Errors: execErrs,
 	})
 	if len(execErrs) > 0 {
 		c.failed = true
 	}
+}
+
+// splitMetaDrift partitions identity-unchanged cursors into those whose metadata
+// (labels/annotations/description) drifted from the declared spec and those fully
+// unchanged.
+func splitMetaDrift(unchanged []string, live map[string]*glue.CursorState, desired map[string]*desiredCursor) (drift, same []string) {
+	for _, n := range unchanged {
+		if !metaEqual(live[n], desired[n]) {
+			drift = append(drift, n)
+		} else {
+			same = append(same, n)
+		}
+	}
+	return drift, same
+}
+
+func metaEqual(st *glue.CursorState, d *desiredCursor) bool {
+	return st.Description == d.desc &&
+		labelsEqual(st.Labels, d.labels) &&
+		normJSON(st.Annotations) == normJSON(d.annotations)
+}
+
+func labelsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// normJSON compacts a RawMessage so a whitespace-only difference isn't seen as
+// metadata drift (empty for nil).
+func normJSON(b json.RawMessage) string {
+	if len(b) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if json.Compact(&buf, b) != nil {
+		return string(b)
+	}
+	return buf.String()
+}
+
+// refreshMetadata rewrites only a cursor's metadata (labels/annotations/
+// description) + Updated stamp, leaving PackID/mode/position untouched.
+func (c *cli) refreshMetadata(store *glue.CursorStore, d *desiredCursor, prior *glue.CursorState) error {
+	st := *prior
+	st.Description = d.desc
+	st.Labels = d.labels
+	st.Annotations = d.annotations
+	st.Updated = time.Now().UTC().Format(time.RFC3339)
+	return store.Save(&st)
 }
 
 // cursorFail prints an error envelope to stdout (so an agent parsing stdout still
@@ -1107,18 +1276,27 @@ const cursorHelpText = `.multi cursor <verb> — CEP named cursors (a durable "w
                        commit (get + move). Echoes the delta unless --quiet.
                        --to <pos> commits the exact position peek reported (two-step).
   list                 the cursors in the store.
-  show   NAME          one cursor's committed position + metadata.
+  show   NAME [--positions]
+                       one cursor's committed position + metadata (labels/annotations);
+                       committed is summarized for many-container append cursors unless
+                       --positions asks for the full per-container map.
   rm     NAME          forget a cursor.
 
-  plan   <dir>         GitOps diff: each *.sql++ in <dir> = one cursor (name = file
-                       stem, policy from front-matter mode/from/bind/id-field/labels);
-                       show create/update/destroy/unchanged vs live (no changes).
+  plan   <dir>         GitOps diff: each *.sql++ in <dir> = one cursor (name = its
+                       front-matter "label:", else the file stem; policy from
+                       front-matter mode/from/bind/id-field/labels/annotations);
+                       show create/update/metadata/destroy/unchanged vs live (no changes,
+                       warns on unsupported front-matter keys).
   apply  <dir> [--prune]
                        reconcile the store to <dir>; UNCHANGED cursors keep their
-                       position (idempotent). --prune destroys managed cursors no
-                       longer declared (imperative cursors are never pruned).
+                       position (idempotent); a metadata-only edit (labels/annotations/
+                       description) refreshes without moving the position. --prune
+                       destroys managed cursors no longer declared (imperative cursors
+                       are never pruned).
 
-  --cursor-store <dir> override the state dir (default <bundle>/.n1k1-state/cursors).
+  --cursor-store <dir> override the state dir (default ./.n1k1-state/cursors, CWD-
+                       relative and gitignorable; n1k1 never writes inside the datastore
+                       bundle, which may be read-only or owned by another process).
 
 Safe agent loop: peek (look) -> act -> advance --to <pos> --quiet. Each response is
 one JSON envelope; switch on "status" (pending | advanced | empty | error).
