@@ -78,7 +78,7 @@ func ctxExtractor(tag string, before, after int) []interface{} {
 	return []interface{}{tag, before, after, pred, []interface{}{proj}}
 }
 
-// runContextBroadcast runs the op over rows and returns results grouped by tag, each a
+// runContextBroadcast runs the op over rows and returns labelResults grouped by tag, each a
 // list of the emitted pos values (in emission order).
 func runContextBroadcast(t *testing.T, rows []ctxRow, exts ...[]interface{}) map[string][]int {
 	t.Helper()
@@ -103,7 +103,7 @@ func runContextBroadcast(t *testing.T, rows []ctxRow, exts ...[]interface{}) map
 	got := map[string][]int{}
 	for _, row := range collectRows(t, op, broadcastVars()) {
 		if len(row) != 2 {
-			t.Fatalf("result has %d slots, want 2: %v", len(row), row)
+			t.Fatalf("labelResult has %d slots, want 2: %v", len(row), row)
 		}
 		tag, err := strconv.Unquote(row[0])
 		if err != nil {

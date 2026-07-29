@@ -31,15 +31,15 @@ func dataScan(data string) *base.Op {
 	return &base.Op{Kind: "scan", Labels: base.Labels{"."}, Params: []interface{}{"jsonsData", data}}
 }
 
-// resultsByTag runs an op tree and groups the interleaved tagged results by
+// labelResultsByTag runs an op tree and groups the interleaved tagged labelResults by
 // tag (slot 0, a JSON string), preserving per-tag row order. Slot 1+ is the
 // projected evidence, compared verbatim.
-func resultsByTag(t *testing.T, root *base.Op) map[string][][]string {
+func labelResultsByTag(t *testing.T, root *base.Op) map[string][][]string {
 	t.Helper()
 	got := map[string][][]string{}
 	for _, row := range collectRows(t, root, broadcastVars()) {
 		if len(row) < 1 {
-			t.Fatalf("result has no tag slot: %v", row)
+			t.Fatalf("labelResult has no tag slot: %v", row)
 		}
 		tag, err := strconv.Unquote(row[0])
 		if err != nil {
@@ -51,7 +51,7 @@ func resultsByTag(t *testing.T, root *base.Op) map[string][][]string {
 }
 
 // TestOpBroadcastIndexedEquivalence is THE invariant guard: the predicate-index
-// op must produce results BYTE-IDENTICAL (per tag, in row order) to a plain
+// op must produce labelResults BYTE-IDENTICAL (per tag, in row order) to a plain
 // "broadcast" over the same detectors + scan. The corpus deliberately mixes:
 //
 //   - detectors with distinct RARE literals (contains / regexp plain literal),
@@ -61,7 +61,7 @@ func resultsByTag(t *testing.T, root *base.Op) map[string][][]string {
 //     fails) -> the full predicate must re-check and drop it,
 //   - a regex-with-metacharacters detector -> always-wake (no literal extracted).
 func TestOpBroadcastIndexedEquivalence(t *testing.T) {
-	results := base.Labels{"tag", "ev"}
+	labelResults := base.Labels{"tag", "ev"}
 	proj := []interface{}{lp(".", "line")}
 
 	dets := []Detector{
@@ -89,14 +89,14 @@ func TestOpBroadcastIndexedEquivalence(t *testing.T) {
 
 	plain := &base.Op{
 		Kind:     "broadcast",
-		Labels:   results,
+		Labels:   labelResults,
 		Params:   []interface{}{detParamsOf(dets)},
 		Children: []*base.Op{dataScan(data)},
 	}
-	indexed := BroadcastIndexed(dataScan(data), dets, results)
+	indexed := BroadcastIndexed(dataScan(data), dets, labelResults)
 
-	want := resultsByTag(t, plain)
-	got := resultsByTag(t, indexed)
+	want := labelResultsByTag(t, plain)
+	got := labelResultsByTag(t, indexed)
 
 	if !reflect.DeepEqual(got, want) {
 		// Report the first divergent tag for a readable failure.
@@ -105,7 +105,7 @@ func TestOpBroadcastIndexedEquivalence(t *testing.T) {
 				t.Fatalf("tag %q diverged:\n indexed=%v\n   plain=%v", d.Tag, got[d.Tag], want[d.Tag])
 			}
 		}
-		t.Fatalf("indexed results != plain broadcast results\n indexed=%v\n plain=%v", got, want)
+		t.Fatalf("indexed labelResults != plain broadcast labelResults\n indexed=%v\n plain=%v", got, want)
 	}
 
 	// Sanity: the corpus actually exercised each interesting case.
@@ -114,7 +114,7 @@ func TestOpBroadcastIndexedEquivalence(t *testing.T) {
 			len(want["panic"]), len(want["err_eq"]), len(want["hot"]))
 	}
 	if len(want["diskflood"]) != 0 {
-		t.Fatalf("over-wake detector 'diskflood' must yield 0 results (full pred fails), got %d", len(want["diskflood"]))
+		t.Fatalf("over-wake detector 'diskflood' must yield 0 labelResults (full pred fails), got %d", len(want["diskflood"]))
 	}
 }
 
@@ -126,7 +126,7 @@ func TestOpBroadcastIndexedSparsity(t *testing.T) {
 	const k = 50
 	const n = 300
 
-	results := base.Labels{"tag", "ev"}
+	labelResults := base.Labels{"tag", "ev"}
 	proj := []interface{}{lp(".", "line")}
 
 	dets := make([]Detector, 0, k+1)
@@ -153,7 +153,7 @@ func TestOpBroadcastIndexedSparsity(t *testing.T) {
 	}
 	data := sb.String()
 
-	indexed := BroadcastIndexed(dataScan(data), dets, results)
+	indexed := BroadcastIndexed(dataScan(data), dets, labelResults)
 
 	stats := base.StatsLayout(indexed)
 	if stats == nil {
@@ -234,7 +234,7 @@ func makeLogData(n int) string {
 // Aho-Corasick pass + ~O(1) predicate evals/row; the broadcast does O(K). The gap
 // should widen with K.
 func BenchmarkBroadcastIndexed(b *testing.B) {
-	results := base.Labels{"tag", "ev"}
+	labelResults := base.Labels{"tag", "ev"}
 	proj := []interface{}{lp(".", "line")}
 
 	sink := func(base.Vals) {}
@@ -266,7 +266,7 @@ func BenchmarkBroadcastIndexed(b *testing.B) {
 		detParams := detParamsOf(dets)
 
 		b.Run(fmt.Sprintf("indexed/K=%d", k), func(b *testing.B) {
-			indexed := BroadcastIndexed(dataScan(data), dets, results)
+			indexed := BroadcastIndexed(dataScan(data), dets, labelResults)
 			vars := broadcastVars()
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -276,7 +276,7 @@ func BenchmarkBroadcastIndexed(b *testing.B) {
 		})
 
 		b.Run(fmt.Sprintf("broadcast/K=%d", k), func(b *testing.B) {
-			bc := &base.Op{Kind: "broadcast", Labels: results,
+			bc := &base.Op{Kind: "broadcast", Labels: labelResults,
 				Params: []interface{}{detParams}, Children: []*base.Op{dataScan(data)}}
 			vars := broadcastVars()
 			b.ReportAllocs()

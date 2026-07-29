@@ -38,7 +38,7 @@ package glue
 //
 // It is PARANOID (the ASOF playbook): any deviation from the exact shape returns ok=false
 // and the entry stays standalone (correct, just unshared), so a mis-match can never
-// produce wrong results. The grouped fan-out's results are differential-tested against
+// produce wrong labelResults. The grouped fan-out's labelResults are differential-tested against
 // each entry's own SQL (its standalone window result is the oracle).
 
 import (
@@ -108,7 +108,7 @@ type contextDetInfo struct {
 
 	// proj is the entry's SELECT projection shaped as fused result (engine
 	// extractor det[4]), re-rooted to the shared "." scan row -- so a fused context
-	// result's shape matches the same SELECT run standalone (IDEA-0025), exactly as
+	// labelResult's shape matches the same SELECT run standalone (IDEA-0025), exactly as
 	// corpusDetInfo.proj does for the plain broadcast path (IDEA-0004). nil => the
 	// whole scan row (buildContextBroadcast's fallback).
 	proj []interface{}
@@ -123,7 +123,7 @@ type contextDetInfo struct {
 func recognizeContextEntry(top *base.Op, temps []interface{}) (contextDetInfo, bool) {
 	// (1) descend from the top through the outer projection(s) and any PURE outer sort
 	// (order-offset-limit with Params = [terms, dirs], no OFFSET/LIMIT) to the `near`
-	// filter. Projections and a pure sort don't change the row SET (pack results are
+	// filter. Projections and a pure sort don't change the row SET (pack labelResults are
 	// an unordered set), so skipping them is sound; a sort WITH an offset/limit, or any
 	// non-project/-sort op, stops the descent (and a non-filter there -> bail).
 	node := top
@@ -474,7 +474,7 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 	// and, within a file, in ascending _meta.pos (the record's in-file ordinal). So for a
 	// group partitioned by _meta.path and ordered by _meta.pos the raw scan IS already in
 	// (partition, order) form: the context op needs only per-partition contiguity + in-
-	// partition order (results are an unordered set, so the order of partitions is
+	// partition order (labelResults are an unordered set, so the order of partitions is
 	// irrelevant), both of which hold by construction. Drop the O(N log N) sort + full
 	// buffer for an O(N) streaming pass. Any other (partition, order) keeps the explicit
 	// sort. (Guarded narrowly to these exact _meta keys, whose order the file datastore
@@ -515,7 +515,7 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 
 	return &base.Op{
 		Kind:   "broadcast-context",
-		Labels: multiQueryResultsLabels(),
+		Labels: multiQueryLabelResultsLabels(),
 		Params: []interface{}{
 			exts,
 			selfExpr(first.partExpr, first.alias), // partition key for boundary reset

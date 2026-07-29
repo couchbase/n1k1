@@ -22,7 +22,7 @@ package glue
 // SQL++ -- parse -> plan -> convert -> recognize -> normalize -> group -> compose.
 //
 // An "entry" is a stock SELECT over a single keyspace: `SELECT ... FROM <ks>
-// <alias> [WHERE <pred>]`. Its ESSENCE is the PREDICATE; a "result" is the
+// <alias> [WHERE <pred>]`. Its ESSENCE is the PREDICATE; a "labelResult" is the
 // matching result row, tagged with the entry's id. Fusing K entries on one
 // keyspace means: scan the keyspace ONCE, and per row evaluate the K predicates
 // (with pack-CSE hoisting shared sub-terms and an Aho-Corasick predicate index
@@ -41,7 +41,7 @@ package glue
 //                 FULL normal pipeline (s.Run) -- so WireASOFJoin / window / group
 //                 all fire and each entry is individually optimized -- then tags
 //                 its result rows into the uniform LabelResult shape, UNION'd with the
-//                 fused results. (Standalone entries do NOT share a scan among
+//                 fused labelResults. (Standalone entries do NOT share a scan among
 //                 themselves -- each is an independent run; sharing standalone scans
 //                 is a future step. Their result is the entry's SELECT
 //                 projection -- as is the fused path's, so the two shapes agree.)
@@ -80,7 +80,7 @@ package glue
 //         against the "."-labeled shared row. Boxed predicates are thus fully
 //         supported; they simply don't get indexed.
 //
-//  4. RESULTS. A uniform results schema across all entries (ResultsLabels =
+//  4. LABELRESULTS. A uniform labelResults schema across all entries (LabelResultsLabels =
 //     [.["label"], .["result"]]), so union-all funnels cleanly: slot 0 the label, slot
 //     1 the single result value. Result is SHAPED to the entry's SELECT
 //     projection (corpusFusedProjection) so a fused entry's result matches the
@@ -99,7 +99,7 @@ package glue
 //  6. RUN. CompiledMultiQueryEntries.Run first runs each STANDALONE entry through the full
 //     s.Run pipeline (so ASOF/window/group lowerings fire) and tags its rows, then
 //     mirrors Session.PlanExec's vars/GlueContext/ExecOpEx setup and drives
-//     engine.ExecOp over the fused Plan -- the UNION of both is the results set.
+//     engine.ExecOp over the fused Plan -- the UNION of both is the labelResults set.
 //
 // DELIBERATELY DEFERRED (noted, not built): a SHA-keyed / content-addressed build
 // cache; the embed-source analyzer binary; a logical-keyspace vocabulary +
@@ -111,7 +111,7 @@ package glue
 // with an INDEX scan (a secondary index exists and is sargable) converts to a
 // datastore-scan-index leaf, not datastore-scan-records, and is classified Standalone
 // (run individually) even though it is semantically a single-keyspace filter. It
-// still produces its results; it just does not share the fused scan. Fusing indexed
+// still produces its labelResults; it just does not share the fused scan. Fusing indexed
 // leaves (and META().id predicates under CSE, whose ^id slot the CSE precompute
 // currently drops) are future refinements.
 
@@ -134,7 +134,7 @@ import (
 // RejectedDetector reports an entry whose parse/plan/convert FAILED (a genuinely
 // broken query), with a human-readable Reason. Surfaced (never silently dropped) and
 // NOT run. Distinct from a Standalone entry, which converts fine but is not the
-// fusable shape -- that one still runs and produces results.
+// fusable shape -- that one still runs and produces labelResults.
 type RejectedEntry struct {
 	Label  string
 	Reason string
@@ -153,16 +153,16 @@ type LabelResult struct {
 // CompiledMultiQueryEntries is the output of MultiQueryCompile: the fused MQO plan (Plan) plus the
 // Temps it resolves its shared-scan keyspaces from, the STANDALONE entries (valid
 // but non-fusable -- run individually at Run() time), the REJECTED entries (parse/
-// plan/convert failed -- surfaced, not run), the uniform results schema
-// (ResultsLabels), and enough of the originating session to Run it. Plan is nil when
+// plan/convert failed -- surfaced, not run), the uniform labelResults schema
+// (LabelResultsLabels), and enough of the originating session to Run it. Plan is nil when
 // no entry fused (empty pack, or all standalone/rejected) -- an honestly empty
-// fused plan; Run() still produces the standalone entries' results.
+// fused plan; Run() still produces the standalone entries' labelResults.
 type CompiledMultiQueryEntries struct {
 	Plan           *base.Op
 	Temps          []interface{}
 	Standalone     []MultiQueryEntry
 	Rejected       []RejectedEntry
-	ResultsLabels base.Labels
+	LabelResultsLabels base.Labels
 
 	// DetKeyspace maps a FUSED entry's Label to the keyspace it scans (its qualified
 	// name), so a run report can attribute per-keyspace scanned-row counts to each
@@ -194,9 +194,9 @@ type CompiledMultiQueryEntries struct {
 }
 
 // MultiQueryRunReport accompanies a RunReport run with the diagnostics an author needs to
-// debug a 0-results entry (IDEA-0015): how many rows each fused keyspace scan
+// debug a 0-labelResults entry (IDEA-0015): how many rows each fused keyspace scan
 // fanned (ScannedByKeyspace, the shared-scan RowsIn) alongside the per-entry match
-// count the caller tallies from the results. It distinguishes "the keyspace scanned
+// count the caller tallies from the labelResults. It distinguishes "the keyspace scanned
 // ~0 rows" (a whole-file blob / empty scan -- the IDEA-0001 trap) from "the predicate
 // matched nothing of N scanned".
 type MultiQueryRunReport struct {
@@ -211,10 +211,10 @@ type MultiQueryRunReport struct {
 	WokenByEntry map[string]int64
 }
 
-// corpusResultsLabels is the uniform two-column results schema every per-keyspace
+// corpusLabelResultsLabels is the uniform two-column labelResults schema every per-keyspace
 // broadcast (and the union-all) shares: slot 0 the entry label, slot 1 the whole
 // result row.
-func multiQueryResultsLabels() base.Labels {
+func multiQueryLabelResultsLabels() base.Labels {
 	return base.Labels{"." + LabelSuffix("label"), "." + LabelSuffix("result")}
 }
 
@@ -232,7 +232,7 @@ func (s *Session) MultiQueryCompile(dets []MultiQueryEntry) (*CompiledMultiQuery
 		ensureDatastore(s.Store.Datastore)
 	}
 
-	resultsLabels := multiQueryResultsLabels()
+	labelResultsLabels := multiQueryLabelResultsLabels()
 
 	// One unified Conv/Temps for the WHOLE fused plan: the per-entry Convs' Temps
 	// indices belong to their own conversions, so we CANNOT reuse their scan ops.
@@ -345,11 +345,11 @@ func (s *Session) MultiQueryCompile(dets []MultiQueryEntry) (*CompiledMultiQuery
 		// shared) has the EXACT child/Params layout OpBroadcastIndexed expects, so
 		// re-kinding it composes "CSE precompute + Aho-Corasick predicate index" with
 		// no new engine op. See broadcastCSEIndexed.
-		perKeyspace = append(perKeyspace, broadcastCSEIndexed(scan, edets, resultsLabels))
+		perKeyspace = append(perKeyspace, broadcastCSEIndexed(scan, edets, labelResultsLabels))
 	}
 
 	// Context groups: one shared scan + sort + broadcast-context per (keyspace, P, O)
-	// signature (in recognition order for a stable plan). Results share the same
+	// signature (in recognition order for a stable plan). LabelResults share the same
 	// [label, result] schema, so they union with the fused broadcasts.
 	for _, sig := range contextSigOrder {
 		entries := contextGroups[sig]
@@ -371,7 +371,7 @@ func (s *Session) MultiQueryCompile(dets []MultiQueryEntry) (*CompiledMultiQuery
 	default:
 		planOp = &base.Op{
 			Kind:     "union-all",
-			Labels:   append(base.Labels(nil), resultsLabels...),
+			Labels:   append(base.Labels(nil), labelResultsLabels...),
 			Children: perKeyspace,
 		}
 	}
@@ -381,7 +381,7 @@ func (s *Session) MultiQueryCompile(dets []MultiQueryEntry) (*CompiledMultiQuery
 		Temps:             unified.Temps,
 		Standalone:        standalone,
 		Rejected:          rejected,
-		ResultsLabels:    resultsLabels,
+		LabelResultsLabels:    labelResultsLabels,
 		EntryKeyspace:     detKeyspace,
 		CorrelationGroups: correlationGroups,
 		wokenByTag:        wokenByTag,
@@ -557,7 +557,7 @@ func projectionHasSubquery(project *base.Op) bool {
 // corpusFusedProjection derives the fused-result projection (engine.Detector.Proj)
 // from an entry's converted `project` op, so a FUSED entry's result shape
 // matches the same SELECT run STANDALONE (IDEA-0004). The engine's projFunc emits one
-// output column per Proj term after the label; the results schema carries a single
+// output column per Proj term after the label; the labelResults schema carries a single
 // result column, so every case here yields exactly ONE Proj term. Returns ok=false
 // when the projection can't be faithfully reproduced in that single-column envelope,
 // so analyzeEntry routes the entry to standalone (which honors it via the
@@ -741,29 +741,29 @@ type aliasToSelf struct {
 // "CSE precompute + Aho-Corasick predicate index" with no new engine op. See
 // engine/op_broadcast_cse.go and engine/op_broadcast_indexed.go.
 func broadcastCSEIndexed(scan *base.Op, dets []engine.Detector,
-	resultsLabels base.Labels) *base.Op {
-	op := engine.BroadcastCSE(scan, dets, resultsLabels)
+	labelResultsLabels base.Labels) *base.Op {
+	op := engine.BroadcastCSE(scan, dets, labelResultsLabels)
 	op.Kind = "broadcast-indexed"
 	return op
 }
 
-// Run executes the compiled pack and returns the UNION of its tagged results.
-// It is the buffering wrapper over RunStream: collect every streamed result into
+// Run executes the compiled pack and returns the UNION of its tagged labelResults.
+// It is the buffering wrapper over RunStream: collect every streamed labelResult into
 // a slice. Callers that want bounded memory should use RunStream directly.
 func (cc *CompiledMultiQueryEntries) Run() ([]LabelResult, error) {
-	var results []LabelResult
+	var labelResults []LabelResult
 	err := cc.RunStream(func(f LabelResult) error {
-		results = append(results, f)
+		labelResults = append(labelResults, f)
 		return nil
 	})
-	return results, err
+	return labelResults, err
 }
 
 // RunReport runs the pack like Run and additionally returns per-keyspace scanned-row
 // counts (IDEA-0015): it lays a stats overlay over the fused Plan so each shared scan's
-// RowsIn is captured, letting a caller tell a 0-results entry whose keyspace
+// RowsIn is captured, letting a caller tell a 0-labelResults entry whose keyspace
 // scanned ~0 rows (a whole-file blob / empty scan) apart from one whose predicate
-// matched nothing. Results are buffered like Run.
+// matched nothing. LabelResults are buffered like Run.
 func (cc *CompiledMultiQueryEntries) RunReport() ([]LabelResult, *MultiQueryRunReport, error) {
 	var stats *base.Stats
 	if cc.Plan != nil {
@@ -774,16 +774,16 @@ func (cc *CompiledMultiQueryEntries) RunReport() ([]LabelResult, *MultiQueryRunR
 	for _, w := range cc.wokenByTag {
 		*w = 0
 	}
-	var results []LabelResult
+	var labelResults []LabelResult
 	err := cc.runStream(func(f LabelResult) error {
-		results = append(results, f)
+		labelResults = append(labelResults, f)
 		return nil
 	}, stats)
 	woken := make(map[string]int64, len(cc.wokenByTag))
 	for label, w := range cc.wokenByTag {
 		woken[label] = *w
 	}
-	return results, &MultiQueryRunReport{
+	return labelResults, &MultiQueryRunReport{
 		ScannedByKeyspace: cc.scannedByKeyspace(stats),
 		WokenByEntry:      woken,
 	}, err
@@ -819,29 +819,29 @@ func (cc *CompiledMultiQueryEntries) scannedByKeyspace(stats *base.Stats) map[st
 	return out
 }
 
-// RunStream executes the compiled pack and calls onResult for EACH tagged
-// result as it is produced -- so a consumer can stream at bounded memory instead
+// RunStream executes the compiled pack and calls onLabelResult for EACH tagged
+// labelResult as it is produced -- so a consumer can stream at bounded memory instead
 // of materializing the whole result set. It runs first each STANDALONE entry via
 // the full s.Run pipeline (so ASOF/window/group lowerings fire and each is
 // individually optimized), then the fused Plan -- mirroring Session.PlanExec's
-// vars / GlueContext / ExecOpEx setup and reading each result's [label, result]
+// vars / GlueContext / ExecOpEx setup and reading each labelResult's [label, result]
 // straight from the yielded row slots (no ConvertVals). LabelResult order (across
 // standalone runs, the union-all, and the interleaved fan-out) is NOT guaranteed.
-// An onResult error aborts the run and is returned. A nil Plan with no standalone
-// entries produces nothing; standalone-only corpora still produce their results.
+// An onLabelResult error aborts the run and is returned. A nil Plan with no standalone
+// entries produces nothing; standalone-only corpora still produce their labelResults.
 //
 // NOTE: standalone entries run via s.Run, which buffers that ONE entry's rows
 // before they stream out; the FUSED majority streams row-by-row from the shared
 // scan. So peak memory is bounded by the largest single standalone result, not the
 // whole pack.
-func (cc *CompiledMultiQueryEntries) RunStream(onResult func(LabelResult) error) error {
-	return cc.runStream(onResult, nil)
+func (cc *CompiledMultiQueryEntries) RunStream(onLabelResult func(LabelResult) error) error {
+	return cc.runStream(onLabelResult, nil)
 }
 
 // runStream is RunStream's body, optionally wiring a stats overlay (non-nil only from
 // RunReport) so the fused Plan's per-op counters (e.g. each shared scan's RowsIn) are
 // captured. stats == nil is the zero-overhead default path.
-func (cc *CompiledMultiQueryEntries) runStream(onResult func(LabelResult) error, stats *base.Stats) error {
+func (cc *CompiledMultiQueryEntries) runStream(onLabelResult func(LabelResult) error, stats *base.Stats) error {
 	s := cc.session
 
 	cc.GatedSkipped = nil // repopulated per run by streamStandalone's index-gating.
@@ -877,7 +877,7 @@ func (cc *CompiledMultiQueryEntries) runStream(onResult func(LabelResult) error,
 	// label its SELECT-projection rows as result. s.Run is self-contained (it does its
 	// own datastore + ExecOpEx setup), so this must happen BEFORE the fused block's
 	// global ExecOpEx swap below.
-	if err := cc.streamStandalone(onResult); err != nil {
+	if err := cc.streamStandalone(onLabelResult); err != nil {
 		return err
 	}
 
@@ -926,7 +926,7 @@ func (cc *CompiledMultiQueryEntries) runStream(onResult func(LabelResult) error,
 		if err := json.Unmarshal([]byte(vals[0]), &label); err != nil {
 			label = string(vals[0]) // fall back to the raw bytes if not a JSON string.
 		}
-		if e := onResult(LabelResult{
+		if e := onLabelResult(LabelResult{
 			Label:  label,
 			Result: append(json.RawMessage(nil), vals[1]...),
 		}); e != nil {
@@ -946,12 +946,12 @@ func (cc *CompiledMultiQueryEntries) runStream(onResult func(LabelResult) error,
 
 // streamStandalone runs each Standalone entry through the FULL normal pipeline
 // (Session.Run -- so its ASOF/window/group/join lowerings all fire and each is
-// individually optimized) and calls onResult for every result row, tagged with the
+// individually optimized) and calls onLabelResult for every result row, tagged with the
 // entry's id. Result is the entry's SELECT projection (the fused path shapes
 // the same projection into result via corpusFusedProjection). A run-time error
-// from any standalone entry (or from onResult) is returned. Note s.Run buffers a
+// from any standalone entry (or from onLabelResult) is returned. Note s.Run buffers a
 // single entry's rows before they stream out (see RunStream's NOTE).
-func (cc *CompiledMultiQueryEntries) streamStandalone(onResult func(LabelResult) error) error {
+func (cc *CompiledMultiQueryEntries) streamStandalone(onLabelResult func(LabelResult) error) error {
 	// gateCache dedups the presence probe per (Source, Gate) so N entries sharing a
 	// gate over one keyspace probe it once.
 	gateCache := map[string]bool{}
@@ -960,14 +960,14 @@ func (cc *CompiledMultiQueryEntries) streamStandalone(onResult func(LabelResult)
 		if d.Gate != "" && d.Source != "" {
 			allow, err := cc.gateAllows(d.Source, d.Gate, gateCache)
 			if err != nil {
-				// A broken/erroring gate must not silently drop results: fall through
+				// A broken/erroring gate must not silently drop labelResults: fall through
 				// and RUN the entry (safe -- gating only ever SKIPS). The error rides
 				// out as a warning-shaped skip note so the author can fix the gate.
 				cc.GatedSkipped = append(cc.GatedSkipped,
 					fmt.Sprintf("%s (gate error, ran anyway: %v)", d.Label, err))
 			} else if !allow {
 				// The precondition matched no row in the keyspace: the entry cannot
-				// produce a result, so skip its expensive standalone sort/window.
+				// produce a labelResult, so skip its expensive standalone sort/window.
 				cc.GatedSkipped = append(cc.GatedSkipped, d.Label)
 				continue
 			}
@@ -978,7 +978,7 @@ func (cc *CompiledMultiQueryEntries) streamStandalone(onResult func(LabelResult)
 			return fmt.Errorf("standalone query %q: %w", d.Label, err)
 		}
 		for _, row := range res.Rows {
-			if err := onResult(LabelResult{
+			if err := onLabelResult(LabelResult{
 				Label:  d.Label,
 				Result: append(json.RawMessage(nil), row...),
 			}); err != nil {

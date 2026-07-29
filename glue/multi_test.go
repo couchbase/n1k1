@@ -49,9 +49,9 @@ func writeMultiMatchesEntries(t *testing.T) string {
 	return dir
 }
 
-// resultsFromRows turns `SELECT f.label, f.result` result rows into the LabelResult
-// set they represent (so it compares against CompiledMultiQueryEntries.Run's results).
-func resultsFromRows(t *testing.T, rows []json.RawMessage) []LabelResult {
+// labelResultsFromRows turns `SELECT f.label, f.result` result rows into the LabelResult
+// set they represent (so it compares against CompiledMultiQueryEntries.Run's labelResults).
+func labelResultsFromRows(t *testing.T, rows []json.RawMessage) []LabelResult {
 	t.Helper()
 	var out []LabelResult
 	for _, row := range rows {
@@ -67,7 +67,7 @@ func resultsFromRows(t *testing.T, rows []json.RawMessage) []LabelResult {
 	return out
 }
 
-func resultSetKeys(t *testing.T, fs []LabelResult) []string {
+func labelResultSetKeys(t *testing.T, fs []LabelResult) []string {
 	t.Helper()
 	keys := make([]string, 0, len(fs))
 	for _, f := range fs {
@@ -102,7 +102,7 @@ func TestMultiMatchesFromSource(t *testing.T) {
 		t.Fatalf("cc.Run: %v", err)
 	}
 	if len(baseline) == 0 {
-		t.Fatal("baseline produced no results -- fixture invalid")
+		t.Fatal("baseline produced no labelResults -- fixture invalid")
 	}
 
 	// Via the MULTI_MATCHES FROM-source.
@@ -111,10 +111,10 @@ func TestMultiMatchesFromSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run %q: %v", q, err)
 	}
-	got := resultsFromRows(t, res.Rows)
+	got := labelResultsFromRows(t, res.Rows)
 
-	gotKeys := resultSetKeys(t, got)
-	wantKeys := resultSetKeys(t, baseline)
+	gotKeys := labelResultSetKeys(t, got)
+	wantKeys := labelResultSetKeys(t, baseline)
 	if len(gotKeys) != len(wantKeys) {
 		t.Fatalf("match count via FROM multi_matches(): got %d want %d\n got=%v\n want=%v",
 			len(gotKeys), len(wantKeys), gotKeys, wantKeys)
@@ -124,13 +124,13 @@ func TestMultiMatchesFromSource(t *testing.T) {
 			t.Fatalf("match[%d] mismatch:\n got=%q\n want=%q", i, gotKeys[i], wantKeys[i])
 		}
 	}
-	// t.Logf("FROM multi_matches() matched %d results", len(gotKeys))
+	// t.Logf("FROM multi_matches() matched %d labelResults", len(gotKeys))
 }
 
 // TestMultiMatchesMultipleDirs: multi_matches accepts several query dirs -- as an ARRAY
 // arg or a comma-list string -- and fuses their entries into one shared-scan pack, so
 // tiers stay organized on disk yet run as one entry set (IDEA-0034). Both spellings
-// must match exactly the same results as running the tiers' union directly.
+// must match exactly the same labelResults as running the tiers' union directly.
 func TestMultiMatchesMultipleDirs(t *testing.T) {
 	mkTier := func(name, body string) string {
 		dir := t.TempDir()
@@ -160,10 +160,10 @@ func TestMultiMatchesMultipleDirs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cc.Run: %v", err)
 		}
-		return resultSetKeys(t, found)
+		return labelResultSetKeys(t, found)
 	}()
 	if len(baseKeys) == 0 {
-		t.Fatal("baseline produced no results -- fixtures invalid")
+		t.Fatal("baseline produced no labelResults -- fixtures invalid")
 	}
 
 	for _, tc := range []struct {
@@ -179,9 +179,9 @@ func TestMultiMatchesMultipleDirs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run %q: %v", q, err)
 			}
-			gotKeys := resultSetKeys(t, resultsFromRows(t, res.Rows))
+			gotKeys := labelResultSetKeys(t, labelResultsFromRows(t, res.Rows))
 			if !reflect.DeepEqual(gotKeys, baseKeys) {
-				t.Fatalf("%s-arg fused results mismatch:\n got=%v\n want=%v", tc.name, gotKeys, baseKeys)
+				t.Fatalf("%s-arg fused labelResults mismatch:\n got=%v\n want=%v", tc.name, gotKeys, baseKeys)
 			}
 		})
 	}
@@ -189,7 +189,7 @@ func TestMultiMatchesMultipleDirs(t *testing.T) {
 
 // TestMultiMatchesStreamsViaStreamFnOp proves FROM multi_matches(...) converts to the
 // generic STREAMING stream-fn op (op_stream_fn.go), NOT the materializing expr-scan
-// -- so results flow into the pipeline at bounded memory. It also checks LIMIT
+// -- so labelResults flow into the pipeline at bounded memory. It also checks LIMIT
 // composes over the streaming source.
 func TestMultiMatchesStreamsViaStreamFnOp(t *testing.T) {
 	sess := multiQueryTestSession(t)
@@ -288,7 +288,7 @@ func TestMultiMatchesPrepareExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("direct Run: %v", err)
 	}
-	wantKeys := resultSetKeys(t, resultsFromRows(t, dres.Rows))
+	wantKeys := labelResultSetKeys(t, labelResultsFromRows(t, dres.Rows))
 
 	prep := fmt.Sprintf(`PREPARE fp AS SELECT f.label, f.result FROM multi_matches(%q) AS f`, dir)
 	if _, err := sess.Run(prep); err != nil {
@@ -298,7 +298,7 @@ func TestMultiMatchesPrepareExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EXECUTE: %v", err)
 	}
-	gotKeys := resultSetKeys(t, resultsFromRows(t, eres.Rows))
+	gotKeys := labelResultSetKeys(t, labelResultsFromRows(t, eres.Rows))
 
 	if len(gotKeys) != len(wantKeys) {
 		t.Fatalf("EXECUTE match count: got %d want %d", len(gotKeys), len(wantKeys))
@@ -338,7 +338,7 @@ func TestMultiMatchesBindOpt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run bound %q: %v", q, err)
 	}
-	got := resultsFromRows(t, res.Rows)
+	got := labelResultsFromRows(t, res.Rows)
 	if len(got) != 2 { // 2 ERROR rows in the logs fixture
 		t.Fatalf("bound MULTI_MATCHES: got %d matches, want 2 (rows=%v)", len(got), res.Rows)
 	}
@@ -412,7 +412,7 @@ func TestMultiMatchesPartialRejectWarns(t *testing.T) {
 		t.Fatalf("partial-reject pack should still run the good entry: %v", err)
 	}
 	if len(res.Rows) == 0 {
-		t.Fatal("expected results from the runnable entry")
+		t.Fatal("expected labelResults from the runnable entry")
 	}
 	warned := false
 	for _, w := range res.Warnings {

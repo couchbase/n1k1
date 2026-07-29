@@ -51,7 +51,7 @@ type Record struct {
 	Doc []byte
 
 	// Loc (when Has) is the record's location in the ORIGINAL source stream (post-
-	// decompression, PRE-framing), so a result stays externally locatable even after
+	// decompression, PRE-framing), so a labelResult stays externally locatable even after
 	// framing dropped or skipped content -- a dropped banner, blank lines, section
 	// delimiters (IDEA-0026). ByteStart/ByteLen and LineStart/LineEnd refer to the raw
 	// bytes/lines, so `dd`/`sed`/`rg` on the file land on this record. metaSource

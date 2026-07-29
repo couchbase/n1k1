@@ -36,7 +36,7 @@ execution (multi-query optimization -- one scan feeds many queries: broadcast, p
 index, common-subexpression sharing). The queries are provided as a directory of *.sql++
 files. Each *.sql++ file is a single SQL++ SELECT query plus optional "-- key: value"
 front-matter and an optional inline golden fixture. Run the pack over a dataset to get
-tagged results; lint the queries for a report card; unit-test each query against its
+tagged labelResults; lint the queries for a report card; unit-test each query against its
 golden fixture (such as for CI). (Renamed from ".rules" / RULE_MATCHES.)
 
 The same feature is also available directly in SQL++ as a composable FROM source --
@@ -59,7 +59,7 @@ FLAGS
                      runs across differently-named datasets unchanged (run / lint). Manifest is either
                      "logical = glob" lines ('#' comments + blanks ignored), or a JSON object
                      {"logical":"glob", ...}. A logical keyspace matching 0 files is a hard error.
-  --update           .multi test only: (re-)record each fixture's produced results as its @expect golden
+  --update           .multi test only: (re-)record each fixture's produced labelResults as its @expect golden
   --sql              .multi explain only: render the queries as pretty SQL++ instead of the op tree.
                      When >=2 queries share a keyspace they FUSE: shown as the single UNION ALL they
                      become (one scan of that keyspace feeding each branch), with a synopsis of the
@@ -79,7 +79,7 @@ QUERIES DIRECTORY LAYOUT
 
 ANNOTATED ENTRY (my-queries/disk_full.sql++)
 The front-matter of a *.sql++ file has leading '-- key: value' lines...
-  -- label:       ET-12345          # label       -> the result Label (else the filename stem)
+  -- label:       ET-12345          # label       -> the labelResult Label (else the filename stem)
   -- description: disk-full errors  # description -> a free-form summary, reported by list / lint
   -- source:      logs              # source      -> the LOGICAL keyspace this SQL++ reads (FROM logs)
   -- gate:        l.sev = "ERROR"   # gate        -> a cheap NECESSARY precondition (see GATE below)
@@ -91,7 +91,7 @@ The front-matter of a *.sql++ file has leading '-- key: value' lines...
   -- {"sev":"ERROR","msg":"disk full","ts":3}   # data lines are SQL comments, so the
   -- {"sev":"WARN","msg":"ok","ts":5}           # whole *.sql++ file stays valid SQL++
   -- {"sev":"ERROR","msg":"oom","ts":9}
-  -- @expect                     # golden results the query MUST reproduce (compared as a set)
+  -- @expect                     # golden labelResults the query MUST reproduce (compared as a set)
   -- {"label":"ET-12345","result":{"msg":"disk full","ts":3}}
   -- {"label":"ET-12345","result":{"msg":"oom","ts":9}}
 
@@ -107,7 +107,7 @@ EXAMPLE: .multi run --queries ./my-queries   (over a dataset with a "logs" keysp
         not a runnable query: plan error: Keyspace not found requests. A query is a single SELECT, ...
   {"label":"ET-12345","result":{"sev":"ERROR","msg":"disk full","ts":3}}
   {"label":"ET-12345","result":{"sev":"ERROR","msg":"timeout","ts":5}}
-  2 result(s) from 3 query/queries
+  2 labelResult(s) from 3 query/queries
 
 EXAMPLE: .multi lint --queries ./my-queries   (a report-card row + the score line)
   {"query":"ET-12345","class":"fused","keyspace":"default:logs","lane":"native","index":"literal \"ERROR\"","reason":"-","advice":"-"}
@@ -115,11 +115,11 @@ EXAMPLE: .multi lint --queries ./my-queries   (a report-card row + the score lin
   score: 66% fused (2/3), 100% native (2/2 converted), 100% index-pruned (2/2 fused)  [0 standalone, 1 rejected]
 
 EXAMPLE: .multi test --queries ./my-queries
-  ET-12345: PASS (2 result(s))
-  ET-20001: PASS (2 result(s))
+  ET-12345: PASS (2 labelResult(s))
+  ET-20001: PASS (2 labelResult(s))
   ET-30002: no fixture
   2 passed / 0 failed / 1 no-fixture / 0 skipped
-  # A mismatch prints a per-result diff plus: "re-record the golden: .multi test --update".
+  # A mismatch prints a per-labelResult diff plus: "re-record the golden: .multi test --update".
   # A fixture with no @expect FAILs with: "Capture them: .multi test --update".
 
 TIPS (get the best out of a collection)
@@ -202,13 +202,13 @@ GATE (index-gate a standalone query) -- a fused filter+project query is pruned p
 row by the predicate index, but a STANDALONE query (window / GROUP BY / join -- anything
 with its own scan) is not. A "gate:" front-matter line gives it a cheap NECESSARY
 precondition: a boolean SQL++ expression over its "source" keyspace that MUST hold for any
-result. Before running the (expensive) query, .multi run probes
+labelResult. Before running the (expensive) query, .multi run probes
 "SELECT 1 FROM <source> WHERE <gate> LIMIT 1"; if no row matches, the query is SKIPPED --
-its sort/window never touches a keyspace that cannot produce a result. Example, gating the
+its sort/window never touches a keyspace that cannot produce a labelResult. Example, gating the
 CONTEXT query above so it only sorts files that actually contain an ERROR:
   -- source: logs
   -- gate:   sev = "ERROR"
-Needs "source:". The gate must be NECESSARY (skipping is only correct if no result is
+Needs "source:". The gate must be NECESSARY (skipping is only correct if no labelResult is
 possible without it) -- e.g. do NOT gate an ABSENCE query ("... HAVING COUNT(...) = 0")
 on the thing it counts. A skipped query is reported ("gated: N skipped"), never silent;
 a gate that errors runs the query anyway (safe). Gate literals are pushed to the probe's

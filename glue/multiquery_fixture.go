@@ -17,8 +17,8 @@ package glue
 // "a golden-fixture diff ... is the entry's unit test"). It builds a throwaway
 // single-keyspace datastore from the fixture's input rows, runs JUST that one entry
 // over it (through the exact MultiQueryCompile -> Run path .multi run uses, so the produced
-// results' shape matches a real run), and returns the results for the caller to diff
-// against the entry's @expect golden (DiffResults) or record as the new golden
+// labelResults' shape matches a real run), and returns the labelResults for the caller to diff
+// against the entry's @expect golden (DiffLabelResults) or record as the new golden
 // (RewriteExpect + --update).
 //
 // MVP SCOPE (matches multiquery_entry.go's deferred list): the fixture feeds the
@@ -47,9 +47,9 @@ func (e *ErrFixtureUnresolved) Error() string {
 
 // RunFixture materializes the entry's fixture rows as a temporary single-keyspace
 // datastore named after Source, runs the entry over it, and returns the tagged
-// results. It requires HasFixture and a non-empty Source (a fixture with no `source`
+// labelResults. It requires HasFixture and a non-empty Source (a fixture with no `source`
 // front-matter can't be placed into a keyspace). The temp datastore is removed before
-// returning. Results order is not guaranteed (compare as a set -- DiffResults).
+// returning. LabelResults order is not guaranteed (compare as a set -- DiffLabelResults).
 func (r *MultiQueryEntry) RunFixture() ([]LabelResult, error) {
 	if !r.HasFixture {
 		return nil, fmt.Errorf("entry %q has no @fixture", r.Label)
@@ -90,13 +90,13 @@ func (r *MultiQueryEntry) RunFixture() ([]LabelResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A REJECTED entry (parse/plan/convert failed) runs to ZERO results, which would
-	// otherwise masquerade as a clean pass -- exactly the "rejected -> no results" lie
+	// A REJECTED entry (parse/plan/convert failed) runs to ZERO labelResults, which would
+	// otherwise masquerade as a clean pass -- exactly the "rejected -> no labelResults" lie
 	// the report card guards against. Surface it as a hard error so the fixture FAILS.
 	if len(cc.Rejected) > 0 {
 		return nil, fmt.Errorf("query rejected (never runs): %s", cc.Rejected[0].Reason)
 	}
-	results, err := cc.Run()
+	labelResults, err := cc.Run()
 	if err != nil {
 		// A keyspace-resolution failure means the entry reaches for a keyspace the
 		// single-source fixture doesn't provide (deferred multi-source) -- reclassify it
@@ -106,7 +106,7 @@ func (r *MultiQueryEntry) RunFixture() ([]LabelResult, error) {
 		}
 		return nil, err
 	}
-	return results, nil
+	return labelResults, nil
 }
 
 // looksLikeMissingKeyspace heuristically recognizes a "keyspace not found" plan/run

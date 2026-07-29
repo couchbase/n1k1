@@ -65,7 +65,7 @@ func theMultiQueryEntries() []MultiQueryEntry {
 	}
 }
 
-func resultTags(fs []LabelResult) map[string]int {
+func labelResultTags(fs []LabelResult) map[string]int {
 	m := map[string]int{}
 	for _, f := range fs {
 		m[f.Label]++
@@ -74,7 +74,7 @@ func resultTags(fs []LabelResult) map[string]int {
 }
 
 // TestBindingTwoBundles is THE payoff: the SAME entry pack + SAME manifest,
-// run against TWO differently-named bundles, produces the expected results from
+// run against TWO differently-named bundles, produces the expected labelResults from
 // each -- with NO entry edits, only a re-bind to the new bundle root. It also
 // asserts the two `FROM indexer_log` entries FUSE into a single shared scan (the
 // union-all has exactly TWO children -- one per logical keyspace -- not three).
@@ -129,29 +129,29 @@ func TestBindingTwoBundles(t *testing.T) {
 				}
 			}
 
-			results, err := cc.Run()
+			labelResults, err := cc.Run()
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 
-			// Expected results, identical for both bundles (equivalent contents):
+			// Expected labelResults, identical for both bundles (equivalent contents):
 			//   idx_error   -> 2 ERROR rows (i1, i3)
 			//   idx_timeout -> 1 row (i3)
 			//   big_order   -> 2 rows (o1 total 150, o3 total 300)
-			got := resultTags(results)
+			got := labelResultTags(labelResults)
 			want := map[string]int{"idx_error": 2, "idx_timeout": 1, "big_order": 2}
 			for label, n := range want {
 				if got[label] != n {
-					t.Errorf("bundle %s: label %q results = %d, want %d (all=%v)",
+					t.Errorf("bundle %s: label %q labelResults = %d, want %d (all=%v)",
 						bundle.name, label, got[label], n, got)
 				}
 			}
 			for label := range got {
 				if _, ok := want[label]; !ok {
-					t.Errorf("bundle %s: unexpected result label %q", bundle.name, label)
+					t.Errorf("bundle %s: unexpected labelResult label %q", bundle.name, label)
 				}
 			}
-			// t.Logf("bundle %s results: %v", bundle.name, got)
+			// t.Logf("bundle %s labelResults: %v", bundle.name, got)
 		})
 	}
 }
@@ -294,11 +294,11 @@ func TestBindingSameLogicalFusesScanOnce(t *testing.T) {
 		t.Fatalf("shared plan has %d scans, want exactly 1", n)
 	}
 
-	results, err := cc.Run()
+	labelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	got := resultTags(results)
+	got := labelResultTags(labelResults)
 	// a: 2 ERROR, b: 1 timeout, c: all 3 rows.
 	want := map[string]int{"a": 2, "b": 1, "c": 3}
 	for label, n := range want {

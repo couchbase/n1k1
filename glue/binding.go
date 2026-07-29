@@ -40,7 +40,7 @@ package glue
 // FAIL LOUDLY (the crucial safety property): a bound logical keyspace whose glob
 // matches ZERO files is a HARD ERROR at resolution/bind (surfaced as a plan error),
 // NOT an empty keyspace -- "resolves to nothing should error at EXECUTE, not quietly
-// yield an empty (falsely 'clean') results table." A logical name an entry
+// yield an empty (falsely 'clean') labelResults table." A logical name an entry
 // references that is neither bound nor a real keyspace hits the normal "no keyspace"
 // error (already loud) -- the binding wrapper simply delegates it down and doesn't
 // swallow it.

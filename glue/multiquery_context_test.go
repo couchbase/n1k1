@@ -74,7 +74,7 @@ func ctxStmt(sev string, before, after int) string {
 }
 
 // filePosKeys extracts a sorted list of "file:pos" keys from result rows (each a JSON
-// object with file + pos), so context results (whole-row result) and the standalone
+// object with file + pos), so context labelResults (whole-row result) and the standalone
 // SQL (projected {file,pos,line}) compare on the ROWS SELECTED regardless of shape.
 func filePosKeys(t *testing.T, raws []json.RawMessage) []string {
 	t.Helper()
@@ -108,7 +108,7 @@ func countOpKind(op *base.Op, kind string) int {
 // TestCorpusContextRecognitionDifferential: two context entries sharing the same
 // (keyspace, partition, order) signature FUSE into ONE shared scan + sort + broadcast-
 // context (one scan, one order op, one broadcast-context with two extractors), and their
-// results equal -- per entry, by selected rows -- running each entry's own SQL
+// labelResults equal -- per entry, by selected rows -- running each entry's own SQL
 // standalone (its window result is the oracle).
 func TestMultiQueryContextRecognitionDifferential(t *testing.T) {
 	sess := ctxMultiQuerySession(t)
@@ -139,13 +139,13 @@ func TestMultiQueryContextRecognitionDifferential(t *testing.T) {
 		t.Errorf("one context group: got %d broadcast-context ops, want 1", n)
 	}
 
-	// Results, grouped by label.
-	results, err := cc.Run()
+	// LabelResults, grouped by label.
+	labelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	byTag := map[string][]json.RawMessage{}
-	for _, f := range results {
+	for _, f := range labelResults {
 		byTag[f.Label] = append(byTag[f.Label], f.Result)
 	}
 
@@ -158,7 +158,7 @@ func TestMultiQueryContextRecognitionDifferential(t *testing.T) {
 		want := filePosKeys(t, res.Rows)
 		got := filePosKeys(t, byTag[d.Label])
 		if fmt.Sprint(got) != fmt.Sprint(want) {
-			t.Errorf("%s: context results rows %v != standalone SQL rows %v", d.Label, got, want)
+			t.Errorf("%s: context labelResults rows %v != standalone SQL rows %v", d.Label, got, want)
 		}
 		if len(want) == 0 {
 			t.Errorf("%s: oracle produced no rows -- test fixture too weak", d.Label)
@@ -193,12 +193,12 @@ func TestMultiQueryContextProjection(t *testing.T) {
 		t.Fatalf("want 1 broadcast-context, got %d", n)
 	}
 
-	results, err := cc.Run()
+	labelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	var got []string
-	for _, f := range results {
+	for _, f := range labelResults {
 		// Result must be exactly the projection {file,pos} -- no line, no _meta, no near.
 		got = append(got, canonJSON(t, f.Result))
 	}
@@ -277,12 +277,12 @@ func TestMultiQueryContextNestedProjection(t *testing.T) {
 		t.Fatalf("want 1 broadcast-context (fused), got %d", n)
 	}
 
-	results, err := cc.Run()
+	labelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	var got []string
-	for _, f := range results {
+	for _, f := range labelResults {
 		got = append(got, canonJSON(t, f.Result))
 	}
 	sort.Strings(got)

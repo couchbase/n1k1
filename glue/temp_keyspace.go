@@ -17,7 +17,7 @@ package glue
 // <select> runs the SELECT once, captures its result rows in memory, and registers
 // them as a queryable keyspace that LATER statements in the SAME session can
 // `SELECT ... FROM <name>` -- so a staged/hierarchical detector pipeline (scan the
-// GB bundle -> keep the small results -> correlate them) stays in one session and
+// GB bundle -> keep the small labelResults -> correlate them) stays in one session and
 // one SQL++ dialect, no shell-out to jsonl files (the layout trap of the manual
 // approach) and no re-parse across processes.
 //
@@ -31,7 +31,7 @@ package glue
 //
 // The captured rows are held in a store.Heap (the same append-only, insertion-
 // ordered, spillable primitive the corpus shared-scan cache uses): chunk 0 stays
-// in memory, so a small results set never touches disk, and a large one AUTOMATICALLY
+// in memory, so a small labelResults set never touches disk, and a large one AUTOMATICALLY
 // spills its overflow to mmap'd temp files under a per-session dir -- so a materialize
 // that outgrows RAM degrades to disk rather than OOMing. CREATE streams each row
 // straight into the heap (bounded memory regardless of result size); DROP / OR REPLACE

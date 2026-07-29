@@ -68,9 +68,9 @@ import (
 //   - scan: the shared-scan child *base.Op (its Labels are typically ["."]).
 //   - detectors: the group's corpus (TargetSource is ignored here; the caller
 //     has already routed).
-//   - resultsLabels: the uniform results schema of the returned broadcast.
+//   - labelResultsLabels: the uniform labelResults schema of the returned broadcast.
 func BroadcastCSE(scan *base.Op, detectors []Detector,
-	resultsLabels base.Labels) *base.Op {
+	labelResultsLabels base.Labels) *base.Op {
 	// (1) Count every sub-expression-tree occurring in every detector's Pred and
 	// Proj, keyed by a deterministic canonical serialization.
 	counts := map[string]int{}
@@ -93,7 +93,7 @@ func BroadcastCSE(scan *base.Op, detectors []Detector,
 
 	// No sharing worth hoisting: a plain broadcast over scan, no precompute.
 	if len(keys) == 0 {
-		return cseBroadcast(scan, scan.Labels, detectors, resultsLabels)
+		return cseBroadcast(scan, scan.Labels, detectors, labelResultsLabels)
 	}
 
 	// Assign a synthetic "^cseN" label to each candidate.
@@ -130,14 +130,14 @@ func BroadcastCSE(scan *base.Op, detectors []Detector,
 	}
 
 	// (5) Broadcast over the precompute project, resolving against its labels.
-	return cseBroadcast(precompute, projLabels, rewritten, resultsLabels)
+	return cseBroadcast(precompute, projLabels, rewritten, labelResultsLabels)
 }
 
 // cseBroadcast assembles a "broadcast" op over child with the given detectors.
 // childLabels is documentary here (BroadcastExec reads child.Labels itself), but
 // keeps the call site parallel to how the rewritten detectors resolve.
 func cseBroadcast(child *base.Op, childLabels base.Labels,
-	detectors []Detector, resultsLabels base.Labels) *base.Op {
+	detectors []Detector, labelResultsLabels base.Labels) *base.Op {
 	_ = childLabels
 
 	detParams := make([]interface{}, 0, len(detectors))
@@ -153,7 +153,7 @@ func cseBroadcast(child *base.Op, childLabels base.Labels,
 
 	return &base.Op{
 		Kind:     "broadcast",
-		Labels:   append(base.Labels(nil), resultsLabels...),
+		Labels:   append(base.Labels(nil), labelResultsLabels...),
 		Params:   []interface{}{detParams},
 		Children: []*base.Op{child},
 	}

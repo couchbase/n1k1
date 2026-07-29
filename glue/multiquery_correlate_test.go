@@ -89,7 +89,7 @@ func TestMultiQueryCorrelationGrouping(t *testing.T) {
 
 // TestCorpusCorrelationScanSharing (Part B execution): two ASOF-lowered correlation
 // entries over the same two keyspaces share the scan+decode of each via the pack scan
-// cache (both merge-scan sides are n1k1 full scans). The results are byte-identical to
+// cache (both merge-scan sides are n1k1 full scans). The labelResults are byte-identical to
 // running each entry standalone (the oracle), and the shared keyspace is CAPTURED once
 // then REPLAYED for the second entry -- proving the sharing without changing results.
 // (Uses entry-matched ns_server_log keyspaces + the ASOF lowering, because an UN-lowered
@@ -139,18 +139,18 @@ func TestMultiQueryCorrelationScanSharing(t *testing.T) {
 		t.Fatalf("expected 1 correlation group (both share the sig), got %v", cc.CorrelationGroups)
 	}
 
-	results, err := cc.Run()
+	labelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	got := map[string][]string{}
-	for _, f := range results {
+	for _, f := range labelResults {
 		got[f.Label] = append(got[f.Label], string(f.Result))
 	}
 	for label := range oracle {
 		sort.Strings(got[label])
 		if len(got[label]) != len(oracle[label]) {
-			t.Fatalf("%s: %d results, oracle %d\n got=%v\n oracle=%v", label, len(got[label]), len(oracle[label]), got[label], oracle[label])
+			t.Fatalf("%s: %d labelResults, oracle %d\n got=%v\n oracle=%v", label, len(got[label]), len(oracle[label]), got[label], oracle[label])
 		}
 		for i := range got[label] {
 			if got[label][i] != oracle[label][i] {
@@ -222,7 +222,7 @@ func TestMultiQueryCorrelationSharesBothSides(t *testing.T) {
 
 // TestCorpusCorrelationScanBudget: a tiny capture budget makes the cache ABANDON a
 // keyspace mid-capture (free the partial heap, re-scan thereafter) instead of spilling it
-// in full -- and the results are STILL byte-identical to standalone (abandoning caching
+// in full -- and the labelResults are STILL byte-identical to standalone (abandoning caching
 // never changes results).
 func TestMultiQueryCorrelationScanBudget(t *testing.T) {
 	prev := EnableASOFRewrite
@@ -255,18 +255,18 @@ func TestMultiQueryCorrelationScanBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MultiQueryCompile: %v", err)
 	}
-	results, err := cc.Run()
+	labelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// Results unchanged despite no caching.
+	// LabelResults unchanged despite no caching.
 	byTag := map[string]int{}
-	for _, f := range results {
+	for _, f := range labelResults {
 		byTag[f.Label]++
 	}
 	for _, label := range []string{"c1", "c2"} {
 		if byTag[label] != len(oracle.Rows) {
-			t.Errorf("%s: %d results, oracle %d (skipping the cache changed results!)", label, byTag[label], len(oracle.Rows))
+			t.Errorf("%s: %d labelResults, oracle %d (skipping the cache changed results!)", label, byTag[label], len(oracle.Rows))
 		}
 	}
 	if cc.scanCache.captures != 0 {

@@ -38,7 +38,7 @@ import (
 //
 // Per matching row a detector yields its projected row TAGGED with the
 // detector's id in output slot 0, so a consumer can demultiplex the interleaved
-// results stream by tag. All detectors project into a uniform results schema,
+// labelResults stream by tag. All detectors project into a uniform labelResults schema,
 // so the op's output Labels stay stable: [<tag>, <evidence...>].
 //
 // Zero per-row garbage: the predicate/projection base.ExprFuncs are built ONCE
@@ -88,7 +88,7 @@ type broadcastDetector struct {
 //	                                                         as an OpProject Params.
 //
 // The child scan's Labels drive predicate / projection field resolution. The
-// op's own o.Labels are the stable results schema ([<tag>, <evidence...>]); the
+// op's own o.Labels are the stable labelResults schema ([<tag>, <evidence...>]); the
 // caller supplies them.
 func BroadcastExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
@@ -120,11 +120,11 @@ func BroadcastExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	stats := StatsFromVars(vars)                                // <== genCompiler:hide
 	statsBase := o.StatsBase                                    // <== genCompiler:hide
 	StatsCounterZero(stats, statsBase+StatBroadcastRowsIn)      // <== genCompiler:hide
-	StatsCounterZero(stats, statsBase+StatBroadcastResultsOut) // <== genCompiler:hide
+	StatsCounterZero(stats, statsBase+StatBroadcastLabelResultsOut) // <== genCompiler:hide
 
 	// Per row (in the shared scan's yield callback): evaluate every detector's
 	// predicate against the SAME native row; on a truthy predicate, project into
-	// the detector's REUSED buffer -- tag first -- and yield the tagged result.
+	// the detector's REUSED buffer -- tag first -- and yield the tagged labelResult.
 	// MISSING / NULL / false predicates are non-truthy (base.ValTruthy), so those
 	// rows are dropped exactly as OpFilter drops them.
 	childYield := func(vals base.Vals) {
@@ -141,7 +141,7 @@ func BroadcastExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 				out = d.projFunc(vals, out, yieldErr)
 				d.outReuse = out
 
-				StatsCounterBump(stats, statsBase+StatBroadcastResultsOut) // stats: live // <== genCompiler:hide
+				StatsCounterBump(stats, statsBase+StatBroadcastLabelResultsOut) // stats: live // <== genCompiler:hide
 
 				yieldVals(out)
 			}

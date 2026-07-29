@@ -1151,7 +1151,7 @@ func TestMetaPos(t *testing.T) {
 
 // TestMetaLoc: an extracted (multiline-log) record's _meta carries byte_offset,
 // byte_len, line_start and line_end that slice back to the record's raw bytes in the
-// ORIGINAL file (IDEA-0026) -- the missing link that makes a result externally
+// ORIGINAL file (IDEA-0026) -- the missing link that makes a labelResult externally
 // chase-able with dd/sed/rg.
 func TestMetaLoc(t *testing.T) {
 	dir := t.TempDir()

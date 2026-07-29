@@ -37,7 +37,7 @@ import (
 // => safe to skip. Over-waking (a literal present but the full predicate then
 // fails) is harmless: the full predicate re-checks and drops the row, so output
 // is IDENTICAL to a plain broadcast (TestOpBroadcastIndexedEquivalence proves
-// byte-identical results). Under-waking would be a correctness bug and is
+// byte-identical labelResults). Under-waking would be a correctness bug and is
 // avoided by falling back to always-wake whenever no necessary literal is
 // provable (see PrefilterLiteral).
 //
@@ -63,7 +63,7 @@ func OpBroadcastIndexed(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 // Params layout is IDENTICAL to OpBroadcast (Params[0] = []detector, each a
 // []interface{}{tag, predExpr, projExprs}); the build helper BroadcastIndexed
 // assembles it. The child scan's Labels drive predicate/projection resolution;
-// o.Labels are the stable results schema ([<tag>, <evidence...>]).
+// o.Labels are the stable labelResults schema ([<tag>, <evidence...>]).
 func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	yieldErr base.YieldErr, path, pathNext string) {
 	childLabels := base.Labels(nil)
@@ -120,14 +120,14 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	ac := base.BuildAhoCorasick(literals)
 	matched := ac.NewMatchSet()
 
-	// Stats: RowsIn (shared rows fanned), ResultsOut (tagged results), and
+	// Stats: RowsIn (shared rows fanned), LabelResultsOut (tagged labelResults), and
 	// PredEvals -- the sparsity signal: how many FULL detector predicates were
 	// evaluated (woken + always-wake), vs a plain broadcast's K-per-row. Live,
 	// interpreter-only (genCompiler:hide).
 	stats := StatsFromVars(vars)                                       // <== genCompiler:hide
 	statsBase := o.StatsBase                                           // <== genCompiler:hide
 	StatsCounterZero(stats, statsBase+StatBroadcastIndexedRowsIn)      // <== genCompiler:hide
-	StatsCounterZero(stats, statsBase+StatBroadcastIndexedResultsOut) // <== genCompiler:hide
+	StatsCounterZero(stats, statsBase+StatBroadcastIndexedLabelResultsOut) // <== genCompiler:hide
 	StatsCounterZero(stats, statsBase+StatBroadcastIndexedPredEvals)   // <== genCompiler:hide
 
 	// Per row: (1) one AC pass over the row bytes -> the present literal ids; (2)
@@ -161,7 +161,7 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 					out = d.projFunc(vals, out, yieldErr)
 					d.outReuse = out
 
-					StatsCounterBump(stats, statsBase+StatBroadcastIndexedResultsOut) // stats: live // <== genCompiler:hide
+					StatsCounterBump(stats, statsBase+StatBroadcastIndexedLabelResultsOut) // stats: live // <== genCompiler:hide
 
 					yieldVals(out)
 				}
@@ -183,7 +183,7 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 				out = d.projFunc(vals, out, yieldErr)
 				d.outReuse = out
 
-				StatsCounterBump(stats, statsBase+StatBroadcastIndexedResultsOut) // stats: live // <== genCompiler:hide
+				StatsCounterBump(stats, statsBase+StatBroadcastIndexedLabelResultsOut) // stats: live // <== genCompiler:hide
 
 				yieldVals(out)
 			}
@@ -330,9 +330,9 @@ func jsonStringLiteral(node interface{}) (string, bool) {
 //
 //   - scan: the shared-scan child *base.Op (its Labels drive resolution).
 //   - detectors: the corpus (TargetSource is ignored here; the caller routes).
-//   - resultsLabels: the uniform results schema ([tag, evidence...]).
+//   - labelResultsLabels: the uniform labelResults schema ([tag, evidence...]).
 func BroadcastIndexed(scan *base.Op, detectors []Detector,
-	resultsLabels base.Labels) *base.Op {
+	labelResultsLabels base.Labels) *base.Op {
 	detParams := make([]interface{}, 0, len(detectors))
 	for _, d := range detectors {
 		// The existing broadcast detector spec: []interface{}{tag, pred, proj}.
@@ -341,7 +341,7 @@ func BroadcastIndexed(scan *base.Op, detectors []Detector,
 
 	return &base.Op{
 		Kind:     "broadcast-indexed",
-		Labels:   append(base.Labels(nil), resultsLabels...),
+		Labels:   append(base.Labels(nil), labelResultsLabels...),
 		Params:   []interface{}{detParams},
 		Children: []*base.Op{scan},
 	}

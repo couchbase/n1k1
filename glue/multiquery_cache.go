@@ -32,7 +32,7 @@ package glue
 // project it identically; an unrecognized pushdown is not cached. The per-scan capture is
 // byte-BUDGETED (CorpusScanCacheBudgetBytes): a keyspace larger than the budget is
 // abandoned (partial heap freed, re-scanned thereafter) rather than mirrored to disk in
-// full. Differential-tested: results are identical to running each entry standalone.
+// full. Differential-tested: labelResults are identical to running each entry standalone.
 
 import (
 	"fmt"

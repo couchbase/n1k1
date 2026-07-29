@@ -27,14 +27,14 @@ import (
 // prepare.md phase 6) that will FEED this builder; BroadcastRoute deliberately
 // does no SQL parsing.
 type Detector struct {
-	// Tag is the detector id, emitted in output slot 0 of every result so a
-	// consumer can demultiplex the interleaved results stream.
+	// Tag is the detector id, emitted in output slot 0 of every labelResult so a
+	// consumer can demultiplex the interleaved labelResults stream.
 	Tag string
 
 	// TargetSource is the id of the ONE source (a key of BroadcastRoute's
 	// sources map) this detector runs against. A detector whose TargetSource is
 	// absent from sources is an orphan: pruned and RETURNED, never silently run
-	// against nothing (which "would yield an empty results table that reads as
+	// against nothing (which "would yield an empty labelResults table that reads as
 	// clean").
 	TargetSource string
 
@@ -67,14 +67,14 @@ type Detector struct {
 //
 // The routed plan reuses the EXISTING ops -- no new engine op, no intermed /
 // codegen change. It is a "union-all" over one "broadcast" per source-that-has-
-// detectors. Each broadcast shares the uniform results schema (resultsLabels,
-// [tag, evidence...]), so union-all funnels the per-source results into one
+// detectors. Each broadcast shares the uniform labelResults schema (labelResultsLabels,
+// [tag, evidence...]), so union-all funnels the per-source labelResults into one
 // stream.
 //
 //   - sources: available sources, keyed by id; the value is that source's scan
 //     *base.Op (the broadcast's shared-scan child).
 //   - detectors: the corpus, each already bound to a TargetSource.
-//   - resultsLabels: the uniform results schema shared by every broadcast and
+//   - labelResultsLabels: the uniform labelResults schema shared by every broadcast and
 //     the union-all.
 //
 // Returns:
@@ -87,7 +87,7 @@ type Detector struct {
 //     order. Surfaced, never hidden -- a binding "must fail loudly, not
 //     silently". The CALLER decides whether an orphan is a hard error.
 func BroadcastRoute(sources map[string]*base.Op, detectors []Detector,
-	resultsLabels base.Labels) (routed *base.Op, orphans []Detector) {
+	labelResultsLabels base.Labels) (routed *base.Op, orphans []Detector) {
 	// Group detectors by TargetSource, preserving input order within a source.
 	// Orphans (unknown TargetSource) are collected out, in input order.
 	bySource := map[string][]Detector{}
@@ -120,7 +120,7 @@ func BroadcastRoute(sources map[string]*base.Op, detectors []Detector,
 
 		broadcasts = append(broadcasts, &base.Op{
 			Kind:     "broadcast",
-			Labels:   append(base.Labels(nil), resultsLabels...),
+			Labels:   append(base.Labels(nil), labelResultsLabels...),
 			Params:   []interface{}{detParams},
 			Children: []*base.Op{sources[id]},
 		})
@@ -136,7 +136,7 @@ func BroadcastRoute(sources map[string]*base.Op, detectors []Detector,
 	default:
 		return &base.Op{
 			Kind:     "union-all",
-			Labels:   append(base.Labels(nil), resultsLabels...),
+			Labels:   append(base.Labels(nil), labelResultsLabels...),
 			Children: broadcasts,
 		}, orphans
 	}

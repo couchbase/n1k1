@@ -58,7 +58,7 @@ func TestTempKeyspaceRoundTrip(t *testing.T) {
 }
 
 // TestTempKeyspaceJoinAndChain covers the flagship staged use case: JOIN two
-// materialized result sets, and build a temp keyspace FROM other temp keyspaces.
+// materialized labelResult sets, and build a temp keyspace FROM other temp keyspaces.
 func TestTempKeyspaceJoinAndChain(t *testing.T) {
 	dir := insertTestDir(t)
 	sess, err := OpenSession(dir, "default")

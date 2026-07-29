@@ -16,36 +16,36 @@
 // .multi brings the pack machinery (glue.MultiQueryCompile / glue.MultiQueryLint;
 // DESIGN-prepare.md phases 6-7) to the CLI so a tech-support team -- or an AI support
 // agent -- can run a pack of SQL++ "entries" over a support bundle (the open
-// datastore) and get results, and lint the pack for authoring feedback. It runs
+// datastore) and get labelResults, and lint the pack for authoring feedback. It runs
 // interactively AND non-interactively (n1k1 <bundle> -c '.multi run --queries ./det'),
 // so CI / an agent drives it the same way.
 //
 // A PACK is a directory of *.sql++ ENTRY files (glue.LoadMultiQueryEntries / glue.ParseMultiQueryEntry).
 // A entry is SQL++ plus optional `-- key: value` front-matter (label -> Label, source,
 // description, tags) and an optional inline golden fixture (`-- @fixture` JSONL
-// input rows + `-- @expect` golden results). A plain *.sql++ with none of these still
+// input rows + `-- @expect` golden labelResults). A plain *.sql++ with none of these still
 // loads (Label = filename stem, Stmt = whole body) -- backward compatible.
 //
 // SUBCOMMANDS:
 //
 //	.multi run  --queries <dir> [--bind <manifest>]  -- compile the pack over the
 //	    open bundle, print a fail-loud coverage/health summary to stderr, then render
-//	    the tagged results to stdout in the current output mode.
+//	    the tagged labelResults to stdout in the current output mode.
 //	.multi lint --queries <dir> [--bind <manifest>]  -- the authoring report card:
 //	    per-entry class (fused/standalone/rejected), target keyspace, eval lane
 //	    (native/boxed), predicate-index verdict (literal vs always-wake) and advice,
 //	    plus a pack score (% fused / native / index-pruned).
 //	.multi test [--queries <dir>] [--update]         -- the golden-fixture runner (CI):
 //	    for each entry with a `-- @fixture`, build a temp keyspace from its input rows,
-//	    run JUST that entry, and (check mode) assert the produced results equal the
+//	    run JUST that entry, and (check mode) assert the produced labelResults equal the
 //	    entry's `-- @expect` golden as a set -- or (--update) record the produced
-//	    results back into the entry's @expect block. Signals failure via c.failed so a
+//	    labelResults back into the entry's @expect block. Signals failure via c.failed so a
 //	    caller (make rules-test) exits non-zero on any FAIL. Hermetic: builds its own
 //	    temp datastores, so it needs no open bundle.
 //
 // DEFERRED (noted): .multi bind (dry-run -- binding already fails loud at run);
-// per-result STREAMING (results are batch-rendered via the current output mode --
-// jsonlines still streams the row table; a per-result OnRow hook is a nice-to-have);
+// per-labelResult STREAMING (labelResults are batch-rendered via the current output mode --
+// jsonlines still streams the row table; a per-labelResult OnRow hook is a nice-to-have);
 // the SHA-keyed build cache; the re-run delta report; and multi-keyspace / version-
 // specific fixtures (a fixture feeds the entry's single `source` keyspace).
 package main
@@ -89,7 +89,7 @@ func (c *cli) cmdMulti(arg string) {
 type multiArgs struct {
 	queries []string
 	bind    string
-	update  bool // .multi test: record produced results back into each entry's @expect
+	update  bool // .multi test: record produced labelResults back into each entry's @expect
 	sql     bool // .multi explain: render the pretty SQL++ + provenance view instead of the op tree
 }
 
@@ -277,7 +277,7 @@ func yesNo(b bool) string {
 
 // cmdMultiRun implements `.multi run`: compile the pack over the open bundle,
 // print a fail-loud coverage/health summary to stderr, then render the tagged
-// results to stdout in the current output mode.
+// labelResults to stdout in the current output mode.
 func (c *cli) cmdMultiRun(arg string) {
 	args, err := parseMultiArgs(arg)
 	if err != nil {
@@ -300,7 +300,7 @@ func (c *cli) cmdMultiRun(arg string) {
 
 	// Fail-loud binding coverage FIRST (before compile): probe every logical keyspace
 	// in the manifest against this bundle. An unresolved/empty-glob keyspace is a GAP
-	// -- surface it and refuse to render a (falsely clean) results table.
+	// -- surface it and refuse to render a (falsely clean) labelResults table.
 	if gap := c.reportBindingCoverage(sess, binding); gap {
 		fmt.Fprintf(c.stderr, "%s: .multi run: aborting -- unresolved logical keyspace(s) above (a bundle gap, not a clean run)\n", c.prog)
 		c.failed = true
@@ -315,30 +315,30 @@ func (c *cli) cmdMultiRun(arg string) {
 	}
 	c.reportMultiQueryHealth(cc, len(dets))
 
-	results, report, err := cc.RunReport()
+	labelResults, report, err := cc.RunReport()
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
 
-	// Render results as JSON rows {"label":..., "result":...} in the current output
+	// Render labelResults as JSON rows {"label":..., "result":...} in the current output
 	// mode (box at a TTY, jsonlines when piped -- reusing renderRows). Streaming each
-	// result as it is produced (Session.OnRow-style) is a noted nice-to-have; the
+	// labelResult as it is produced (Session.OnRow-style) is a noted nice-to-have; the
 	// MVP batch-renders the whole set.
-	rows := make([]json.RawMessage, 0, len(results))
-	for _, f := range results {
+	rows := make([]json.RawMessage, 0, len(labelResults))
+	for _, f := range labelResults {
 		rows = append(rows, orderedJSONRow(
 			[2]interface{}{"label", f.Label},
 			[2]interface{}{"result", f.Result},
 		))
 	}
 	c.renderRows(rows, "", false)
-	fmt.Fprintf(c.stderr, "%s%d result(s) from %d query/queries\n", c.icon("🔎 "), len(results), len(dets))
+	fmt.Fprintf(c.stderr, "%s%d labelResult(s) from %d query/queries\n", c.icon("🔎 "), len(labelResults), len(dets))
 	if n := len(cc.GatedSkipped); n > 0 {
 		// A gated skip means the entry's `gate:` precondition matched no row in its
 		// keyspace, so its (expensive, standalone) sort/window was not run. Surfaced so
-		// the skip is visible -- a mis-declared gate reads as "0 results", not silence.
+		// the skip is visible -- a mis-declared gate reads as "0 labelResults", not silence.
 		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(fmt.Sprintf(
 			"gated: %d standalone query/queries skipped (gate precondition absent): %s",
 			n, strings.Join(cc.GatedSkipped, ", "))))
@@ -353,7 +353,7 @@ func (c *cli) cmdMultiRun(arg string) {
 	if line := mergeStatsLine(cc.MergeStats); line != "" {
 		fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim(line))
 	}
-	c.reportEntryHits(dets, results, cc, report)
+	c.reportEntryHits(dets, labelResults, cc, report)
 }
 
 // mergeStatsLine summarizes the run's sorted-merge behavior for the user (memory-relevant:
@@ -385,12 +385,12 @@ func mergeStatsLine(m *base.MergeStats) string {
 }
 
 // reportDetectorHits prints the per-entry hit stats (IDEA-0015): for each entry,
-// how many results it matched and -- for a fused entry -- how many rows its
-// keyspace scanned. The point is a debuggable 0-results run: an entry that matched
+// how many labelResults it matched and -- for a fused entry -- how many rows its
+// keyspace scanned. The point is a debuggable 0-labelResults run: an entry that matched
 // 0 gets an annotation distinguishing "the keyspace scanned ~0 rows" (a whole-file
 // blob / empty scan -- the real cause is upstream framing) from "the predicate matched
 // none of N scanned rows" (a predicate bug). Goes to stderr so it never pollutes the
-// results on stdout.
+// labelResults on stdout.
 // correlationShareable counts, over the correlation groups, the groups with >1 entry
 // (the ones that could share a scan) and the total entries in those groups.
 func correlationShareable(groups map[string][]string) (shareableGroups, entries int) {
@@ -403,16 +403,16 @@ func correlationShareable(groups map[string][]string) (shareableGroups, entries 
 	return shareableGroups, entries
 }
 
-func (c *cli) reportEntryHits(dets []glue.MultiQueryEntry, results []glue.LabelResult,
+func (c *cli) reportEntryHits(dets []glue.MultiQueryEntry, labelResults []glue.LabelResult,
 	cc *glue.CompiledMultiQueryEntries, report *glue.MultiQueryRunReport) {
 	if len(dets) == 0 {
 		return
 	}
 	matched := make(map[string]int, len(dets))
-	for _, f := range results {
+	for _, f := range labelResults {
 		matched[f.Label]++
 	}
-	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-query hits (scanned = keyspace rows; woken = rows that woke it; matched = results):"))
+	fmt.Fprintf(c.stderr, "  %s\n", c.style.Dim("per-query hits (scanned = keyspace rows; woken = rows that woke it; matched = labelResults):"))
 	for _, d := range dets {
 		ks, fused := cc.EntryKeyspace[d.Label]
 		m := matched[d.Label]
@@ -432,7 +432,7 @@ func (c *cli) reportEntryHits(dets []glue.MultiQueryEntry, results []glue.LabelR
 	}
 }
 
-// zeroMatchHint explains a 0-results fused entry from its keyspace's scanned-row
+// zeroMatchHint explains a 0-labelResults fused entry from its keyspace's scanned-row
 // count and how many rows woke it: ~0 scanned means the data never reached the
 // predicate (an empty scan, or a whole-file blob that isn't framed -- see .tables);
 // 0 woken over a scanned keyspace means the predicate-index literal never appears (a
@@ -561,7 +561,7 @@ func (c *cli) cmdMultiLint(arg string) {
 	c.renderRows(rows, "", false)
 
 	// The pack score line -- the guardrail against an AI-authored pack silently
-	// bloating (all always-wake) or lying (rejected -> no results).
+	// bloating (all always-wake) or lying (rejected -> no labelResults).
 	fmt.Fprintf(c.stderr,
 		"%sscore: %d%% fused (%d/%d), %d%% native (%d/%d converted), %d%% index-pruned (%d/%d fused)  [%d standalone, %d rejected]\n",
 		c.icon("📊 "),
@@ -775,7 +775,7 @@ func (c *cli) renderMultiQueryExplainSQL(dets []glue.MultiQueryEntry, report []g
 			fmt.Fprintln(w, c.style.Dim(ln))
 		}
 		fmt.Fprintln(w, c.style.Dim(fmt.Sprintf(
-			"-- the fused query — ONE scan of %s, the UNION ALL of these %d branches (each result tagged with its query label at run time):",
+			"-- the fused query — ONE scan of %s, the UNION ALL of these %d branches (each labelResult tagged with its query label at run time):",
 			orEmptyDash(ks), len(members))))
 		for i, det := range members {
 			d := byLabel[det.Label]
@@ -955,10 +955,10 @@ func orEmptyDash(s string) string {
 // the fixture's input rows, runs JUST that entry (glue.MultiQueryEntry.RunFixture -> the same
 // MultiQueryCompile/Run path .multi run uses), and then:
 //
-//   - CHECK mode (default): asserts the produced results equal the entry's `-- @expect`
+//   - CHECK mode (default): asserts the produced labelResults equal the entry's `-- @expect`
 //     golden as a SORTED SET (order isn't guaranteed). A fixture with no @expect is a
 //     FAIL ("no golden recorded"). A FAIL prints a compact missing/unexpected diff.
-//   - --update mode: writes the produced results back into the entry's @expect block
+//   - --update mode: writes the produced labelResults back into the entry's @expect block
 //     (golden-master capture) so the author reviews the diff and commits.
 //
 // It is HERMETIC (each entry runs over its own temp datastore), so it needs no open
@@ -1012,7 +1012,7 @@ func (c *cli) cmdMultiTest(arg string) {
 				continue
 			}
 			updated++
-			fmt.Fprintf(c.stderr, "  %s %s: recorded %d result(s)\n", c.icon("📝 "), r.Label, len(actual))
+			fmt.Fprintf(c.stderr, "  %s %s: recorded %d labelResult(s)\n", c.icon("📝 "), r.Label, len(actual))
 			continue
 		}
 
@@ -1023,10 +1023,10 @@ func (c *cli) cmdMultiTest(arg string) {
 			continue
 		}
 
-		missing, unexpected := glue.DiffResults(r.Fixture.Expect, actual)
+		missing, unexpected := glue.DiffLabelResults(r.Fixture.Expect, actual)
 		if len(missing) == 0 && len(unexpected) == 0 {
 			passed++
-			fmt.Fprintf(c.stderr, "  %s %s: %s (%d result(s))\n", c.icon("✓ "), r.Label,
+			fmt.Fprintf(c.stderr, "  %s %s: %s (%d labelResult(s))\n", c.icon("✓ "), r.Label,
 				c.style.Cyan("PASS"), len(actual))
 			continue
 		}
@@ -1034,10 +1034,10 @@ func (c *cli) cmdMultiTest(arg string) {
 		fmt.Fprintf(c.stderr, "  %s %s: %s (%d missing, %d unexpected)\n", c.icon("✗ "), r.Label,
 			c.style.Red("FAIL"), len(missing), len(unexpected))
 		for _, f := range missing {
-			fmt.Fprintf(c.stderr, "      %s missing:    %s\n", c.style.Red("-"), resultLine(f))
+			fmt.Fprintf(c.stderr, "      %s missing:    %s\n", c.style.Red("-"), labelResultLine(f))
 		}
 		for _, f := range unexpected {
-			fmt.Fprintf(c.stderr, "      %s unexpected: %s\n", c.style.Cyan("+"), resultLine(f))
+			fmt.Fprintf(c.stderr, "      %s unexpected: %s\n", c.style.Cyan("+"), labelResultLine(f))
 		}
 		fmt.Fprintf(c.stderr, "      %s\n", multiFix(fixFixtureFail, ""))
 	}
@@ -1056,20 +1056,20 @@ func (c *cli) cmdMultiTest(arg string) {
 	}
 }
 
-// updateRecipeExpect rewrites path's `-- @expect` block in place with results (leaving
+// updateRecipeExpect rewrites path's `-- @expect` block in place with labelResults (leaving
 // everything before it byte-identical -- glue.RewriteExpect), the golden-master capture
 // for `.multi test --update`.
-func updateMultiQueryEntryExpect(path string, results []glue.LabelResult) error {
+func updateMultiQueryEntryExpect(path string, labelResults []glue.LabelResult) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(glue.RewriteExpect(string(raw), results)), 0o644)
+	return os.WriteFile(path, []byte(glue.RewriteExpect(string(raw), labelResults)), 0o644)
 }
 
-// resultLine renders one result as a compact {"label":...,"result":...} line for the
+// labelResultLine renders one labelResult as a compact {"label":...,"result":...} line for the
 // check-mode diff.
-func resultLine(f glue.LabelResult) string {
+func labelResultLine(f glue.LabelResult) string {
 	label, _ := json.Marshal(f.Label)
 	ev := f.Result
 	if len(ev) == 0 {

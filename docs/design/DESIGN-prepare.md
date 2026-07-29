@@ -181,7 +181,7 @@ The vision: a **git-maintained corpus of SQL++ "detectors"** — filters/scans/c
 report *"this bundle shows evidence of ET-12345"* — applied by the thousands to a bundle
 **without scanning it thousands of times**. This hits both of codegen's payoff regimes at once:
 compile the corpus **once**, run it against **every** bundle (each a GB-scale scan). Output per
-bundle: a ranked results table (`{ticket, confidence, source_file, line_range, result, summary,
+bundle: a ranked labelResults table (`{ticket, confidence, source_file, line_range, result, summary,
 detector@sha}`), `UNION ALL` across detectors, GROUP BY/ORDER BY to de-dup/rank.
 
 ### Key design decisions
@@ -195,7 +195,7 @@ detector@sha}`), `UNION ALL` across detectors, GROUP BY/ORDER BY to de-dup/rank.
   fusion compose: all `FROM indexer_log` detectors share one scan regardless of the physical
   files behind it. **Compile the MQO structure once; rebind the leaves per bundle.**
 - **ASOF/temporal/window/group/join detectors run standalone, not fused** (each via its own
-  already-optimized plan, results unioned in); the compiler classifies each **fuse / standalone
+  already-optimized plan, labelResults unioned in); the compiler classifies each **fuse / standalone
   / reject** (reject = surfaced, never silently dropped).
 - **Field-shape drift is a CORPUS concern, not a normalization adapter** (see Late binding).
 - **MVP result = the whole matched row** (per-detector projection envelope deferred).
@@ -207,7 +207,7 @@ yield; multi-query makes that yield a **fan-out (tee)** into K detector pipeline
 the shared bytes with zero boxing (decode once). The levers are orthogonal and compose:
 
 - **`engine.OpBroadcast` (kind `broadcast`)** — scan once, fan each row to K inlined
-  filter+project detectors, yielding tag-stamped results. Removes redundant scans (up to
+  filter+project detectors, yielding tag-stamped labelResults. Removes redundant scans (up to
   ~6.3× fewer allocs at K=256) but is still **O(K × rows)** in predicate work — which the next
   three attack.
 - **Source routing (`BroadcastRoute`)** — a source's scan fans out only to detectors targeting
@@ -255,7 +255,7 @@ built) → **convention** (version-suffix-tolerant globs) → **content/schema s
 Because the compiled program reaches data through the datastore it opens at startup, the binding
 is **data, not code** — rebinding needs **no recompilation**, and the baked MQO structure is
 bind-invariant. ⚠ **A binding must fail loudly**: a logical keyspace resolving to nothing errors
-at EXECUTE, never a silently-empty results table that reads as "clean."
+at EXECUTE, never a silently-empty labelResults table that reads as "clean."
 
 **Field/schema drift is a corpus concern, not an adapter** (decision): when a release renames a
 field, the *corpus* changes — version-specific detectors, or version-tolerant stock SQL++
@@ -272,7 +272,7 @@ it** (`CorpusCompile` knows fuse/standalone/reject; the optimizer knows native-v
 index knows literal-keyed-vs-always-wake; stats count rows in/out per op).
 
 Built (`cmd/n1k1/rules.go`, `glue.LoadCorpus`/`Recipe`): the **`.multi`** family — `run` (corpus
-→ coverage + tagged results, jsonlines + box), `lint` (the **report card**: per detector
+→ coverage + tagged labelResults, jsonlines + box), `lint` (the **report card**: per detector
 fuse/standalone/reject + native/boxed + index-pruned/always-wake + fix advice, plus a corpus
 score), `test` (golden fixtures, `--update` records), `list` (metadata-only inventory, no
 compile/bundle), `help` (embedded docs). Recipe = single file: `-- key: value` front-matter +
@@ -325,7 +325,7 @@ corpus-SHA — the killer feature for re-runs).
 - **Corpus granularity — genuinely unsettled.** One giant fused program per bundle (max CSE) vs
   sharded by source (bounds recompile, index within each shard)? Tradeoffs unclear.
 - **Version-aware corpus organization** — version tags/dirs, a tolerance idiom the authoring
-  guide standardizes, provenance-tagging results by target version, and how MQO CSE folds many
+  guide standardizes, provenance-tagging labelResults by target version, and how MQO CSE folds many
   near-identical per-version detectors.
 - **Log time model** — normalize wildly different log timestamp formats/zones into one sortable
   key for the ASOF merge: per-source parse spec, or inferred?

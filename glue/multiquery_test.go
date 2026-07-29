@@ -72,7 +72,7 @@ func canonJSON(t *testing.T, raw []byte) string {
 }
 
 // TestMultiQueryCompileDifferential is the correctness gate (DESIGN-prepare.md phase
-// 6): MultiQueryCompile over a small pack must yield results EQUIVALENT to running
+// 6): MultiQueryCompile over a small pack must yield labelResults EQUIVALENT to running
 // each fused entry's ORIGINAL SQL separately and tagging its matched rows. The
 // pack deliberately exercises every lever:
 //
@@ -81,9 +81,9 @@ func canonJSON(t *testing.T, raw []byte) string {
 //   - T4 has no WHERE -> the always-true predicate.
 //   - T5 targets a SECOND keyspace -> the per-keyspace union-all.
 //   - T6 is a GROUP BY -> must land in Standalone (valid but non-fusable) and RUN,
-//     producing its results via the full pipeline -- not silently dropped.
+//     producing its labelResults via the full pipeline -- not silently dropped.
 //
-// Results are compared as SORTED SETS (order across the standalone runs, the
+// LabelResults are compared as SORTED SETS (order across the standalone runs, the
 // union-all, and the interleaved fan-out is not guaranteed).
 func TestMultiQueryCompileDifferential(t *testing.T) {
 	sess := multiQueryTestSession(t)
@@ -123,7 +123,7 @@ func TestMultiQueryCompileDifferential(t *testing.T) {
 	}
 
 	// (1) The GROUP BY entry must be classified STANDALONE (valid but non-fusable),
-	// not Rejected and not silently dropped -- it will RUN and produce results.
+	// not Rejected and not silently dropped -- it will RUN and produce labelResults.
 	if len(cc.Standalone) != 1 || cc.Standalone[0].Label != standaloneTag {
 		t.Fatalf("expected exactly 1 standalone (%s), got %+v", standaloneTag, cc.Standalone)
 	}
@@ -157,15 +157,15 @@ func TestMultiQueryCompileDifferential(t *testing.T) {
 		t.Errorf("expected a CSE precompute (^cse column) in the logs broadcast; plan=%s", dumpPlan(cc.Plan))
 	}
 
-	// (3) Equivalence: the pack results set == the union of each fused entry's
+	// (3) Equivalence: the pack labelResults set == the union of each fused entry's
 	// baseline rows PLUS the standalone entry's own SELECT rows, each tagged with
 	// its id.
-	gotResults, err := cc.Run()
+	gotLabelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	got := make([]string, 0, len(gotResults))
-	for _, f := range gotResults {
+	got := make([]string, 0, len(gotLabelResults))
+	for _, f := range gotLabelResults {
 		got = append(got, f.Label+"\t"+canonJSON(t, f.Result))
 	}
 	sort.Strings(got)
@@ -196,15 +196,15 @@ func TestMultiQueryCompileDifferential(t *testing.T) {
 	sort.Strings(want)
 
 	if len(got) != len(want) {
-		t.Fatalf("result count: got %d, want %d\n got=%v\n want=%v", len(got), len(want), got, want)
+		t.Fatalf("labelResult count: got %d, want %d\n got=%v\n want=%v", len(got), len(want), got, want)
 	}
 	for i := range got {
 		if got[i] != want[i] {
-			t.Fatalf("result[%d] mismatch:\n got=%q\n want=%q\n --- full got=%v\n --- full want=%v",
+			t.Fatalf("labelResult[%d] mismatch:\n got=%q\n want=%q\n --- full got=%v\n --- full want=%v",
 				i, got[i], want[i], got, want)
 		}
 	}
-	// t.Logf("matched %d results across %d fused + 1 standalone entry", len(got), len(fused))
+	// t.Logf("matched %d labelResults across %d fused + 1 standalone entry", len(got), len(fused))
 }
 
 // TestCorpusFusedProjection is the IDEA-0004 gate: a FUSED entry's result must
@@ -269,14 +269,14 @@ func TestMultiQueryFusedProjection(t *testing.T) {
 		}
 	}
 
-	// Result set: every entry's results must equal the identical SELECT run
+	// Result set: every entry's labelResults must equal the identical SELECT run
 	// standalone (its own projected rows), tagged. This holds whether it fused or not.
-	gotResults, err := cc.Run()
+	gotLabelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	got := make([]string, 0, len(gotResults))
-	for _, f := range gotResults {
+	got := make([]string, 0, len(gotLabelResults))
+	for _, f := range gotLabelResults {
 		got = append(got, f.Label+"\t"+canonJSON(t, f.Result))
 	}
 	sort.Strings(got)
@@ -297,17 +297,17 @@ func TestMultiQueryFusedProjection(t *testing.T) {
 	sort.Strings(want)
 
 	if len(got) != len(want) {
-		t.Fatalf("result count: got %d, want %d\n got=%v\n want=%v", len(got), len(want), got, want)
+		t.Fatalf("labelResult count: got %d, want %d\n got=%v\n want=%v", len(got), len(want), got, want)
 	}
 	for i := range got {
 		if got[i] != want[i] {
-			t.Fatalf("result[%d] mismatch:\n got=%q\n want=%q", i, got[i], want[i])
+			t.Fatalf("labelResult[%d] mismatch:\n got=%q\n want=%q", i, got[i], want[i])
 		}
 	}
 
 	// Direct anti-regression: the "named" entry's result is the {id,sev} object,
 	// NOT the whole row (no "code"/"msg" keys leak through).
-	for _, f := range gotResults {
+	for _, f := range gotLabelResults {
 		if f.Label != "named" {
 			continue
 		}
@@ -343,12 +343,12 @@ func TestMultiQueryRunReport(t *testing.T) {
 		t.Fatalf("DetKeyspace = %v, want err->default:logs, login->default:events", cc.EntryKeyspace)
 	}
 
-	results, report, err := cc.RunReport()
+	labelResults, report, err := cc.RunReport()
 	if err != nil {
 		t.Fatalf("RunReport: %v", err)
 	}
-	if len(results) == 0 {
-		t.Fatal("expected some results")
+	if len(labelResults) == 0 {
+		t.Fatal("expected some labelResults")
 	}
 	// The shared scans fanned every row of each keyspace, independent of how many matched.
 	if got := report.ScannedByKeyspace["default:logs"]; got != 4 {
@@ -372,7 +372,7 @@ func TestMultiQueryRunReportWoken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MultiQueryCompile: %v", err)
 	}
-	results, report, err := cc.RunReport()
+	labelResults, report, err := cc.RunReport()
 	if err != nil {
 		t.Fatalf("RunReport: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestMultiQueryRunReportWoken(t *testing.T) {
 		t.Errorf("absent woken = %d, want 0 (its literal appears in no row)", report.WokenByEntry["absent"])
 	}
 	matched := map[string]int{}
-	for _, f := range results {
+	for _, f := range labelResults {
 		matched[f.Label]++
 	}
 	if matched["rare"] != 1 || matched["absent"] != 0 {
@@ -403,7 +403,7 @@ func TestMultiQueryRunReportWoken(t *testing.T) {
 
 // TestMultiQueryCompileSingleKeyspace: a pack confined to one keyspace returns the
 // per-keyspace broadcast directly (no union-all wrapper), and an empty / all-
-// unfusable pack yields a nil plan (Run -> no results).
+// unfusable pack yields a nil plan (Run -> no labelResults).
 func TestMultiQueryCompileSingleKeyspace(t *testing.T) {
 	sess := multiQueryTestSession(t)
 
@@ -420,15 +420,15 @@ func TestMultiQueryCompileSingleKeyspace(t *testing.T) {
 	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
 		t.Fatalf("unexpected non-fused: standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
 	}
-	results, err := cc.Run()
+	labelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(results) == 0 {
-		t.Fatal("expected results from single-keyspace pack")
+	if len(labelResults) == 0 {
+		t.Fatal("expected labelResults from single-keyspace pack")
 	}
 
-	// Empty pack -> nil plan, no results.
+	// Empty pack -> nil plan, no labelResults.
 	empty, err := sess.MultiQueryCompile(nil)
 	if err != nil {
 		t.Fatalf("MultiQueryCompile(nil): %v", err)
@@ -438,14 +438,14 @@ func TestMultiQueryCompileSingleKeyspace(t *testing.T) {
 	}
 	fs, err := empty.Run()
 	if err != nil || len(fs) != 0 {
-		t.Fatalf("empty Run: results=%v err=%v", fs, err)
+		t.Fatalf("empty Run: labelResults=%v err=%v", fs, err)
 	}
 }
 
 // TestMultiQueryCompileBoxedPredicate: a predicate that does not lower to a native
 // tree stays boxed (alias remapped to SELF) and STILL evaluates against the shared
 // scan. Uses a function-heavy predicate to force the boxed lane, and checks the
-// fused results match the standalone baseline.
+// fused labelResults match the standalone baseline.
 func TestMultiQueryCompileBoxedPredicate(t *testing.T) {
 	sess := multiQueryTestSession(t)
 
@@ -462,7 +462,7 @@ func TestMultiQueryCompileBoxedPredicate(t *testing.T) {
 	if len(cc.Standalone) != 0 || len(cc.Rejected) != 0 {
 		t.Fatalf("boxed entry unexpectedly non-fused: standalone=%+v rejected=%+v", cc.Standalone, cc.Rejected)
 	}
-	results, err := cc.Run()
+	labelResults, err := cc.Run()
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -471,15 +471,15 @@ func TestMultiQueryCompileBoxedPredicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
-	if len(results) != len(res.Rows) {
-		t.Fatalf("boxed results=%d baseline rows=%d", len(results), len(res.Rows))
+	if len(labelResults) != len(res.Rows) {
+		t.Fatalf("boxed labelResults=%d baseline rows=%d", len(labelResults), len(res.Rows))
 	}
-	if len(results) == 0 {
-		t.Fatal("expected at least one boxed result (row d: 'high load')")
+	if len(labelResults) == 0 {
+		t.Fatal("expected at least one boxed labelResult (row d: 'high load')")
 	}
-	for i := range results {
-		if canonJSON(t, results[i].Result) != canonJSON(t, res.Rows[i]) {
-			t.Fatalf("boxed result mismatch: %s vs %s", results[i].Result, res.Rows[i])
+	for i := range labelResults {
+		if canonJSON(t, labelResults[i].Result) != canonJSON(t, res.Rows[i]) {
+			t.Fatalf("boxed result mismatch: %s vs %s", labelResults[i].Result, res.Rows[i])
 		}
 	}
 }
@@ -488,8 +488,8 @@ func TestMultiQueryCompileBoxedPredicate(t *testing.T) {
 // that mixes fusable single-source entries with a NON-fusable ASOF/argmax
 // correlated-subquery entry. The ASOF entry must be classified STANDALONE (not
 // fused, not rejected) and, at Run() time, execute through the FULL pipeline so its
-// nearest-preceding merge-join lowering FIRES -- producing results identical to
-// running that SQL alone, unioned with the fused results.
+// nearest-preceding merge-join lowering FIRES -- producing labelResults identical to
+// running that SQL alone, unioned with the fused labelResults.
 func TestMultiQueryCompileASOFStandalone(t *testing.T) {
 	root := t.TempDir()
 
@@ -562,7 +562,7 @@ func TestMultiQueryCompileASOFStandalone(t *testing.T) {
 		t.Fatalf("ASOF lowering did not fire during the pack Run (AsofRewriteApplied did not advance from %d)", before)
 	}
 
-	// (b) The pack's ASOF results == running the ASOF SQL alone (its real
+	// (b) The pack's ASOF labelResults == running the ASOF SQL alone (its real
 	// projection as result), compared as sorted sets.
 	var asofGot []string
 	fusedCount := 0
@@ -587,17 +587,17 @@ func TestMultiQueryCompileASOFStandalone(t *testing.T) {
 	sort.Strings(asofWant)
 
 	if len(asofGot) == 0 {
-		t.Fatal("no ASOF results produced by the pack")
+		t.Fatal("no ASOF labelResults produced by the pack")
 	}
 	if len(asofGot) != len(asofWant) {
-		t.Fatalf("ASOF results count: got %d want %d\n got=%v\n want=%v", len(asofGot), len(asofWant), asofGot, asofWant)
+		t.Fatalf("ASOF labelResults count: got %d want %d\n got=%v\n want=%v", len(asofGot), len(asofWant), asofGot, asofWant)
 	}
 	for i := range asofGot {
 		if asofGot[i] != asofWant[i] {
-			t.Fatalf("ASOF result[%d]: got %s want %s", i, asofGot[i], asofWant[i])
+			t.Fatalf("ASOF labelResult[%d]: got %s want %s", i, asofGot[i], asofWant[i])
 		}
 	}
-	// Spot-check the nearest-preceding semantics reached the results: e-300 (@13.3)
+	// Spot-check the nearest-preceding semantics reached the labelResults: e-300 (@13.3)
 	// should carry r-200 as its state.
 	sawNearest := false
 	for _, e := range asofGot {
@@ -606,18 +606,18 @@ func TestMultiQueryCompileASOFStandalone(t *testing.T) {
 		}
 	}
 	if !sawNearest {
-		t.Fatalf("expected a nearest-preceding ASOF result (e@13.3 -> r-200); got=%v", asofGot)
+		t.Fatalf("expected a nearest-preceding ASOF labelResult (e@13.3 -> r-200); got=%v", asofGot)
 	}
 
-	// And the fusable entries still produce their results.
+	// And the fusable entries still produce their labelResults.
 	if fusedCount == 0 {
-		t.Fatal("expected the fusable logs entries to also produce results")
+		t.Fatal("expected the fusable logs entries to also produce labelResults")
 	}
-	// t.Logf("ASOF-in-pack: %d ASOF results + %d fused results", len(asofGot), fusedCount)
+	// t.Logf("ASOF-in-pack: %d ASOF labelResults + %d fused labelResults", len(asofGot), fusedCount)
 }
 
 // TestMultiQueryCompileStandaloneOnly: a pack of ONLY non-fusable entries (a GROUP BY)
-// has a nil fused Plan yet STILL produces results -- run individually via the full
+// has a nil fused Plan yet STILL produces labelResults -- run individually via the full
 // pipeline -- matching the entry's own SELECT rows.
 func TestMultiQueryCompileStandaloneOnly(t *testing.T) {
 	sess := multiQueryTestSession(t)
@@ -641,7 +641,7 @@ func TestMultiQueryCompileStandaloneOnly(t *testing.T) {
 	var gotRows []string
 	for _, f := range got {
 		if f.Label != "grp" {
-			t.Fatalf("unexpected result label %q", f.Label)
+			t.Fatalf("unexpected labelResult label %q", f.Label)
 		}
 		gotRows = append(gotRows, canonJSON(t, f.Result))
 	}
@@ -658,7 +658,7 @@ func TestMultiQueryCompileStandaloneOnly(t *testing.T) {
 	sort.Strings(wantRows)
 
 	if len(gotRows) == 0 {
-		t.Fatal("standalone-only pack produced no results")
+		t.Fatal("standalone-only pack produced no labelResults")
 	}
 	if len(gotRows) != len(wantRows) {
 		t.Fatalf("count: got %d want %d\n got=%v\n want=%v", len(gotRows), len(wantRows), gotRows, wantRows)
@@ -672,7 +672,7 @@ func TestMultiQueryCompileStandaloneOnly(t *testing.T) {
 
 // TestMultiQueryCompileRejected: a genuinely broken entry (a parse error) is classified
 // REJECTED with a reason and NOT run -- and it does NOT abort the pack: the other
-// (fusable) entry still compiles and produces its results.
+// (fusable) entry still compiles and produces its labelResults.
 func TestMultiQueryCompileRejected(t *testing.T) {
 	sess := multiQueryTestSession(t)
 
@@ -696,7 +696,7 @@ func TestMultiQueryCompileRejected(t *testing.T) {
 		t.Fatalf("unexpected standalone: %+v", cc.Standalone)
 	}
 
-	// The good entry still fused and still produces results (pack not aborted).
+	// The good entry still fused and still produces labelResults (pack not aborted).
 	if cc.Plan == nil {
 		t.Fatal("expected a fused plan for the good entry")
 	}
@@ -705,11 +705,11 @@ func TestMultiQueryCompileRejected(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(got) == 0 {
-		t.Fatal("expected the good entry's results despite the broken sibling")
+		t.Fatal("expected the good entry's labelResults despite the broken sibling")
 	}
 	for _, f := range got {
 		if f.Label != "good" {
-			t.Fatalf("unexpected result label %q (broken entry must not run)", f.Label)
+			t.Fatalf("unexpected labelResult label %q (broken entry must not run)", f.Label)
 		}
 	}
 }
