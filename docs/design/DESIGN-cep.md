@@ -24,7 +24,7 @@ Concrete capabilities, from the user/agent point of view — in the order they'd
   # peek does NOT move the cursor (safe). Agent acts, then
   # `.multi cursor advance new-github-issues --to gh:issues@324` commits. Crash before that?
   # re-peek still returns everything pending (a superset if more arrived) — never misses.
-  # (`peek --advance` = peek + advance in one.)
+  # (bare `advance` = get + move in one; fail-safe — it echoes what it passed.)
   ```
 
 - **Two flavors of "changed":** new **appended** rows (new issues / tickets / emails / log lines),
@@ -91,33 +91,42 @@ The query is *pure stock SQL++*, unchanged across all three; cadence is an execu
 | mode | behavior | who | lift |
 |---|---|---|---|
 | **`once`** (today) | scan to EOF, emit, exit | ad-hoc / batch | done |
-| **`peek`** (poll cadence) | one caller-driven step: run the bound pack from the named cursor, emit the delta. bare `peek` does *not* move the cursor (advance later); `peek --advance` advances now | **the cron/harness agent** | small |
+| **`peek`/`advance`** (poll cadence) | one caller-driven step: run the bound pack from the named cursor, emit the delta. `peek` does *not* move the cursor; `advance` moves it (and echoes what it passed) | **the cron/harness agent** | small |
 | **`follow`** | block on a live source, emit continuously; process stays alive | dashboards, alerting daemons | large (engine work — see the gap) |
 
-### Verbs: `peek` / `advance` (+ `peek --advance`) — plain cursor/stream, not git
+### Verbs: `peek` / `advance` (+ `--quiet`) — plain cursor/stream, not git
 
 What we're building is a **durable consumer reading forward over a change stream** — a cursor with a
 committed position, lag, and at-least-once redelivery. That's the queue/stream-consumer model (Kafka
 offsets, message acks), **not git's content-DAG** — so beyond the one useful borrow (git's
 `fetch`-vs-`pull` = "safe get" vs "get + advance"), git words (`commit`, `reset --hard`, a
-commit/stage-id) drag in versioning baggage that doesn't fit. Plain cursor/queue words say it
-straight — two honest verbs, **peek looks, advance moves** (and `peek --advance` does both):
+commit/stage-id) drag in versioning baggage that doesn't fit. Two honest verbs, cleanly split by
+whether they move the cursor — **`peek` never moves, `advance` always moves**:
 
-- **`.multi cursor peek NAME`** — return the pending delta (everything since the committed position);
-  the cursor does **not** move. It is **non-advancing**, *not* idempotent-in-result: re-`peek`
-  dutifully reports whatever is pending *as of now* — the same rows if nothing changed, or a
-  **superset** if the source grew — so it **never misses** anything (at-least-once), though it isn't
-  byte-identical unless the optional journal is on. Honestly non-mutating (queue/stack *peek* = look
-  at the head without consuming) — the "safe read" the earlier names muddied.
-- **`.multi cursor advance NAME [--to <pos>]`** — commit the cursor forward past what you handled
-  (default: past the last `peek`; `--to` pins it and errors if the committed position moved under you
-  — optimistic concurrency). This is Kafka's *commit-offset*, said plainly.
-- **`.multi cursor peek --advance NAME`** — peek + advance in one call: the fire-and-forget
-  ("I don't mind missing some"). The flag names the mutation, so bare `peek` stays safe and the
-  two-for-one needs no docs. (A one-word alias `pop` — peek/pop being the classic look-vs-consume
-  pair — is available if brevity is wanted.)
+- **`.multi cursor peek NAME`** — look: return the pending delta (everything since the committed
+  position); the cursor does **not** move. It is **non-advancing**, *not* idempotent-in-result:
+  re-`peek` dutifully reports whatever is pending *as of now* — the same rows if nothing changed, or
+  a **superset** if the source grew — so it **never misses** anything (at-least-once), though it isn't
+  byte-identical unless the optional journal is on. Inviolably non-mutating (queue/stack *peek* =
+  look at the head without consuming) — the "safe read".
+- **`.multi cursor advance NAME [--to <pos>]`** — move the cursor forward **and return the delta it
+  passed**. So a one-call `advance` (get + move, the fire-and-forget) still *shows you what it
+  skipped* — **fail-safe**: the dangerous act is moving past data you never saw, and echoing it by
+  default prevents a silent skip. `--to` pins the target (from a prior `peek`; errors if the
+  committed position moved under you — optimistic concurrency); bare `advance` goes to the current
+  head. This is Kafka's *commit-offset*, said plainly.
+- **`.multi cursor advance --quiet NAME --to <pos>`** — same move, but return only the ack
+  (`from`/`to`/`count`, no findings). For the safe two-step (`peek` → act → `advance --quiet`) where
+  you already have the delta and just want a lightweight commit (token economy for agents). The flag
+  trims *output*, never changes the mutation.
 - **`--cursor=NAME`** on `.multi run <pack>` is the **first-run bind** (establishes the cursor + does
   the first peek); thereafter you name the cursor, not the pack.
+
+Why the flag is on `advance` (not a `peek --advance`): it keeps `peek` inviolably non-mutating (no
+"safe verb that sometimes mutates"), and `--quiet` controls only verbosity. Why return-by-default
+(not an opt-in `--with-peek`): **fail-safe** — an opt-in default would let a bare fire-and-forget
+`advance` silently skip unseen data; echo-by-default means you always see what you moved past, and
+you opt *out* only when you already peeked.
 
 **No tick-id.** You don't identify a batch; you commit a *position* (`advance --to <pos>`), exactly
 as a stream consumer commits an offset — so the earlier `tick`/`tick-id` noun is dropped. (An
@@ -153,9 +162,9 @@ replaces the earlier muddle of a top-level `.cursor` + a bare `.multi cursors`.)
 
 ```
 .multi run <pack> --cursor=NAME         # first-run BIND: NAME→(pack,binding)+position, then a peek
-.multi cursor peek    <NAME>            # pending delta since the committed position; cursor NOT moved (safe, non-advancing)
-.multi cursor advance <NAME> [--to <pos>]   # commit the cursor forward past what you handled
-.multi cursor peek --advance <NAME>     # peek + advance in one shot (fire-and-forget; advances now). alias: `pop`
+.multi cursor peek    <NAME>            # look: pending delta; cursor NOT moved (safe, non-advancing)
+.multi cursor advance <NAME> [--to <pos>]   # move forward + RETURN the delta passed (fail-safe get+move); bare = fire-and-forget
+.multi cursor advance --quiet <NAME> --to <pos>   # move + ack only (no findings) — the two-step commit after a peek
 .multi cursor list                      # NAME, bound pack, sources, committed position, last-run, count, lag
 .multi cursor show    <NAME>            # committed position + bound pack/binding + pending? + last-run summary
 .multi cursor log     <NAME>            # advance history (reflog)
@@ -192,8 +201,8 @@ requires an agent to persist a cursor across wakes:
 - **Two-step advance** (see Delivery & crash-safety below): `peek` returns the pending delta
   **without** moving the cursor; a later `advance(NAME, --to <pos>)` commits it. The only "cookie" is
   a within-*step* one (the `to` position) the agent holds in working context and discards — never
-  across wakes. Because agents crash, **bare `peek` (look, don't move) is the safe default**;
-  `peek --advance` (peek + advance in one) is the fire-and-forget opt-in.
+  across wakes. Because agents crash, the safe pattern is **`peek` (look, don't move) → act →
+  `advance --quiet`**; bare `advance` (get + move in one) is the fire-and-forget opt-in.
 - **Action idempotency is separate:** the cursor stops n1k1 *re-emitting*; it doesn't stop the agent
   *acting twice*. Each finding carries a **fingerprint** = hash of `(detector-sha, source-id,
   matched-key)` (the Alertmanager/PagerDuty `dedup_key`) so the agent dedupes side effects
@@ -211,8 +220,9 @@ cursor.**
   pending *as of now* — the same rows if nothing changed, or a **superset** if the source grew. So a
   crash any time before `advance` **never misses** anything — the next `peek` still returns it (at-
   least-once); it's byte-identical only if the optional journal is on.
-- **`advance --to <pos>`** commits the position forward, once you've durably acted. `peek --advance`
-  fuses the two for fire-and-forget (at-most-once — fine for "I don't mind missing some").
+- **`advance --to <pos> --quiet`** commits the position forward, once you've durably acted (the
+  two-step commit). Bare **`advance`** (get + move, echoing the delta) is the one-call fire-and-forget
+  (at-most-once — fine for "I don't mind missing some").
 - **Finding fingerprints** (the `dedup_key`) make redelivery safe: since re-`peek` can hand back
   rows the agent already acted on (plus newer ones), it dedupes by fingerprint → at-least-once
   delivery + idempotent consumer = exactly-once *effect*.
@@ -245,12 +255,13 @@ $ n1k1 .multi cursor peek new-github-issues
     {"op":"insert","id":"#324","fingerprint":"2a4f11","detector":"triage@a1b2c3","doc":{"…":"…"}} ] }
 ```
 
-**2 — `advance`** (agent has acted): commit the position to the `to` from the peek:
+**2 — `advance --quiet` (two-step commit).** Agent already peeked + acted, so it commits to that
+`to` and asks for the ack only (no findings echoed back):
 
 ```jsonc
-$ n1k1 .multi cursor advance new-github-issues --to gh:issues@324
+$ n1k1 .multi cursor advance --quiet new-github-issues --to gh:issues@324
 { "cursor":"new-github-issues", "status":"advanced",
-  "from":"gh:issues@321", "to":"gh:issues@324", "advanced":true }
+  "from":"gh:issues@321", "to":"gh:issues@324", "advanced":true, "count":3 }
 ```
 
 **3 — nothing new (the "nothing happened" case).** No rows past the cursor ⇒ `from==to`,
@@ -273,11 +284,11 @@ $ n1k1 .multi cursor peek new-github-issues        # never advanced last time
   "findings":[ "… #322,#323,#324 (as before) + #325,#326 (arrived since) …" ] }
 ```
 
-**5 — `peek --advance` (peek + advance, fire-and-forget).** Advances immediately (`advanced:true`,
-`status:"advanced"`) — at-most-once, fine for "I don't mind missing some":
+**5 — bare `advance` (get + move, fire-and-forget).** Moves to the current head *and echoes the
+delta it passed* (fail-safe) — `advanced:true`, at-most-once, fine for "I don't mind missing some":
 
 ```jsonc
-$ n1k1 .multi cursor peek --advance log-errors
+$ n1k1 .multi cursor advance log-errors
 { "cursor":"log-errors", "pack":"errsev@99", "status":"advanced",
   "from":"file:app.log#10240", "to":"file:app.log#20480", "advanced":true, "count":2, "findings":[ "…" ] }
 ```
@@ -316,8 +327,8 @@ $ n1k1 .multi cursor show new-github-issues
                                "prompt":"tell me about new bug issues"}} }
 ```
 
-The `status` enum an agent switches on: **`pending`** (a delta exists — act, then `advance`, or use
-`peek --advance`), **`advanced`** (position moved — after `advance` or `peek --advance`),
+The `status` enum an agent switches on: **`pending`** (a delta exists — from `peek`; act, then
+`advance --quiet`, or use bare `advance`), **`advanced`** (position moved — from `advance`),
 **`empty`** (nothing to do), and **`error`** (fail-loud; cursor unmoved). Only `advanced` implies
 `advanced:true`; re-`peek` after a crash is `pending` again (non-advancing — may include newer rows,
 never misses).
@@ -394,7 +405,8 @@ scan + corpus machinery.
 **Phase 1 — Named cursors + `peek`/`advance` (poll cadence) (MVP).** *Build on:* push-based scan,
 `records.Source` over jsonl/dir, `.multi run`, `_meta.pos/offset`, the recipe loader. *New:* a
 cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the `--cursor=NAME` bind + the
-cursor verbs `.multi cursor {peek,advance,list,show,log,reset,rm}` (+ `peek --advance`); **append**
+cursor verbs `.multi cursor {peek,advance,list,show,log,reset,rm}` (advance echoes by default,
+`--quiet` trims); **append**
 delta only; at-least-once by construction (peek is non-advancing → re-peek never misses). Optional: journal each pending
 delta (`.n1k1/journal/<NAME>/`, bounded ring) for exact/re-scan-free replay + a `log`/`reset --back`
 reflog. → The whole crash-safe run-and-done "what's new" loop for append sources.
@@ -482,8 +494,8 @@ combination — embedded + SQL++ + AI-authored git corpus + MQO — not any sing
 
 - **Kafka / queue-consumer model** — what we actually are: a durable consumer with a committed
   **offset**, **lag**, **seek**, at-least-once + redelivery, and *commit-offset* (= `advance`). This,
-  not git, is the fitting mental model; `peek` / `advance` (+ `peek --advance`) are the plain cursor
-  words for "look", "move forward", and "both". (`git remote`/`git stash` still lend the flat-core-verbs + sub-noun
+  not git, is the fitting mental model; `peek` (look, non-advancing) and `advance` (move + echo what
+  it passed; `--quiet` to trim) are the plain cursor words. (`git remote`/`git stash` still lend the flat-core-verbs + sub-noun
   taxonomy; and git's `fetch`-vs-`pull` was the *inspiration* for the safe-get-vs-get-and-advance
   split — but we say it plainly rather than force git's content-DAG verbs like `commit`/`reset --hard`.)
 - **CouchDB/Couchbase `_changes`** (on-brand): `?since=<seq>` + `feed=normal|longpoll|continuous`.
