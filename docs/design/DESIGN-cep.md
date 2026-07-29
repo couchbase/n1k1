@@ -25,6 +25,7 @@ Concrete capabilities, from the user/agent point of view — in the order they'd
   # `.multi cursor advance new-github-issues --to gh:issues@324` commits. Crash before that?
   # re-peek still returns everything pending (a superset if more arrived) — never misses.
   # (bare `advance` = get + move in one; fail-safe — it echoes what it passed.)
+  # (One-time setup earlier: `.multi cursor create new-github-issues --pack triage.sql`.)
   ```
 
 - **Two flavors of "changed":** new **appended** rows (new issues / tickets / emails / log lines),
@@ -53,7 +54,7 @@ am I watching and where did I leave off?" from nothing.
 - **cursor** — a small **named, durable high-water position** (`NAME → {source → offset}`), **bound
   to the query-pack it polls** (its record also holds the `(pack, binding)` identity — see Command
   taxonomy). The *only* thing that persists in poll mode (nothing is "monitoring"): `.multi run
-  <pack> --cursor=NAME` binds it, then `.multi cursor peek`/`advance` drive it. **The poll-mode
+  cursor create NAME --pack <pack>` binds it, then `peek`/`advance` drive it. **The poll-mode
   primitive.**
 - **detector** — the SQL++ rule (existing n1k1 term). **labelResult** — an emitted output row: the
   struct `glue.LabelResult` pairs a `label` (which detector fired) with its `result` value (the
@@ -111,8 +112,14 @@ whether they move the cursor — **`peek` never moves, `advance` always moves**:
 - **`.multi cursor advance --quiet NAME --to <pos>`** — same move, ack only (`from`/`to`/`count`, no
   labelResults): the lightweight commit for the safe two-step `peek` → act → `advance --quiet` where you
   already hold the delta (token economy). The flag trims *output*, never the mutation.
-- **`--cursor=NAME`** on `.multi run <pack>` is the **first-run bind** (establishes the cursor + does
-  the first peek); thereafter you name the cursor, not the pack.
+- **`.multi cursor create NAME --pack <pack> [--bind <manifest>] [--from now|beginning]`** — the
+  one-time **bind**: register NAME → (pack, binding, start position). It **validates, not just
+  registers** — compiles the pack (`.multi lint`: fuse/standalone/reject), resolves the binding
+  **fail-loud** (the source must exist), and cheaply probes it — returning a structured ok/error
+  report, *no result rows*. `--from now` (default) means the first `peek` returns only what arrives
+  after creation; `--from beginning` replays all history (Kafka `latest`/`earliest`). So binding is
+  cleanly separate from getting rows: **`peek`/`advance` are the *only* result-getters, one shape** —
+  the first peek looks exactly like every later one.
 
 You commit a *position* (`advance --to <pos>`), as a stream consumer commits an offset — no batch id
 to track. Other stream-consumer concepts carry over: **lag** (how far behind), **`reset`/`seek`**
@@ -128,18 +135,18 @@ Prefer the verbs; keep `SINCE()` as sugar.
 ### Command taxonomy — cursors live under `.multi` (a cursor is meaningless without a query)
 
 A cursor is the persisted state of *polling a particular query-pack*, so it has no meaning on its
-own — hence it lives **under `.multi`**, not as a top-level `.cursor`. The first `.multi run <pack>
---cursor=NAME` **binds** NAME to that pack's identity (`query+binding SHA`) alongside its position;
-thereafter the cursor knows its own query (`.multi cursor show NAME` reveals the bound pack), so
-`.multi cursor peek NAME` re-runs it without re-naming the pack — and pointing NAME at a *different*
-pack is an **error**, not a silent meaningless reuse.
+own — hence it lives **under `.multi`**, not as a top-level `.cursor`. `.multi cursor create NAME
+--pack <pack>` **binds + validates** NAME → that pack's identity (`query+binding SHA`) + a start
+position; thereafter the cursor knows its own query (`.multi cursor show NAME` reveals the bound
+pack), so `.multi cursor peek NAME` re-runs it without re-naming the pack — and `create` on an
+existing NAME with a *different* pack is an **error**, not a silent meaningless reuse.
 
 The pack verbs stay flat (`run`/`lint`/`explain`/`test`/`list`); ancillary state gets a sub-noun,
 `.multi cursor <verb>` (later `.multi monitor <verb>`) — the git model (`git commit`/`git log` flat,
 `git remote`/`git stash` grouped).
 
 ```
-.multi run <pack> --cursor=NAME         # first-run BIND: NAME→(pack,binding)+position, then a peek
+.multi cursor create  <NAME> --pack <pack> [--from now|beginning]   # BIND + VALIDATE; ok/error report, no rows
 .multi cursor peek    <NAME>            # look: pending delta; cursor NOT moved (safe, non-advancing)
 .multi cursor advance <NAME> [--to <pos>]   # move forward + RETURN the delta passed (fail-safe get+move); bare = fire-and-forget
 .multi cursor advance --quiet <NAME> --to <pos>   # move + ack only (no labelResults) — the two-step commit after a peek
@@ -213,6 +220,21 @@ One response envelope across every case. `status` tells the agent what happened;
 whether the *committed* cursor moved. `from`/`to` are opaque position tokens (shown here in a
 human-legible form: `gh:issues@324`, `file:app.log#20480`, `snap:9`) — the agent passes `to` back to
 `advance`; there is no separate batch id.
+
+**0 — `create` (one-time bind + validate).** Returns a validation report, *no rows*: pack compiled,
+binding resolved (fail-loud), source probed, start position set. On failure the cursor is not
+created:
+
+```jsonc
+$ n1k1 .multi cursor create new-github-issues --pack triage.sql --from now
+{ "created":"new-github-issues", "ok":true, "pack":"triage@a1b2c3", "compiles":"fused",
+  "bound":"gh_issues → poll(api.github.com/repos/…/issues, every=15m)", "source":"reachable",
+  "from":"gh:issues@321" }
+
+# validation failure — nothing is created:
+{ "created":"new-github-issues", "ok":false,
+  "error":{"kind":"source-unbound","message":"logical keyspace 'gh_issues' resolved to nothing (fail-loud)"} }
+```
 
 **1 — `peek`, new appended rows.** The pending delta since the committed position; the cursor does
 **not** move (`advanced:false`, `status:"pending"`):
@@ -377,9 +399,9 @@ scan + corpus machinery.
 
 **Phase 1 — Named cursors + `peek`/`advance` (poll cadence) (MVP).** *Build on:* push-based scan,
 `records.Source` over jsonl/dir, `.multi run`, `_meta.pos/offset`, the recipe loader. *New:* a
-cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the `--cursor=NAME` bind + the
-cursor verbs `.multi cursor {peek,advance,list,show,log,reset,rm}` (`advance` echoes by default,
-`--quiet` trims); **append** delta only; at-least-once by construction (peek is non-advancing).
+cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the cursor verbs
+`.multi cursor {create,peek,advance,list,show,log,reset,rm}` (`create` binds + validates;
+`advance` echoes by default, `--quiet` trims); **append** delta only; at-least-once (peek is non-advancing).
 Optional: journal each pending delta (`.n1k1/journal/<NAME>/`) for exact/re-scan-free replay. → The
 whole crash-safe run-and-done "what's new" loop for append sources.
 
