@@ -148,11 +148,14 @@ distinct with an explicit `too_many_distinct` marker (never silent truncation), 
 
 ## Two concrete engine asks (small, high-leverage)
 
-- **Nativize `TYPE_NAME`.** It is the *only* primitive that boxes the census (the prototype measured
-  +3.2s over the corpus); it's a pure scalar on one argument, so it's a natural addition to the native
-  byte lane. Type drift is the whole point of a census, so it's worth having native before the
-  operator leans on it. (⚠ per the codegen notes — [n1k1-codegen mechanics] — register new native
-  functions carefully and run `make test-compiler`; this is a real but bounded task.)
+- **Nativize `TYPE_NAME` — SHIPPED.** It was the *only* primitive that boxed the census (the
+  prototype measured +3.2s over the corpus). Now a native byte-lane scalar: `base.TypeNameVal`
+  classifies the value via `Parse`/`ValType` and returns a constant type-name Val (zero-alloc),
+  `engine.ExprTypeName` is the `!lz` op (modeled on `ExprToBoolean`), and the optimizer maps cbq's
+  `Type` expression (whose `Name()` is `"type"`, not the registry key `"type_name"`) to it. It names
+  MISSING/NULL rather than propagating them (that's the point). A TYPE_NAME query now lints `native`;
+  the gen-compiler differential (`make test-compiler`) stays green. Guards: `base.TestTypeNameVal`,
+  `glue.TestExprTypeNameNative`.
 - **A `merge(stateA, stateB)` hook on the JS aggregate API.** Today `foo.agg.js` exposes
   `init`/`update`/`final` — a fold with no way to combine two partial states, so a custom aggregate
   can't participate in the incremental/cursored story at all. An optional `merge` makes **every**

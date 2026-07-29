@@ -91,6 +91,10 @@ func init() {
 	// IS [NOT] DISTINCT FROM: cbq Function.Name() is the no-underscore form.
 	OptimizableFuncs["isdistinctfrom"] = "is_distinct_from"
 	OptimizableFuncs["isnotdistinctfrom"] = "is_not_distinct_from"
+
+	// TYPE_NAME: cbq's Type expression reports Name() "type" (the registry key
+	// "type_name" differs from its internal name) -> the native "type_name" op.
+	OptimizableFuncs["type"] = "type_name"
 }
 
 // collLowerBinding validates a single-binding collection expr (ANY/EVERY/FIRST/

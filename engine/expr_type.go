@@ -42,6 +42,10 @@ func init() {
 	ExprCatalog["to_boolean"] = ExprToBoolean
 	ExprCatalog["to_string"] = ExprToString
 	ExprCatalog["to_number"] = ExprToNumber
+
+	// TYPE_NAME: the type NAME as a string. Unlike IS_* it does not propagate
+	// MISSING/NULL -- it names them.
+	ExprCatalog["type_name"] = ExprTypeName
 }
 
 // ExprIsTypeOp closes over a type predicate and defers to the shared harness --
@@ -98,6 +102,26 @@ func ExprToBoolean(lzVars *base.Vars, labels base.Labels,
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
 		lzVal = base.ToBoolean(lzVal)
+
+		return lzVal
+	}
+
+	return lzExprFunc
+}
+
+// ExprTypeName is TYPE_NAME: the operand's JSON type name as a string. It names
+// MISSING/NULL ("missing"/"null") rather than propagating them (base.TypeNameVal),
+// so a census can catch a field changing shape. Zero-alloc (constant Val).
+func ExprTypeName(lzVars *base.Vars, labels base.Labels,
+	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
+	exprA := params[0].([]interface{})
+
+	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
+
+	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
+		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
+
+		lzVal = base.TypeNameVal(lzVal)
 
 		return lzVal
 	}

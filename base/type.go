@@ -21,6 +21,28 @@ import (
 var numOne = Val("1")
 var numZero = Val("0")
 
+// valTypeNames are the JSON type-name string Vals TYPE_NAME yields, indexed by
+// ValType — matching cbq value.Type.String() ("missing"/"null"/…/"binary"). Each is
+// a constant quoted-string Val, so TypeNameVal is zero-alloc.
+var valTypeNames = [...]Val{
+	ValTypeMissing: Val(`"missing"`),
+	ValTypeNull:    Val(`"null"`),
+	ValTypeBoolean: Val(`"boolean"`),
+	ValTypeNumber:  Val(`"number"`),
+	ValTypeString:  Val(`"string"`),
+	ValTypeArray:   Val(`"array"`),
+	ValTypeObject:  Val(`"object"`),
+	ValTypeUnknown: Val(`"binary"`),
+}
+
+// TypeNameVal mirrors cbq TYPE_NAME: it returns the JSON type NAME of v as a string
+// Val. Unlike most functions it does NOT propagate MISSING/NULL — it names them
+// ("missing"/"null"), which is the point of the function. Zero-alloc (constant Val).
+func TypeNameVal(v Val) Val {
+	_, pt := Parse(v)
+	return valTypeNames[ParseTypeToValType[pt]]
+}
+
 // ToBoolean mirrors cbq TO_BOOLEAN: MISSING/NULL pass through; otherwise the
 // value's truthiness (bool -> itself; non-zero number; non-empty string / array /
 // object). Zero-alloc (returns a constant Val).
