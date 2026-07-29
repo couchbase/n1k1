@@ -44,12 +44,15 @@ import (
 // naming a remote Parquet object or Iceberg table. Formats, when set, is a per-source
 // `-formats` lockdown token string (records.ParseModes, e.g. "json,csv,gzip") applied
 // to THIS source only, overriding the global set -- for file/dir/glob sources only
-// (an Iceberg/Parquet source is single-format). It comes from a `-sources` config
-// file; positional CLI args don't carry it.
+// (an Iceberg/Parquet source is single-format). Namespace, when set, places this
+// source's keyspace under a namespace other than the session default, reachable as
+// `FROM <namespace>:<keyspace>`. Formats/Namespace come from a `-sources` config file;
+// positional CLI args don't carry them.
 type Source struct {
-	Name    string
-	Path    string
-	Formats string
+	Name      string
+	Path      string
+	Formats   string
+	Namespace string
 }
 
 // OpenSessionSources opens a session over multiple data sources, each becoming a
@@ -68,8 +71,14 @@ func OpenSessionSources(sources []Source, namespace string) (*Session, error) {
 	if len(sources) == 0 {
 		return nil, fmt.Errorf("no data sources given")
 	}
-	keyspaces := make(map[string]*flatKeyspace, len(sources))
-	origin := make(map[string]string, len(sources)) // name -> original arg, for a clear collision error
+	if namespace == "" {
+		namespace = flatRootNamespace
+	}
+	// Group keyspaces by namespace: a source's Namespace ("" => the session default) picks
+	// which namespace it lands in, so `FROM <ns>:<keyspace>` reaches it (an unqualified
+	// FROM uses the session default). Names collide only WITHIN a namespace.
+	byNS := map[string]map[string]*flatKeyspace{}
+	origin := map[string]string{} // "ns\x00name" -> original arg, for a clear collision error
 	for _, s := range sources {
 		path := expandTilde(strings.TrimSpace(s.Path))
 		if path == "" {
@@ -83,29 +92,46 @@ func OpenSessionSources(sources []Source, namespace string) (*Session, error) {
 			}
 			name = dn
 		}
-		if prev, ok := origin[name]; ok {
+		ns := strings.TrimSpace(s.Namespace)
+		if ns == "" {
+			ns = namespace
+		}
+		key := ns + "\x00" + name
+		if prev, ok := origin[key]; ok {
 			return nil, fmt.Errorf(
-				"two data sources map to keyspace %q (%q and %q); pass a name (name=path) to disambiguate",
-				name, prev, s.Path)
+				"two data sources map to keyspace %q in namespace %q (%q and %q); pass a name (name=path) to disambiguate",
+				name, ns, prev, s.Path)
 		}
 		ks, err := sourceFlatKeyspace(path, strings.TrimSpace(s.Formats))
 		if err != nil {
 			return nil, err
 		}
-		keyspaces[name] = ks
-		origin[name] = s.Path
+		if byNS[ns] == nil {
+			byNS[ns] = map[string]*flatKeyspace{}
+		}
+		byNS[ns][name] = ks
+		origin[key] = s.Path
 	}
 
-	// Federate: an inert (empty) base datastore satisfies cbq's planner, TEMP KEYSPACEs
-	// overlay at the bottom, and the source keyspaces are the synthetic "default"
-	// namespace (wrapFlatKeyspaces wires each a virtual keyspace + primary indexer).
+	// Federate: an inert (empty) base datastore satisfies cbq's planner + TEMP KEYSPACEs
+	// overlay at the bottom, then one flatDatastore per namespace is CHAINED on top (each
+	// serves its namespace, delegates the rest down). The session default namespace is
+	// applied last (outermost) so it's found first.
 	base, err := inertBaseDatastore()
 	if err != nil {
 		return nil, err
 	}
 	temp := newTempKeyspaces()
 	ds := wrapTempKeyspaces(base, temp)
-	ds = wrapFlatKeyspaces(ds, keyspaces, nil)
+	for ns, keyspaces := range byNS {
+		if ns == namespace {
+			continue // the session-default namespace is layered last, below
+		}
+		ds = wrapFlatKeyspacesNS(ds, ns, keyspaces, nil)
+	}
+	if def := byNS[namespace]; def != nil {
+		ds = wrapFlatKeyspacesNS(ds, namespace, def, nil)
+	}
 	store := &Store{
 		Datastore:       ds,
 		IndexApiVersion: datastore.INDEX_API_MAX,
@@ -114,9 +140,6 @@ func OpenSessionSources(sources []Source, namespace string) (*Session, error) {
 	}
 	if err := store.InitParser(); err != nil {
 		return nil, err
-	}
-	if namespace == "" {
-		namespace = "default"
 	}
 	return &Session{Store: store, Namespace: namespace}, nil
 }
@@ -138,7 +161,7 @@ type SourcesConfig struct {
 type SourceSpec struct {
 	Path      string `json:"path"`
 	Formats   string `json:"formats,omitempty"`   // per-source -formats lockdown (file/dir/glob sources)
-	Namespace string `json:"namespace,omitempty"` // reserved: place under a non-default namespace (not yet supported)
+	Namespace string `json:"namespace,omitempty"` // place under a non-default namespace (FROM <ns>:<keyspace>)
 	Sorted    string `json:"sorted,omitempty"`    // reserved: declared sort key / sortedness contract (not yet supported)
 }
 
@@ -181,11 +204,14 @@ func LoadSources(path string) ([]Source, error) {
 		if strings.TrimSpace(spec.Path) == "" {
 			return nil, fmt.Errorf("source %q in %q has no path", name, path)
 		}
-		if spec.Namespace != "" || spec.Sorted != "" {
+		if spec.Sorted != "" {
 			return nil, fmt.Errorf(
-				"source %q: per-source namespace/sorted are not yet supported (DESIGN-data.md §2)", name)
+				"source %q: per-source `sorted` is not yet supported (DESIGN-data.md §2)", name)
 		}
-		out = append(out, Source{Name: name, Path: configRelPath(spec.Path, base), Formats: spec.Formats})
+		out = append(out, Source{
+			Name: name, Path: configRelPath(spec.Path, base),
+			Formats: spec.Formats, Namespace: spec.Namespace,
+		})
 	}
 	return out, nil
 }

@@ -53,8 +53,8 @@ through a VIEW); catalog-defined query VIEWs (expansion + branch pushdown; `UNIO
 landed) + materialized views; zstd decode (walker recognizes `.zst`; decode is a stub) + `.zip`
 container; encryption-at-rest; full column-batch Parquet execution (`DESIGN-col.md`); catalogs
 beyond a filesystem/object-store metadata path (REST/Glue); a `[]byte`-oriented zero-copy CSV
-reader + the allocs/op benchmark gate; per-source **namespace/sortedness** for multi-source (§2 —
-per-source `-formats` + the federation of kinds + the `-sources` config file have all shipped).
+reader + the allocs/op benchmark gate; per-source **sortedness** for multi-source (§2 — per-source
+`-formats`/`namespace` + the federation of kinds + the `-sources` config file have all shipped).
 
 ## Relationship to `DESIGN-indexing.md`
 
@@ -290,7 +290,12 @@ exactly what `glue.OpenSessionSources`/`Source` (`glue/sources.go`) + `cmd/n1k1`
   it (keeping the live `.meta` + path prefix) at the **single `KeyspaceRecordsOpen` choke point** every
   scan/agg/vector path funnels through — plus `keyspaceFiles` (the one path that re-walks) so `.tables`
   counts match. It applies to file/dir/glob sources only (an Iceberg/Parquet source is single-format —
-  rejected). Still reserved (parsed, rejected): per-source **namespace** and **sortedness**.
+  rejected). **Per-source `namespace`** shipped too: a source can be placed under a namespace other
+  than the session default, reachable as `FROM <ns>:<keyspace>` (which the cbq fork already parses +
+  resolves -- no fork change). `OpenSessionSources` groups sources by namespace and CHAINS a
+  `flatDatastore` per namespace (each serves its own, delegates the rest down); `.tables` lists every
+  namespace's keyspaces (session default first, others namespace-qualified). Still reserved (parsed,
+  rejected): per-source **sortedness**.
 
 **REPL (Phase 1 ✅).** `.open <dir>` still opens one root; `.open <src>…` (2+ whitespace-separated paths,
 or any `name=path`) opens multiple sources as keyspaces (`cmd_open.go`, same parser as the argv path),
@@ -318,7 +323,8 @@ Shipped: `-sources <file>` and `.open @<file>` load a `SourcesConfig` (`glue.Loa
 name; the value is a path string or `{path: …}` object (local, `~`, glob, or an object-store URI); a
 relative path anchors at the **config file's own directory** (portable regardless of CWD; `~`/absolute/
 object-store pass through); it is mutually exclusive with positional sources. Per-source **`formats`** is
-honored (file/dir/glob sources); **`namespace`/`sorted`** are parsed but still reserved (rejected, so no
+honored (file/dir/glob sources) and **`namespace`** places a source under `FROM <ns>:<keyspace>`; only
+**`sorted`** is parsed but still reserved (rejected, so no
 silent no-op). This is the **declarative twin** of the imperative CLI list and of the Mode
 3 catalog: a durable `"sources"` map in `.n1k1/catalog.json` (persisted like `.formats`) would let a
 workspace remember its sources across runs. All three (argv, `-sources` file, catalog) build the same
@@ -510,7 +516,7 @@ CLI `n1k1 [-c "<stmt>"] <dataRoot>` (one root today; **multiple sources proposed
 | J | CSV/TSV + header | header names columns, one JSON object per row | ✅ |
 | K | Parquet | transpose-to-rows + projection + footer-stats aggs | ✅ (+partial vectorization) |
 | L | office/PDF/media | one `{filename,kind,text,…}` record/file | ✅ (pure-Go; OCR later) |
-| M | multiple sources on the CLI / a `-sources` config (`drive=~/Drive/** events=s3://…/tbl`) | one keyspace per source (siblings under `default`), joinable in one query; heterogeneous kinds federate; per-source `-formats` | ✅ (§2; namespace/sortedness reserved) |
+| M | multiple sources on the CLI / a `-sources` config (`drive=~/Drive/** events=s3://…/tbl`) | one keyspace per source, joinable in one query; heterogeneous kinds federate; per-source `-formats` + `namespace` | ✅ (§2; sortedness reserved) |
 
 **O — query-defined VIEW over a morphed source** 🟣 (`.n1k1/catalog.json` defines each era as a
 keyspace + a normalizing `UNION ALL` view). The `UNION ALL` converts (`VisitUnionAll`); remaining is
@@ -786,8 +792,12 @@ DuckDB (MIT) is design inspiration, not a dep.
 - **Default doc-ID scheme & encryption seekability** — positional (addressable, shifts on edit) vs
   content-hash vs requiring a natural key; which segmented-encryption format (Tink vs age).
 - **Remaining multi-source niceties (§2).** Multi-source shipped: federating heterogeneous *kinds*
-  (local + local/remote Iceberg + remote Parquet), the `-sources` config, and per-source `-formats`
-  (a `flatKeyspace` override overlaid at the `KeyspaceRecordsOpen` choke point). Still open: a per-source
-  **namespace** (needs multi-namespace federation, not the single `default`) and **sortedness** contract
-  (the near-sorted-merge metadata per source); a durable catalog `"sources"` map; a `.source add/list/rm`
-  live-attach command; and cross-source `_meta` provenance tagging under `UNION ALL`.
+  (local + local/remote Iceberg + remote Parquet), the `-sources` config, per-source `-formats` (a
+  `flatKeyspace` override overlaid at the `KeyspaceRecordsOpen` choke point), and per-source `namespace`
+  (a `flatDatastore` chain, one per namespace). Still open: per-source **sortedness** — declaring a source
+  is (near-)sorted on a key so it feeds the watermarked K-way merge / ASOF. Unlike the extract path
+  (which *measures* `SortedSourceMeta` per file: normalized int64 key, min/max zone map, disorder bound),
+  a plain multi-source declaration has none of that, so it needs either eager measurement at open or a
+  reduced "declared, heap-merge, no pruning" contract — scope TBD. Also open: a durable catalog
+  `"sources"` map; a `.source add/list/rm` live-attach command; cross-source `_meta` provenance under
+  `UNION ALL`.

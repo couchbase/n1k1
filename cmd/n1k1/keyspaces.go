@@ -38,18 +38,37 @@ func (c *cli) cmdKeyspaces() {
 // the listing reflects n1k1's flattening (e.g. a synthetic flat-root keyspace,
 // or later catalog-defined keyspaces), not just literal subdirectories.
 func (c *cli) keyspaceNames() ([]string, error) {
-	// glue.Session.Keyspaces is the public listing API (sorted; a missing namespace ->
-	// empty, not an error). The CLI just wants the names here; printKeyspaces looks up
-	// each one's framing separately for the padded display.
+	// glue.Session.Keyspaces is the public listing API (all namespaces; session default
+	// first). Return each as a FROM reference -- bare in the default namespace, else
+	// "<namespace>:<name>" so it's copy/paste-runnable.
 	infos, err := c.sess.Keyspaces()
 	if err != nil {
 		return nil, err
 	}
 	names := make([]string, len(infos))
 	for i, ki := range infos {
-		names[i] = ki.Name
+		names[i] = c.infoRef(ki)
 	}
 	return names, nil
+}
+
+// infoRef is the FROM reference for a keyspace: the bare name in the session's default
+// namespace, or "<namespace>:<name>" elsewhere (so `FROM <ns>:<name>` reaches it).
+func (c *cli) infoRef(ki glue.KeyspaceInfo) string {
+	if ki.Namespace == "" || strings.EqualFold(ki.Namespace, c.sess.Namespace) {
+		return ki.Name
+	}
+	return ki.Namespace + ":" + ki.Name
+}
+
+// quoteRef backticks a (possibly namespace-qualified) keyspace ref for SQL++, quoting
+// each part around the ':' separator only as needed ("analytics:my-ks" ->
+// "analytics:`my-ks`"), so the ':' still splits namespace from keyspace.
+func quoteRef(ref string) string {
+	if i := strings.LastIndex(ref, ":"); i > 0 && i < len(ref)-1 {
+		return quoteIdent(ref[:i]) + ":" + quoteIdent(ref[i+1:])
+	}
+	return quoteIdent(ref)
 }
 
 // needsBackticks reports whether a keyspace/identifier name must be wrapped in
@@ -107,45 +126,53 @@ func exampleFor(ks string, i int) string {
 		"SELECT * FROM %s LIMIT 3;",
 		"SELECT * FROM %s LIMIT 5;",
 	}
-	return fmt.Sprintf(tmpls[i%len(tmpls)], quoteIdent(ks))
+	return fmt.Sprintf(tmpls[i%len(tmpls)], quoteRef(ks))
 }
 
 // printKeyspaces writes the keyspace listing (with a copy-pasteable example per
 // keyspace) to w. Shown at interactive startup and by .tables/.keyspaces.
 func (c *cli) printKeyspaces(w io.Writer) {
-	names, err := c.keyspaceNames()
+	infos, err := c.sess.Keyspaces()
 	if err != nil {
 		fmt.Fprintf(w, "%v\n", err)
 		return
 	}
-	if len(names) == 0 {
+	if len(infos) == 0 {
 		fmt.Fprintf(w, "%sNo keyspaces here yet — you can still evaluate expressions, e.g. %s\n",
 			c.icon("💡 "), c.style.Cyan("SELECT 1+2;"))
 		fmt.Fprintf(w, "   Point at data with %s (a dir of JSON, or <namespace>/<keyspace> subdirs).\n",
 			c.style.Bold(".open <dir>"))
 		return
 	}
-	// Display names backticked when SQL++ needs it (e.g. "2026-01"), so the
-	// listed keyspace matches how it must be typed; pad on the displayed form.
-	// Alongside each, a FRAMING tag (IDEA-0007) says how the keyspace's files become
-	// rows -- a plugin / structured format (query-ready multi-record) vs a whole-file
-	// blob (one row per file) -- so a user can tell them apart without probing.
-	disp := make([]string, len(names))
-	framing := make([]string, len(names))
+	// Display the FROM reference (namespace-qualified for a non-default namespace, and
+	// backticked when SQL++ needs it, e.g. "2026-01"), so the listed keyspace matches how
+	// it must be typed; pad on the displayed form. Alongside each, a FRAMING tag
+	// (IDEA-0007) says how the keyspace's files become rows -- a plugin / structured
+	// format (query-ready multi-record) vs a whole-file blob (one row per file) -- so a
+	// user can tell them apart without probing. Framing is looked up in the keyspace's own
+	// namespace (cached).
+	refs := make([]string, len(infos))
+	disp := make([]string, len(infos))
+	framing := make([]string, len(infos))
 	width, fwidth := 0, 0
 	anyBlob := false
 	anyBacktick := false // a keyspace name needs backticks (dotted/hyphenated) -> shell-quoting note.
-	ns, _ := c.sess.Store.Datastore.NamespaceByName(defaultNamespace)
-	for i, n := range names {
-		disp[i] = quoteIdent(n)
-		if disp[i] != n {
+	nsCache := map[string]datastore.Namespace{}
+	for i, ki := range infos {
+		refs[i] = c.infoRef(ki)
+		disp[i] = quoteRef(refs[i])
+		if disp[i] != refs[i] {
 			anyBacktick = true
 		}
 		if len(disp[i]) > width {
 			width = len(disp[i])
 		}
-		kf, ok := c.keyspaceFraming(ns, n)
-		if ok {
+		ns, ok := nsCache[ki.Namespace]
+		if !ok {
+			ns, _ = c.sess.Store.Datastore.NamespaceByName(ki.Namespace)
+			nsCache[ki.Namespace] = ns
+		}
+		if kf, ok := c.keyspaceFraming(ns, ki.Name); ok {
 			if kf.Kind == glue.KeyspaceTemp || kf.Kind == glue.KeyspaceIceberg {
 				framing[i] = kf.Label() // no meaningful loose-file count
 			} else {
@@ -164,16 +191,16 @@ func (c *cli) printKeyspaces(w io.Writer) {
 		}
 	}
 	noun := "keyspaces"
-	if len(names) == 1 {
+	if len(infos) == 1 {
 		noun = "keyspace"
 	}
 	fmt.Fprintf(w, "%s%d %s — copy/paste to try:\n",
-		c.icon("📚 "), len(names), noun)
-	for i, n := range names {
+		c.icon("📚 "), len(infos), noun)
+	for i := range infos {
 		pad := disp[i] + strings.Repeat(" ", width-len(disp[i]))
 		fpad := framing[i] + strings.Repeat(" ", fwidth-len(framing[i]))
 		fmt.Fprintf(w, "  %s   %s   %s\n",
-			c.style.Cyan(pad), c.style.Dim(fpad), c.style.Dim(exampleFor(n, i)))
+			c.style.Cyan(pad), c.style.Dim(fpad), c.style.Dim(exampleFor(refs[i], i)))
 	}
 	if anyBlob {
 		fmt.Fprintf(w, "  %s\n", c.style.Dim(
@@ -259,7 +286,7 @@ func (c *cli) exampleQuery() string {
 	if err != nil || len(names) == 0 {
 		return ""
 	}
-	return "SELECT * FROM " + quoteIdent(names[0]) + " LIMIT 5;"
+	return "SELECT * FROM " + quoteRef(names[0]) + " LIMIT 5;"
 }
 
 // cmdSchema renders a keyspace's sampled shape as a box: one row per top-level
@@ -343,7 +370,7 @@ const maxSchemaIn = 5
 // few, a representative `= v` when there are many, and `IS NOT MISSING` for a field with
 // no scalar values (object/array-valued, or only ever null).
 func schemaExample(ks, field string, fs *glue.FieldStat) string {
-	qks, qf := quoteIdent(ks), quoteIdent(field)
+	qks, qf := quoteRef(ks), quoteIdent(field)
 	switch {
 	case len(fs.Values) == 0:
 		return fmt.Sprintf("SELECT * FROM %s WHERE %s IS NOT MISSING;", qks, qf)

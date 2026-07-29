@@ -195,13 +195,25 @@ func maybeIcebergTable(path string, ds datastore.Datastore) datastore.Datastore 
 // namespace. Returns ds unchanged if no keyspace can be constructed.
 func wrapFlatKeyspaces(ds datastore.Datastore, keyspaces map[string]*flatKeyspace,
 	real datastore.Namespace) datastore.Datastore {
+	return wrapFlatKeyspacesNS(ds, flatRootNamespace, keyspaces, real)
+}
+
+// wrapFlatKeyspacesNS is wrapFlatKeyspaces with an explicit namespace name, so several
+// can be chained to expose keyspaces under DIFFERENT namespaces (per-source namespace,
+// DESIGN-data.md §2): each flatDatastore serves its one namespace and delegates the
+// rest DOWN to the datastore it embeds (so a chain default->analytics->... all resolve,
+// and NamespaceNames merges them). `FROM <ns>:<keyspace>` already parses + resolves via
+// NamespaceByName, so no cbq change is needed. nsName == flatRootNamespace is the
+// ordinary single-"default" case.
+func wrapFlatKeyspacesNS(ds datastore.Datastore, nsName string,
+	keyspaces map[string]*flatKeyspace, real datastore.Namespace) datastore.Datastore {
 	if len(keyspaces) == 0 {
 		return ds
 	}
-	w := &flatDatastore{Datastore: ds}
+	w := &flatDatastore{Datastore: ds, nsName: nsName}
 	ns := &flatNamespace{datastore: w, keyspaces: map[string]*flatKeyspace{}, real: real}
 	for name, ks := range keyspaces {
-		vks, verr := virtual.NewVirtualKeyspace(ns, []string{flatRootNamespace, name})
+		vks, verr := virtual.NewVirtualKeyspace(ns, []string{nsName, name})
 		if verr != nil {
 			continue
 		}
@@ -270,18 +282,20 @@ func UnexposedRecordFiles(dir string) []string {
 // datastore so nothing is hidden.
 type flatDatastore struct {
 	datastore.Datastore
-	ns *flatNamespace
+	nsName string // the one namespace this wrapper serves (flatRootNamespace by default)
+	ns     *flatNamespace
 }
 
 func (d *flatDatastore) NamespaceIds() ([]string, errors.Error)   { return d.namespaceNames() }
 func (d *flatDatastore) NamespaceNames() ([]string, errors.Error) { return d.namespaceNames() }
 
-// namespaceNames is the synthetic "default" plus any real namespaces (dedup'd).
+// namespaceNames is this wrapper's synthetic namespace plus any namespaces the embedded
+// datastore exposes (a chained flatDatastore's namespace, or the real base's), dedup'd.
 func (d *flatDatastore) namespaceNames() ([]string, errors.Error) {
-	out := []string{flatRootNamespace}
+	out := []string{d.nsName}
 	if real, err := d.Datastore.NamespaceNames(); err == nil {
 		for _, n := range real {
-			if !strings.EqualFold(n, flatRootNamespace) {
+			if !strings.EqualFold(n, d.nsName) {
 				out = append(out, n)
 			}
 		}
@@ -294,10 +308,10 @@ func (d *flatDatastore) NamespaceById(id string) (datastore.Namespace, errors.Er
 }
 
 func (d *flatDatastore) NamespaceByName(name string) (datastore.Namespace, errors.Error) {
-	if strings.EqualFold(name, flatRootNamespace) {
+	if strings.EqualFold(name, d.nsName) {
 		return d.ns, nil
 	}
-	return d.Datastore.NamespaceByName(name)
+	return d.Datastore.NamespaceByName(name) // a different namespace: delegate down the chain
 }
 
 // --------------------------------------------------------- namespace
@@ -318,8 +332,8 @@ type flatNamespace struct {
 }
 
 func (p *flatNamespace) Datastore() datastore.Datastore { return p.datastore }
-func (p *flatNamespace) Id() string                     { return flatRootNamespace }
-func (p *flatNamespace) Name() string                   { return flatRootNamespace }
+func (p *flatNamespace) Id() string                     { return p.datastore.nsName }
+func (p *flatNamespace) Name() string                   { return p.datastore.nsName }
 
 func (p *flatNamespace) KeyspaceIds() ([]string, errors.Error)   { return p.keyspaceNames() }
 func (p *flatNamespace) KeyspaceNames() ([]string, errors.Error) { return p.keyspaceNames() }
@@ -401,7 +415,7 @@ func (p *flatNamespace) icebergSnapshotKeyspace(name string) (datastore.Keyspace
 		return ks, true
 	}
 	ks := &flatKeyspace{dir: baseKS.dir, iceberg: baseKS.iceberg, snapshot: sel}
-	vks, verr := virtual.NewVirtualKeyspace(p, []string{flatRootNamespace, name})
+	vks, verr := virtual.NewVirtualKeyspace(p, []string{p.datastore.nsName, name})
 	if verr != nil {
 		return nil, false
 	}

@@ -29,35 +29,55 @@ import (
 )
 
 // KeyspaceInfo names one keyspace and summarizes how its files frame into records.
+// Namespace is the keyspace's namespace (usually the session default "default"; a
+// multi-source session can place sources under others -- see OpenSessionSources).
 type KeyspaceInfo struct {
-	Name    string
-	Framing KeyspaceFraming
+	Name      string
+	Namespace string
+	Framing   KeyspaceFraming
 }
 
-// Keyspaces lists this session's namespace keyspaces (sorted by name), each with its
-// record-framing summary (KeyspaceFraming: structured / whole-file blob / recipe /
-// temp / Iceberg / mixed / empty). It reflects the datastore's flattening -- synthetic
-// flat-root, single-file, TEMP, and Iceberg keyspaces, not just literal subdirectories
-// -- and reads no file content (framing is classified from the file listing + the
-// recipe registry). A missing namespace (an empty datastore) yields an empty slice, not
-// an error.
+// Keyspaces lists this session's keyspaces (each with its record-framing summary:
+// structured / whole-file blob / recipe / temp / Iceberg / mixed / empty). It reflects
+// the datastore's flattening -- synthetic flat-root, single-file, TEMP, and Iceberg
+// keyspaces, not just literal subdirectories -- and reads no file content (framing is
+// classified from the file listing + the recipe registry). ALL namespaces are listed
+// (the session default first, then others alphabetically; keyspaces sorted by name
+// within each), so a multi-source session's non-default-namespace keyspaces appear too;
+// each carries its Namespace. An empty datastore yields an empty slice, not an error.
 func (s *Session) Keyspaces() ([]KeyspaceInfo, error) {
-	ns, err := s.Store.Datastore.NamespaceByName(s.Namespace)
-	if err != nil {
-		return nil, nil // a missing namespace is just an empty datastore, not an error.
-	}
-	names, err := ns.KeyspaceNames()
-	if err != nil {
-		return nil, fmt.Errorf("listing keyspaces: %w", err)
-	}
-	sort.Strings(names)
-	out := make([]KeyspaceInfo, 0, len(names))
-	for _, n := range names {
-		ki := KeyspaceInfo{Name: n}
-		if ks, kerr := ns.KeyspaceByName(n); kerr == nil {
-			ki.Framing, _ = KeyspaceFramingFor(ks) // best-effort; zero value on error.
+	nsNames, _ := s.Store.Datastore.NamespaceNames()
+	// Session default namespace first, then the rest alphabetically (dedup'd).
+	ordered := []string{s.Namespace}
+	seen := map[string]bool{strings.ToLower(s.Namespace): true}
+	rest := []string{}
+	for _, n := range nsNames {
+		if !seen[strings.ToLower(n)] {
+			seen[strings.ToLower(n)] = true
+			rest = append(rest, n)
 		}
-		out = append(out, ki)
+	}
+	sort.Strings(rest)
+	ordered = append(ordered, rest...)
+
+	var out []KeyspaceInfo
+	for _, nsName := range ordered {
+		ns, err := s.Store.Datastore.NamespaceByName(nsName)
+		if err != nil {
+			continue // a missing namespace (e.g. the session default over an empty datastore).
+		}
+		names, err := ns.KeyspaceNames()
+		if err != nil {
+			continue
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			ki := KeyspaceInfo{Name: n, Namespace: nsName}
+			if ks, kerr := ns.KeyspaceByName(n); kerr == nil {
+				ki.Framing, _ = KeyspaceFramingFor(ks) // best-effort; zero value on error.
+			}
+			out = append(out, ki)
+		}
 	}
 	return out, nil
 }
@@ -120,9 +140,9 @@ type SchemaSample struct {
 // takes) and aggregating each result row's top-level fields into per-field FieldStats.
 // It powers the CLI's .schema and gives an embedder schema inference without a fixed
 // catalog. A non-object row (a bare scalar) contributes no fields; limit <= 0 samples
-// nothing.
+// nothing. keyspace may be namespace-qualified ("analytics:orders").
 func (s *Session) SampleSchema(keyspace string, limit int) (*SchemaSample, error) {
-	stmt := fmt.Sprintf("SELECT x.* FROM %s AS x LIMIT %d", backtickIdent(keyspace), limit)
+	stmt := fmt.Sprintf("SELECT x.* FROM %s AS x LIMIT %d", qualifiedIdent(keyspace), limit)
 	res, err := s.Run(stmt)
 	if err != nil {
 		return nil, err
@@ -174,4 +194,15 @@ func jsonTypeName(v interface{}) string {
 // backtick is doubled.
 func backtickIdent(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+
+// qualifiedIdent backtick-quotes a possibly namespace-qualified keyspace reference for a
+// FROM clause: "orders" -> `orders`, "analytics:orders" -> `analytics`:`orders` (the ':'
+// namespace separator kept outside the backticks so the parser still splits on it). Split
+// on the LAST ':' -- a bare keyspace name never contains one.
+func qualifiedIdent(ref string) string {
+	if i := strings.LastIndex(ref, ":"); i > 0 && i < len(ref)-1 {
+		return backtickIdent(ref[:i]) + ":" + backtickIdent(ref[i+1:])
+	}
+	return backtickIdent(ref)
 }

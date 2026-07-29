@@ -55,6 +55,9 @@ func TestKeyspacesAndSampleSchema(t *testing.T) {
 	for i, ki := range infos {
 		gotNames[i] = ki.Name
 		files[ki.Name] = ki.Framing.Files
+		if ki.Namespace != "default" {
+			t.Errorf("keyspace %q namespace = %q, want default", ki.Name, ki.Namespace)
+		}
 	}
 	if !reflect.DeepEqual(gotNames, []string{"a", "b"}) {
 		t.Fatalf("Keyspaces names = %v, want [a b]", gotNames)

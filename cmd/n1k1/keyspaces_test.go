@@ -163,6 +163,43 @@ func hasType(fs *glue.FieldStat, want string) bool {
 	return false
 }
 
+// TestKeyspacesNamespaceListing: a multi-source session with a source under a
+// non-default namespace lists it in .tables namespace-qualified (`analytics:orders`),
+// with a runnable qualified FROM example, alongside the default-namespace sources.
+func TestKeyspacesNamespaceListing(t *testing.T) {
+	root := t.TempDir()
+	mk := func(sub, body string) string {
+		d := filepath.Join(root, sub)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "a.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	sess, err := glue.OpenSessionSources([]glue.Source{
+		{Name: "logs", Path: mk("logs", `{"id":1}`)},
+		{Name: "orders", Path: mk("orders", `{"id":1}`), Namespace: "analytics"},
+	}, "default")
+	if err != nil {
+		t.Fatalf("OpenSessionSources: %v", err)
+	}
+	var buf bytes.Buffer
+	c := &cli{sess: sess, out: &buf}
+	c.printKeyspaces(&buf)
+	out := buf.String()
+	for _, want := range []string{
+		"logs",                  // default-ns source, bare
+		"analytics:orders",      // namespaced source, qualified
+		"FROM analytics:orders", // runnable qualified example
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf(".tables output missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
 // TestKeyspacesFramingTags: .tables tags each keyspace with how its files become
 // rows (IDEA-0007) -- a structured format, a whole-file blob, or a plugin -- and
 // prints the whole-file hint when a blob is present.

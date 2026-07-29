@@ -349,14 +349,59 @@ func TestLoadSourcesPerSourceOptions(t *testing.T) {
 	}
 	sess.Close()
 
-	// namespace is still reserved -> rejected.
+	// `sorted` is still reserved -> rejected (namespace is supported; see below).
 	badCfg := filepath.Join(root, "bad.json")
 	if err := os.WriteFile(badCfg,
-		[]byte(`{"sources":{"t":{"path":".","namespace":"ns2"}}}`), 0o644); err != nil {
+		[]byte(`{"sources":{"t":{"path":".","sorted":"ts"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadSources(badCfg); err == nil {
-		t.Error("expected a per-source `namespace` to be rejected (reserved)")
+		t.Error("expected a per-source `sorted` to be rejected (reserved)")
+	}
+}
+
+// TestOpenSessionSourcesNamespace: a per-source namespace places its keyspace under a
+// non-default namespace, reachable as `FROM <ns>:<keyspace>`, while default-namespace
+// sources stay prefix-free -- and both are joinable in one query.
+func TestOpenSessionSourcesNamespace(t *testing.T) {
+	root := t.TempDir()
+	mk := func(sub, body string) string {
+		d := filepath.Join(root, sub)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "a.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	logs := mk("logs", `{"id":1,"sev":"error"}`)
+	orders := mk("orders", `{"id":1,"amt":10}`)
+
+	sess, err := OpenSessionSources([]Source{
+		{Name: "logs", Path: logs},                             // session-default namespace
+		{Name: "orders", Path: orders, Namespace: "analytics"}, // a different namespace
+	}, "default")
+	if err != nil {
+		t.Fatalf("OpenSessionSources (namespace): %v", err)
+	}
+	defer sess.Close()
+
+	// Unqualified name resolves in the default namespace.
+	if res, err := sess.Run(`SELECT COUNT(*) AS n FROM logs`); err != nil || string(res.Rows[0]) != `{"n":1}` {
+		t.Errorf("FROM logs (default ns): rows=%v err=%v", stringsOf(res.Rows), err)
+	}
+	// The namespaced source needs its prefix.
+	if res, err := sess.Run(`SELECT COUNT(*) AS n FROM analytics:orders`); err != nil || string(res.Rows[0]) != `{"n":1}` {
+		t.Errorf("FROM analytics:orders: rows=%v err=%v", stringsOf(res.Rows), err)
+	}
+	// Cross-namespace join in one query.
+	res, err := sess.Run(`SELECT o.amt AS amt FROM logs l JOIN analytics:orders o ON l.id = o.id`)
+	if err != nil {
+		t.Fatalf("cross-namespace join: %v", err)
+	}
+	if len(res.Rows) != 1 || string(res.Rows[0]) != `{"amt":10}` {
+		t.Errorf("cross-namespace join = %v, want one {\"amt\":10}", stringsOf(res.Rows))
 	}
 }
 

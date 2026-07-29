@@ -147,11 +147,20 @@ in glue/patches/README.md.
       keyspaceFiles (so .tables counts match). File/dir/glob only (Iceberg/Parquet
       single-format -> rejected). glue.LoadSources now accepts `formats`.
 
-- [ ] Multi-source remaining niceties (DESIGN-data.md §2): per-source `namespace`
-      (needs multi-namespace federation, not the single `default`) + `sorted`
-      (sortedness contract) -- both parsed-but-rejected today; a catalog.json
-      `"sources"` map (durable twin); a `.source add/list/rm` live-attach
-      dot-command; cross-source `_meta` provenance under UNION ALL.
+- [x] Multi-source per-source `namespace` (DESIGN-data.md §2). DONE: a source can
+      be placed under a non-default namespace, reachable as `FROM <ns>:<keyspace>`
+      (the cbq fork already parses/resolves it -- no fork change). OpenSessionSources
+      groups by namespace + chains a flatDatastore per namespace (flat.go
+      parameterized with an nsName; wrapFlatKeyspacesNS); Session.Keyspaces lists all
+      namespaces (.tables shows namespace-qualified). glue.LoadSources accepts
+      `namespace`.
+
+- [ ] Multi-source remaining niceties (DESIGN-data.md §2): per-source `sorted`
+      (sortedness contract for the near-sorted merge -- needs measured/normalized
+      SortedSourceMeta per file, or a reduced declared-heap-merge contract; scope
+      TBD) -- parsed-but-rejected today; a catalog.json `"sources"` map (durable
+      twin); a `.source add/list/rm` live-attach dot-command; cross-source `_meta`
+      provenance under UNION ALL.
 
 - UI / terminal and/or web-based?
 
