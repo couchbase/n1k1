@@ -171,6 +171,38 @@ A recipe declares one (front-matter `mode:`):
   lets an agent polling a current-state REST API still learn *what changed*. The snapshot spills
   (reuse the rhmap store) so it scales past RAM.
 
+### Dynamic sub-stream sources (directory trees, git) — the non-monotonic case
+
+Two grounding use cases — **follow `~/.claude/`** (a growing tree of jsonl files that get appended,
+and occasionally shrink/rotate as 30-day cleanup runs) and **follow git commits across sibling
+worktrees** (agents spinning up branches) — both reduce to the *same* shape the plain `append`
+model under-specifies: **a dynamic set of append-mostly sub-streams (files / git refs) that each
+grow, occasionally *rewind* (truncate/rotate; rebase/force/ff), and eventually *disappear* (cleanup;
+branch delete).** They fit the design in shape but pin down four things:
+
+- **Position is a per-sub-stream map**, not a scalar: `{file → (offset, identity)}` /
+  `{ref → commit-sha}`. Sub-streams appear over time (new files/subdirs; new worktree branches) and
+  the recursive glob / ref-set picks them up on the next `peek`.
+- ⚠ **Non-monotonic rewind is the real gap** — `append` assumes the offset only grows. A file that
+  **shrinks/rotates** (its size went backwards or its inode/identity changed) and a git ref whose
+  cursor SHA is **no longer an ancestor** (rebased/reset) both invalidate the stored position.
+  Detect it (size-backwards / identity change / SHA-not-ancestor) and **reset that sub-stream**
+  (re-read from 0 / re-baseline). This is the classic log-rotation problem (`tail -F`, Filebeat,
+  Vector) and its git twin. Re-reads are safe *because* fingerprint-dedup absorbs the repeats — so
+  the **fingerprint must be content/identity-based, not offset-based**, or a rotate-and-re-read
+  re-emits already-seen rows as new.
+- **Set-membership changes (create / DELETE) are a `diff` concern, not `append`.** `append` surfaces
+  new rows and silently ignores a file/branch vanishing; to *observe* cleanup or a deleted branch,
+  run a `diff` cursor over the sub-stream **set** (names + sizes / ref→sha). A tree/repo monitor may
+  want **both**: `append` over contents + `diff` over membership.
+- **Cursor-map retention** — the position map grows with every sub-stream ever seen; cleanup / dead
+  worktrees leave stale entries, so prune them, or cursor state grows unbounded.
+
+New source providers this implies: a **recursive jsonl-dir** source with rotation-aware per-file
+offsets (n1k1 nearly has it), and a **`git://` source** (git-log-as-records, `<cursor-sha>..<ref>`
+as the since-query) — both wired through the late-binding manifest (`sessions → dir("~/.claude/**/*.jsonl")`,
+`commits → git-log(worktrees)`).
+
 ### State & idempotency — the agent holds a name, not a cookie
 
 AI agents are bad at durably holding state (context resets between wakes), so the design never
@@ -554,3 +586,11 @@ Sources: [RisingWave — streaming DB landscape 2026](https://risingwave.com/blo
   offset+snapshot?), and how it reconciles with source replay.
 - **Delta-report synergy** — PREPARE++'s re-run delta report (keyed by fingerprint + corpus SHA) is
   the batch analog of "emit only on change"; the two should share a design.
+- **Sub-stream rewind policy is unsettled** (see "Dynamic sub-stream sources"): when a file
+  rotates/shrinks or a git ref is rebased under a cursor, is the reset **silent** (just re-read +
+  fingerprint-dedup) or **surfaced** as an event the agent sees (`{op:reset, reason:rotated|rewound}`)?
+  A monitor for *"did someone force-push / did cleanup run?"* wants it surfaced; a plain content
+  tail wants it silent. Likely a per-cursor policy.
+- **Append vs diff on one source** — the tree/repo cases want `append` over contents *and* `diff`
+  over set-membership at once; unclear whether that's two cursors on the same binding or one cursor
+  with a combined mode.
