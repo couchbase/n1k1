@@ -530,6 +530,18 @@ cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the curso
 Optional: journal each pending delta (`.n1k1/journal/<NAME>/`) for exact/re-scan-free replay. → The
 whole crash-safe run-and-done "what's new" loop for append sources.
 
+> **Status — SHIPPED** (`.multi cursor {create,peek,advance,list,show,rm}`). The `append` delta
+> rides a `records.Source` wrapper installed at the single `KeyspaceRecordsOpen` choke point in
+> `DatastoreScanRecords` (nil-by-default `GlueContext.scanFilter`, reached via `getRoot()` so
+> UNION-ALL clones share one high-water collector) — no engine/records hot-path change. Position
+> comes from the record id (`<path>#<line>@<offset>`, always present on jsonl — no `-meta`). Core:
+> `glue/cursor.go` (`CursorStore`, `RecordScanFilter`, `Session.RunCursorPack`, `PackID`); surface:
+> `cmd/n1k1/multi_cursor.go`. `from`/`to` are opaque, deterministic `{container→offset}` tokens.
+> *MVP simplifications, still open:* `log`/`reset` + the journal not yet built; the fingerprint is a
+> content hash (`hash(label,result)`), not yet `hash(detector-sha, source-id, matched-key)`; a
+> filtered scan forgoes column/predicate pushdown (only under an active cursor; jsonl has none
+> anyway); `--from now` positions by running the pack once and discarding rows.
+
 **Phase 2 — `diff`/snapshot delta.** *Build on:* the spillable rhmap store, doc-id extraction.
 *New:* `mode: diff` — persist a prior snapshot keyed by id under the cursor, diff on run, emit the
 Debezium envelope, replace snapshot. → "what changed" on mutable / current-state-only sources.
@@ -552,6 +564,37 @@ cursor store; the `monitor` object (cursor + query + schedule + status); server-
 **Phase 6 — true `follow` / continuous.** The heavy engine work (see next section): unbounded
 source, continuous/watermark emit, incremental standing state, event-time, and a distributed
 cursor-store backend.
+
+### Adjacent application — incremental SI / FTS indexing
+
+The cursor primitive isn't only for *external* agents; its most natural *internal* consumer is
+n1k1's **own index builders** (`glue/idx_si.go`, `glue/idx_fts.go`). Today a secondary or FTS index
+over a growing keyspace is a **full rebuild** — re-scan every doc, re-tokenize, re-write the catalog
+— because there's no notion of "what's new since the last build." A cursor *is* exactly that notion:
+the committed high-water is the index's watermark, and an `append` `peek` yields precisely the
+documents added since — the incremental **index-maintenance delta**.
+
+The shape lines up cleanly:
+
+- **The index is the cursor's consumer, not a labelResult sink.** A cursor named after the index
+  (`si:orders.by_city`) binds to a trivial "pack" (a `SELECT` of the indexed key expression over the
+  keyspace). `peek` returns the new docs; the builder folds them into the existing btree/postings and
+  `advance`s the watermark. A crash between fold and advance just re-`peek`s (at-least-once) — the
+  fingerprint (doc id) makes the re-index **idempotent** (upsert by key), the same dedup story the
+  agent path uses.
+- **Deletes/updates want `diff` (Phase 2), not `append`.** An append cursor covers insert-only
+  growth (new log lines, new docs); a mutable keyspace needs the `{op:insert|update|delete}` envelope
+  to retract/replace postings. So incremental SI/FTS is **Phase 1 for append-only corpora, Phase 2
+  for mutable ones** — no new machinery beyond the delta strategies already planned.
+- **Reuses the existing catalog + eager/lazy build modes.** The `.n1k1/catalog.json` already records
+  index defs; add a per-index watermark alongside it (or a `si:`/`fts:`-prefixed cursor in the store)
+  and the eager-build-on-open path becomes an eager-*catch-up* (fold the delta) instead of a rebuild.
+
+This is a distinct workstream from the agent-facing verbs (it needs no new CLI surface — it's an
+internal caller of the same `RunCursorPack` + high-water), but it validates the primitive from a
+second direction and would turn index maintenance from O(corpus) per open into O(delta). *(Open: FTS
+segment merge under incremental adds; whether the watermark lives in the index catalog or the cursor
+store; interaction with the non-monotonic rewind case for mutable keyspaces.)*
 
 ## The engine gap for `follow` (Phase 6)
 
