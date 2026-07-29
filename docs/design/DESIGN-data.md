@@ -53,9 +53,8 @@ through a VIEW); catalog-defined query VIEWs (expansion + branch pushdown; `UNIO
 landed) + materialized views; zstd decode (walker recognizes `.zst`; decode is a stub) + `.zip`
 container; encryption-at-rest; full column-batch Parquet execution (`DESIGN-col.md`); catalogs
 beyond a filesystem/object-store metadata path (REST/Glue); a `[]byte`-oriented zero-copy CSV
-reader + the allocs/op benchmark gate; **per-source scan options for multi-source** (§2 — `-formats`/
-sortedness/namespace per source; needs per-keyspace walk options threaded through the process-global
-scan path; the multi-source federation of kinds + the `-sources` config file have shipped).
+reader + the allocs/op benchmark gate; per-source **namespace/sortedness** for multi-source (§2 —
+per-source `-formats` + the federation of kinds + the `-sources` config file have all shipped).
 
 ## Relationship to `DESIGN-indexing.md`
 
@@ -285,11 +284,13 @@ exactly what `glue.OpenSessionSources`/`Source` (`glue/sources.go`) + `cmd/n1k1`
   `OpenSessionSources` just builds a `map[name]*flatKeyspace` (a per-source `sourceFlatKeyspace`
   classifier, reusing `records.IcebergTableMetadata` / `ResolveObjectStoreIcebergMetadata` /
   `SplitIcebergMetadataLocation`) over an **inert base** datastore (`inertBaseDatastore`, shared with the
-  object-store builders) — **no new scan code**. The one deferred bit is **per-source options**
-  (`-formats`, sortedness, a per-source namespace): the scan reads a *process-global* `ScanWalkOptions`,
-  so per-source formats would mean threading per-keyspace walk options through the ~10 scan/index/vector
-  call sites — out of scope for now, kept **parsed-but-rejected** in the config so the file format stays
-  stable.
+  object-store builders) — **no new scan code**. **Per-source `-formats`** shipped too (a config source's
+  `formats` restricts *that* keyspace's file eligibility): the scan reads a process-global
+  `ScanWalkOptions`, so a `flatKeyspace` carries an optional override and `applyKeyspaceFormats` overlays
+  it (keeping the live `.meta` + path prefix) at the **single `KeyspaceRecordsOpen` choke point** every
+  scan/agg/vector path funnels through — plus `keyspaceFiles` (the one path that re-walks) so `.tables`
+  counts match. It applies to file/dir/glob sources only (an Iceberg/Parquet source is single-format —
+  rejected). Still reserved (parsed, rejected): per-source **namespace** and **sortedness**.
 
 **REPL (Phase 1 ✅).** `.open <dir>` still opens one root; `.open <src>…` (2+ whitespace-separated paths,
 or any `name=path`) opens multiple sources as keyspaces (`cmd_open.go`, same parser as the argv path),
@@ -308,18 +309,17 @@ its own config with its own decoders (`records.DecodeConfigFile` → canonical J
 sources:
   drive:  { path: "~/Google Drive/**" }   # object form (space-in-path: fine, it's a quoted string)
   docs:   "~/Documents"                   # string shorthand (just a path)
-  events: { path: "s3://…/events" }              # a remote Iceberg table source — works
-  slow:   { path: "~/big", formats: parquet }    # per-source options: parsed but rejected (deferred)
+  events: { path: "s3://…/events" }              # a remote Iceberg table source
+  logs:   { path: "~/logs", formats: "jsonl,gzip" }   # per-source -formats lockdown (this source only)
 ```
 
 Shipped: `-sources <file>` and `.open @<file>` load a `SourcesConfig` (`glue.LoadSources` /
 `OpenSessionSourcesFile`) → name-sorted `[]Source` → `OpenSessionSources`. Each map key is the keyspace
 name; the value is a path string or `{path: …}` object (local, `~`, glob, or an object-store URI); a
 relative path anchors at the **config file's own directory** (portable regardless of CWD; `~`/absolute/
-object-store pass through); it is mutually exclusive with positional sources. Per-source options
-(`Formats`/`Namespace`/`Sorted`) are **parsed but rejected** today — the source *kinds* federate, but
-per-source formats needs per-keyspace scan options (the scan is process-global), so those fields stay
-reserved (no silent no-op). This is the **declarative twin** of the imperative CLI list and of the Mode
+object-store pass through); it is mutually exclusive with positional sources. Per-source **`formats`** is
+honored (file/dir/glob sources); **`namespace`/`sorted`** are parsed but still reserved (rejected, so no
+silent no-op). This is the **declarative twin** of the imperative CLI list and of the Mode
 3 catalog: a durable `"sources"` map in `.n1k1/catalog.json` (persisted like `.formats`) would let a
 workspace remember its sources across runs. All three (argv, `-sources` file, catalog) build the same
 `[]Source` → federated `flatKeyspace` map.
@@ -510,7 +510,7 @@ CLI `n1k1 [-c "<stmt>"] <dataRoot>` (one root today; **multiple sources proposed
 | J | CSV/TSV + header | header names columns, one JSON object per row | ✅ |
 | K | Parquet | transpose-to-rows + projection + footer-stats aggs | ✅ (+partial vectorization) |
 | L | office/PDF/media | one `{filename,kind,text,…}` record/file | ✅ (pure-Go; OCR later) |
-| M | multiple sources on the CLI / a `-sources` config (`drive=~/Drive/** events=s3://…/tbl`) | one keyspace per source (siblings under `default`), joinable in one query; heterogeneous kinds federate | ✅ (§2; per-source options deferred) |
+| M | multiple sources on the CLI / a `-sources` config (`drive=~/Drive/** events=s3://…/tbl`) | one keyspace per source (siblings under `default`), joinable in one query; heterogeneous kinds federate; per-source `-formats` | ✅ (§2; namespace/sortedness reserved) |
 
 **O — query-defined VIEW over a morphed source** 🟣 (`.n1k1/catalog.json` defines each era as a
 keyspace + a normalizing `UNION ALL` view). The `UNION ALL` converts (`VisitUnionAll`); remaining is
@@ -785,10 +785,9 @@ DuckDB (MIT) is design inspiration, not a dep.
   or stay pure-Go and narrower?
 - **Default doc-ID scheme & encryption seekability** — positional (addressable, shifts on edit) vs
   content-hash vs requiring a natural key; which segmented-encryption format (Tink vs age).
-- **Per-source scan options for multi-source (§2).** Multi-source shipped, incl. federating heterogeneous
-  *kinds* (local + local/remote Iceberg + remote Parquet) and the `-sources` config. Still open: how do
-  per-source options (`-formats`, sortedness, a per-source namespace) attach when the scan reads a
-  *process-global* `ScanWalkOptions`? Threading a per-keyspace `WalkOptions` through the ~10 scan/index/
-  vector call sites is the real cost; is it worth it, or is a global lockdown enough in practice? Also
-  open: a durable catalog `"sources"` map, a `.source add/list/rm` live-attach command, and cross-source
-  `_meta` provenance tagging under `UNION ALL`.
+- **Remaining multi-source niceties (§2).** Multi-source shipped: federating heterogeneous *kinds*
+  (local + local/remote Iceberg + remote Parquet), the `-sources` config, and per-source `-formats`
+  (a `flatKeyspace` override overlaid at the `KeyspaceRecordsOpen` choke point). Still open: a per-source
+  **namespace** (needs multi-namespace federation, not the single `default`) and **sortedness** contract
+  (the near-sorted-merge metadata per source); a durable catalog `"sources"` map; a `.source add/list/rm`
+  live-attach command; and cross-source `_meta` provenance tagging under `UNION ALL`.

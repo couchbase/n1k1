@@ -464,7 +464,19 @@ type flatKeyspace struct {
 	iceberg    string               // Iceberg table: path of the CURRENT metadata.json (dir = table dir)
 	snapshot   records.ScanSnapshot // Iceberg time-travel selector (zero Mode => current)
 	parquetURL string               // remote Parquet object: an s3://.../x.parquet location (§8)
+	formats    *records.WalkOptions // per-source -formats override (multi-source; nil = use the global)
 	indexer    datastore.Indexer
+}
+
+// RecordsFormats returns this keyspace's per-source -formats override (a multi-source
+// `sources` config entry, DESIGN-data.md §2) and ok=true when one was set; the scan
+// (applyKeyspaceFormats) overlays it onto the live global ScanWalkOptions for this
+// keyspace only. ok=false for an ordinary keyspace (use the global options unchanged).
+func (k *flatKeyspace) RecordsFormats() (records.WalkOptions, bool) {
+	if k.formats == nil {
+		return records.WalkOptions{}, false
+	}
+	return *k.formats, true
 }
 
 // IcebergMetadata, when non-empty, marks this keyspace as an Apache Iceberg table and

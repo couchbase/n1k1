@@ -140,10 +140,16 @@ in glue/patches/README.md.
       inert base -- KeyspaceRecordsOpen's existing per-kind routing scans them, no new
       scan code. Local dir + local Iceberg join in one query (guard test).
 
-- [ ] Multi-source per-source options + niceties (DESIGN-data.md §2). Remaining
-      Phase 2 bits: per-source `-formats`/sortedness/namespace (needs a per-keyspace
-      WalkOptions threaded through the process-global scan path -- ~10 call sites;
-      un-reject the fields in glue.LoadSources once landed); a catalog.json
+- [x] Multi-source per-source `-formats` (DESIGN-data.md §2). DONE: a config
+      source's `formats` restricts that keyspace only -- flatKeyspace carries an
+      optional WalkOptions override, applyKeyspaceFormats overlays it (keeping live
+      .meta + path prefix) at the single KeyspaceRecordsOpen choke point + in
+      keyspaceFiles (so .tables counts match). File/dir/glob only (Iceberg/Parquet
+      single-format -> rejected). glue.LoadSources now accepts `formats`.
+
+- [ ] Multi-source remaining niceties (DESIGN-data.md §2): per-source `namespace`
+      (needs multi-namespace federation, not the single `default`) + `sorted`
+      (sortedness contract) -- both parsed-but-rejected today; a catalog.json
       `"sources"` map (durable twin); a `.source add/list/rm` live-attach
       dot-command; cross-source `_meta` provenance under UNION ALL.
 

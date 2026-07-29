@@ -41,10 +41,15 @@ import (
 // ("" = derive from Path); Path is a local directory, a single file, or a glob
 // (absolute, ~-prefixed, ./ ../ or bare-relative -- bare/relative anchor at CWD), a
 // local Apache Iceberg table directory, or an object-store URI (s3://, gs://, abfs://)
-// naming a remote Parquet object or Iceberg table.
+// naming a remote Parquet object or Iceberg table. Formats, when set, is a per-source
+// `-formats` lockdown token string (records.ParseModes, e.g. "json,csv,gzip") applied
+// to THIS source only, overriding the global set -- for file/dir/glob sources only
+// (an Iceberg/Parquet source is single-format). It comes from a `-sources` config
+// file; positional CLI args don't carry it.
 type Source struct {
-	Name string
-	Path string
+	Name    string
+	Path    string
+	Formats string
 }
 
 // OpenSessionSources opens a session over multiple data sources, each becoming a
@@ -83,7 +88,7 @@ func OpenSessionSources(sources []Source, namespace string) (*Session, error) {
 				"two data sources map to keyspace %q (%q and %q); pass a name (name=path) to disambiguate",
 				name, prev, s.Path)
 		}
-		ks, err := sourceFlatKeyspace(path)
+		ks, err := sourceFlatKeyspace(path, strings.TrimSpace(s.Formats))
 		if err != nil {
 			return nil, err
 		}
@@ -129,14 +134,12 @@ type SourcesConfig struct {
 }
 
 // SourceSpec is one entry of a SourcesConfig. It unmarshals from either a bare path
-// string ("~/x/**") or an object ({path: "~/x/**", ...}). The non-Path fields are
-// Phase 2 (parsed so the file format is stable, but rejected by LoadSources until the
-// federating composite datastore lands).
+// string ("~/x/**") or an object ({path: "~/x/**", formats: "csv"}).
 type SourceSpec struct {
 	Path      string `json:"path"`
-	Formats   string `json:"formats,omitempty"`   // Phase 2: per-source -formats lockdown
-	Namespace string `json:"namespace,omitempty"` // Phase 2: place under a non-default namespace
-	Sorted    string `json:"sorted,omitempty"`    // Phase 2: declared sort key (sortedness contract)
+	Formats   string `json:"formats,omitempty"`   // per-source -formats lockdown (file/dir/glob sources)
+	Namespace string `json:"namespace,omitempty"` // reserved: place under a non-default namespace (not yet supported)
+	Sorted    string `json:"sorted,omitempty"`    // reserved: declared sort key / sortedness contract (not yet supported)
 }
 
 // UnmarshalJSON accepts both a JSON string (shorthand for {path: <string>}) and an
@@ -178,12 +181,11 @@ func LoadSources(path string) ([]Source, error) {
 		if strings.TrimSpace(spec.Path) == "" {
 			return nil, fmt.Errorf("source %q in %q has no path", name, path)
 		}
-		if spec.Formats != "" || spec.Namespace != "" || spec.Sorted != "" {
+		if spec.Namespace != "" || spec.Sorted != "" {
 			return nil, fmt.Errorf(
-				"source %q: per-source options (formats/namespace/sorted) are not yet supported "+
-					"(DESIGN-data.md §2 Phase 2)", name)
+				"source %q: per-source namespace/sorted are not yet supported (DESIGN-data.md §2)", name)
 		}
-		out = append(out, Source{Name: name, Path: configRelPath(spec.Path, base)})
+		out = append(out, Source{Name: name, Path: configRelPath(spec.Path, base), Formats: spec.Formats})
 	}
 	return out, nil
 }
@@ -215,9 +217,12 @@ func configRelPath(p, configBase string) string {
 // routes on these fields: iceberg -> records.OpenIcebergTable, parquetURL -> a remote
 // Parquet reader, dir/glob -> a local walk. The order matters: object-store URIs and
 // Iceberg tables are recognized before the generic local dir/glob path.
-func sourceFlatKeyspace(path string) (*flatKeyspace, error) {
+func sourceFlatKeyspace(path, formats string) (*flatKeyspace, error) {
 	// Object-store URI (s3:// / gs:// / abfs://): a *.parquet object, else an Iceberg table.
 	if records.IsObjectStoreURI(path) {
+		if formats != "" {
+			return nil, fmt.Errorf("data source %q: per-source formats %q applies only to file/dir/glob sources, not object-store Iceberg/Parquet", path, formats)
+		}
 		if strings.HasSuffix(strings.ToLower(path), ".parquet") {
 			return &flatKeyspace{parquetURL: path}, nil
 		}
@@ -243,25 +248,48 @@ func sourceFlatKeyspace(path string) (*flatKeyspace, error) {
 	}
 	// Local Iceberg table directory (has metadata/<v>.metadata.json).
 	if meta, ok := records.IcebergTableMetadata(abs); ok {
+		if formats != "" {
+			return nil, fmt.Errorf("data source %q: per-source formats %q applies only to file/dir/glob sources, not an Iceberg table", path, formats)
+		}
 		return &flatKeyspace{dir: abs, iceberg: meta}, nil
 	}
 
 	// Local dir / glob / single file: resolve to an absolute pattern, then fail loudly on
 	// a zero-match resolution (never a silently empty keyspace). A single local Parquet
-	// file rides this path too (Parquet is an ordinary record format).
+	// file rides this path too (Parquet is an ordinary record format). A per-source
+	// -formats restricts BOTH this eligibility resolution and the later scan.
+	scanOpts := ScanWalkOptions
+	var override *records.WalkOptions
+	if formats != "" {
+		wo, perr := records.ParseModes(formats)
+		if perr != nil {
+			return nil, fmt.Errorf("data source %q: bad formats %q: %v", path, formats, perr)
+		}
+		scanOpts, override = wo, &wo
+	}
 	pat, err := sourcePattern(path)
 	if err != nil {
 		return nil, err
 	}
-	base, files, gerr := records.GlobFiles(pat, ScanWalkOptions)
+	base, files, gerr := records.GlobFiles(pat, scanOpts)
 	if gerr != nil {
 		return nil, fmt.Errorf("data source %q: %v", path, gerr)
 	}
 	if len(files) == 0 {
 		return nil, fmt.Errorf(
-			"data source %q resolves to no files (pattern %q); refusing to open an empty keyspace", path, pat)
+			"data source %q resolves to no files (pattern %q%s); refusing to open an empty keyspace",
+			path, pat, formatsNote(formats))
 	}
-	return &flatKeyspace{dir: base, glob: pat}, nil
+	return &flatKeyspace{dir: base, glob: pat, formats: override}, nil
+}
+
+// formatsNote annotates a "no files" error with the per-source formats set, if any, so
+// a lockdown that filtered everything out is obvious.
+func formatsNote(formats string) string {
+	if formats == "" {
+		return ""
+	}
+	return ", formats=" + formats
 }
 
 // sourcePattern turns a (tilde-expanded) local source path into the absolute path/glob

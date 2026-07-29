@@ -468,7 +468,10 @@ func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
 // (optional) supplies the per-request walk cache for the directory case; nil walks
 // fresh.
 func keyspaceFiles(ks datastore.Keyspace, gctx *GlueContext) ([]string, error) {
-	opts := ScanWalkOptions
+	// keyspaceFiles re-walks rather than going through KeyspaceRecordsOpen, so apply any
+	// per-source -formats override here too (so .tables framing/counts + sorted-source
+	// reflect the same file set the scan sees). A no-op for an ordinary keyspace.
+	opts := applyKeyspaceFormats(ks, ScanWalkOptions)
 	if g, ok := ks.(interface{ RecordsGlob() (string, bool) }); ok {
 		if pattern, has := g.RecordsGlob(); has {
 			_, files, err := records.GlobFiles(pattern, opts)

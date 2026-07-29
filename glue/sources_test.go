@@ -85,8 +85,8 @@ func TestOpenSessionSources(t *testing.T) {
 	}
 }
 
-// TestOpenSessionSourcesErrors covers the guard rails: name collision, an
-// object-store URI (Phase 2), and an undial-able derived name.
+// TestOpenSessionSourcesErrors covers the guard rails: a name collision and an
+// underivable name (a rootless glob).
 func TestOpenSessionSourcesErrors(t *testing.T) {
 	root := t.TempDir()
 	a := filepath.Join(root, "x", "data")
@@ -148,27 +148,27 @@ func TestSourceFlatKeyspaceKinds(t *testing.T) {
 	}
 
 	// Local directory -> a recursive glob keyspace.
-	if ks, err := sourceFlatKeyspace(root); err != nil {
+	if ks, err := sourceFlatKeyspace(root, ""); err != nil {
 		t.Errorf("local dir: %v", err)
 	} else if ks.glob == "" || ks.iceberg != "" || ks.parquetURL != "" {
 		t.Errorf("local dir -> %+v, want glob set", ks)
 	}
 	// Remote Parquet object -> parquetURL (offline: just records the URL).
-	if ks, err := sourceFlatKeyspace("s3://bucket/data/t.parquet"); err != nil {
+	if ks, err := sourceFlatKeyspace("s3://bucket/data/t.parquet", ""); err != nil {
 		t.Errorf("remote parquet: %v", err)
 	} else if ks.parquetURL != "s3://bucket/data/t.parquet" {
 		t.Errorf("remote parquet -> %+v, want parquetURL set", ks)
 	}
 	// Remote Iceberg via an explicit metadata JSON -> iceberg + table dir (offline).
 	loc := "s3://bucket/warehouse/db/orders/metadata/00003-abc.metadata.json"
-	if ks, err := sourceFlatKeyspace(loc); err != nil {
+	if ks, err := sourceFlatKeyspace(loc, ""); err != nil {
 		t.Errorf("remote iceberg: %v", err)
 	} else if ks.iceberg != loc || ks.dir != "s3://bucket/warehouse/db/orders" {
 		t.Errorf("remote iceberg -> %+v, want iceberg+dir set", ks)
 	}
 	// A malformed object-store Iceberg location (no .../metadata/…metadata.json) errors
 	// offline, not silently.
-	if _, err := sourceFlatKeyspace("s3://bucket/x.metadata.json"); err == nil {
+	if _, err := sourceFlatKeyspace("s3://bucket/x.metadata.json", ""); err == nil {
 		t.Error("expected a malformed object-store Iceberg location to error")
 	}
 }
@@ -266,17 +266,97 @@ func TestLoadSources(t *testing.T) {
 	}
 }
 
-// TestLoadSourcesRejectsPhase2: per-source options are parsed but rejected until the
-// Phase 2 composite datastore lands (so the file format is stable, not a silent no-op).
-func TestLoadSourcesRejectsPhase2(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "s.json")
-	if err := os.WriteFile(path,
-		[]byte(`{"sources":{"t":{"path":"/x","formats":"parquet"}}}`), 0o644); err != nil {
+// TestOpenSessionSourcesPerSourceFormats: a per-source `-formats` restricts THAT source
+// only -- two keyspaces over the same mixed dir, one all-formats and one json-only, see
+// different file sets (no leakage of the override to the sibling).
+func TestOpenSessionSourcesPerSourceFormats(t *testing.T) {
+	mixed := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mixed, "a.json"), []byte(`{"k":1}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadSources(path); err == nil {
-		t.Error("expected a per-source-options (formats) source to be rejected in Phase 1")
+	if err := os.WriteFile(filepath.Join(mixed, "b.csv"), []byte("x,y\n1,2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := OpenSessionSources([]Source{
+		{Name: "full", Path: mixed},                      // all formats: json + csv
+		{Name: "jsononly", Path: mixed, Formats: "json"}, // json only
+	}, "default")
+	if err != nil {
+		t.Fatalf("OpenSessionSources (per-source formats): %v", err)
+	}
+	defer sess.Close()
+
+	count := func(ks string) string {
+		t.Helper()
+		res, err := sess.Run(`SELECT COUNT(*) AS n FROM ` + ks)
+		if err != nil {
+			t.Fatalf("count %s: %v", ks, err)
+		}
+		return string(res.Rows[0])
+	}
+	if got := count("full"); got != `{"n":2}` { // a.json + b.csv
+		t.Errorf(`COUNT(full) = %s, want {"n":2} (json + csv)`, got)
+	}
+	if got := count("jsononly"); got != `{"n":1}` { // a.json only
+		t.Errorf(`COUNT(jsononly) = %s, want {"n":1} (json only; csv filtered out)`, got)
+	}
+
+	// A per-source formats on an Iceberg/Parquet-kind source is rejected (single-format).
+	if _, err := OpenSessionSources([]Source{
+		{Name: "t", Path: "s3://bucket/db/t.parquet", Formats: "csv"},
+	}, "default"); err == nil {
+		t.Error("expected per-source formats on a remote Parquet source to be rejected")
+	}
+}
+
+// TestLoadSourcesPerSourceOptions: a config `formats` is honored end-to-end; the
+// reserved `namespace`/`sorted` fields are still rejected (no silent no-op).
+func TestLoadSourcesPerSourceOptions(t *testing.T) {
+	root := t.TempDir()
+	// Data in a subdir so the config files (also *.json) in root aren't scanned.
+	data := filepath.Join(root, "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, "a.json"), []byte(`{"k":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, "b.csv"), []byte("x\n1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// formats accepted + applied: a json-only source over the mixed dir sees 1 file.
+	okCfg := filepath.Join(root, "ok.json")
+	if err := os.WriteFile(okCfg,
+		[]byte(`{"sources":{"docs":{"path":"data","formats":"json"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcs, err := LoadSources(okCfg)
+	if err != nil {
+		t.Fatalf("LoadSources (formats): %v", err)
+	}
+	if len(srcs) != 1 || srcs[0].Formats != "json" {
+		t.Fatalf("sources = %+v, want one with Formats=json", srcs)
+	}
+	sess, err := OpenSessionSourcesFile(okCfg, "default")
+	if err != nil {
+		t.Fatalf("OpenSessionSourcesFile: %v", err)
+	}
+	res, _ := sess.Run(`SELECT COUNT(*) AS n FROM docs`)
+	if string(res.Rows[0]) != `{"n":1}` {
+		t.Errorf(`COUNT(docs) with formats=json = %s, want {"n":1}`, string(res.Rows[0]))
+	}
+	sess.Close()
+
+	// namespace is still reserved -> rejected.
+	badCfg := filepath.Join(root, "bad.json")
+	if err := os.WriteFile(badCfg,
+		[]byte(`{"sources":{"t":{"path":".","namespace":"ns2"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSources(badCfg); err == nil {
+		t.Error("expected a per-source `namespace` to be rejected (reserved)")
 	}
 }
 

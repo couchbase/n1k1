@@ -294,6 +294,26 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 
 // -------------------------------------------------------------------
 
+// applyKeyspaceFormats overlays a keyspace's per-source -formats (multi-source,
+// DESIGN-data.md §2) onto opts: the source's format eligibility (Formats/Recurse/
+// AllowGzip/AllowZstd/Spec) replaces the base's, while opts.Meta (the live .meta
+// setting) and opts.PathPrefix (this scan's dir-relative prefix) are preserved. A
+// keyspace with no override -- the ordinary case -- returns opts unchanged.
+func applyKeyspaceFormats(ks datastore.Keyspace, opts records.WalkOptions) records.WalkOptions {
+	fk, ok := ks.(interface {
+		RecordsFormats() (records.WalkOptions, bool)
+	})
+	if !ok {
+		return opts
+	}
+	fo, has := fk.RecordsFormats()
+	if !has {
+		return opts
+	}
+	fo.Meta, fo.PathPrefix = opts.Meta, opts.PathPrefix
+	return fo
+}
+
 // ScanWalkOptions controls how DatastoreScanRecords discovers/decodes files
 // (formats, recursion, compression). It defaults to the flexible AllModes; the
 // CLI's -scan flag overrides it via records.ParseModes to lock scanning
@@ -503,6 +523,11 @@ func KeyspaceDir(keyspace datastore.Keyspace) (string, error) {
 // they can never diverge -- the class of bug that once made .schema, which sampled
 // the filesystem on its own, report 0 docs for these layouts.
 func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *GlueContext) (records.Source, error) {
+	// Per-source -formats (multi-source, DESIGN-data.md §2): if this keyspace carries a
+	// format override, apply it here -- the single choke point every scan/agg/vector path
+	// funnels through -- so its file eligibility differs from the global while .meta and
+	// the scan's path prefix are preserved. A no-op for an ordinary keyspace.
+	opts = applyKeyspaceFormats(ks, opts)
 	// A session TEMP KEYSPACE (temp_keyspace.go) has no files: it serves its
 	// captured rows straight from memory. Checked first -- it advertises no dir/glob/
 	// file, so the file-resolution branches below would otherwise walk a bogus path.
