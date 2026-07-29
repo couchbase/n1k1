@@ -52,6 +52,7 @@ type cursorArgs struct {
 	pack      []string // --pack <dir> (repeatable / comma-list), create-only
 	bind      string   // --bind <manifest>
 	to        string   // --to <pos>, advance-only (the opaque position token)
+	toFile    string   // --to-file <path>, advance-only (read --to from a file: large positions)
 	from      string   // --from now|start, create-only (default: now)
 	desc      string   // --desc <text>, create-only
 	store     string   // --cursor-store <dir> (override the default state dir)
@@ -66,7 +67,7 @@ type cursorArgs struct {
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
 	var a cursorArgs
-	toks := strings.Fields(arg)
+	toks := splitArgsQuoted(arg)
 	need := func(i *int, val *string, flag string) error {
 		if *val != "" {
 			return nil
@@ -117,6 +118,13 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 				}
 			}
 			a.to = val
+		case "to-file":
+			if !hasEq {
+				if err := need(&i, &val, "--to-file"); err != nil {
+					return a, err
+				}
+			}
+			a.toFile = val
 		case "from":
 			if !hasEq {
 				if err := need(&i, &val, "--from"); err != nil {
@@ -551,10 +559,21 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	}
 
 	// advance: commit. --to lets the agent commit to the exact head it peeked
-	// (the two-step); otherwise commit to the current head.
+	// (the two-step); --to-file reads that token from a file (a many-container
+	// append position is large — tens of KB — and shouldn't ride argv). Otherwise
+	// commit to the current head.
+	toTok := a.to
+	if a.toFile != "" {
+		b, ferr := os.ReadFile(a.toFile)
+		if ferr != nil {
+			c.cursorFail(a.name, "bad-args", fmt.Errorf("--to-file %q: %v", a.toFile, ferr))
+			return
+		}
+		toTok = strings.TrimSpace(string(b))
+	}
 	newWater := res.NewWater
-	if a.to != "" {
-		w, derr := decodeWater(a.to)
+	if toTok != "" {
+		w, derr := decodeWater(toTok)
 		if derr != nil {
 			c.cursorFail(a.name, "bad-args", derr)
 			return
@@ -1287,9 +1306,11 @@ const cursorHelpText = `.multi cursor <verb> — CEP named cursors (a durable "w
                        --mode diff tracks a snapshot keyed by --id-field (default id)
                        and emits {op:insert|update|delete, id, before, after}.
   peek   NAME          the pending delta; does NOT move the cursor (re-peek is safe).
-  advance NAME [--to <pos>] [--quiet]
+  advance NAME [--to <pos> | --to-file <path>] [--quiet]
                        commit (get + move). Echoes the delta unless --quiet.
-                       --to <pos> commits the exact position peek reported (two-step).
+                       --to <pos> commits the exact position peek reported (two-step);
+                       --to-file reads that token from a file (positions can be large —
+                       an append position is a per-container map — so keep it off argv).
   list                 the cursors in the store.
   show   NAME [--positions]
                        one cursor's committed position + metadata (labels/annotations);

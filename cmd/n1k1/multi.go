@@ -105,7 +105,7 @@ type multiArgs struct {
 // caller for run/lint; test errors on its absence too).
 func parseMultiArgs(arg string) (multiArgs, error) {
 	var a multiArgs
-	toks := strings.Fields(arg)
+	toks := splitArgsQuoted(arg)
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
 		key, val, hasEq := t, "", false

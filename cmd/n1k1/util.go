@@ -36,6 +36,56 @@ func splitFirst(s string) (head, tail string) {
 	return s, ""
 }
 
+// splitArgsQuoted tokenizes a command argument string on whitespace like
+// strings.Fields, but honors shell-style quoting so a token can hold spaces:
+// '...' (literal), "..." (with \" and \\ escapes), and a backslash-escaped char
+// outside quotes. Quotes/escapes are removed from the returned tokens. The .multi
+// argument parsers use this so `--desc "two words"`, a path with a space, and an
+// `advance --to <position>` that contains a space all survive (ISSUE-08);
+// strings.Fields silently truncated them at the first space.
+func splitArgsQuoted(s string) []string {
+	var toks []string
+	var cur []byte
+	started := false // a token has begun (so `""` still emits an empty token)
+	flush := func() {
+		if started {
+			toks = append(toks, string(cur))
+			cur = cur[:0]
+			started = false
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		switch ch := s[i]; ch {
+		case ' ', '\t', '\n', '\r':
+			flush()
+		case '\'': // single quotes: fully literal
+			started = true
+			for i++; i < len(s) && s[i] != '\''; i++ {
+				cur = append(cur, s[i])
+			}
+		case '"': // double quotes: \" and \\ escape
+			started = true
+			for i++; i < len(s) && s[i] != '"'; i++ {
+				if s[i] == '\\' && i+1 < len(s) && (s[i+1] == '"' || s[i+1] == '\\') {
+					i++
+				}
+				cur = append(cur, s[i])
+			}
+		case '\\': // backslash escapes the next char outside quotes
+			started = true
+			if i+1 < len(s) {
+				i++
+				cur = append(cur, s[i])
+			}
+		default:
+			started = true
+			cur = append(cur, ch)
+		}
+	}
+	flush()
+	return toks
+}
+
 // tidyMsg collapses runs of two-or-more spaces to a single space, cleaning up
 // fork error strings before display -- e.g. couchbase/query renders a file
 // datastore error as "Error in file datastore  - cause: ..." with a doubled space

@@ -97,7 +97,7 @@ func TestNormalizeArgs(t *testing.T) {
 		{[]string{"-stats", "final", "dir"}, []string{"-stats=final", "dir"}},
 		{[]string{"-stats", "off"}, []string{"-stats=off"}},
 		{[]string{"--stats", "on"}, []string{"--stats=on"}},
-		{[]string{"-stats", "dir"}, []string{"-stats", "dir"}},       // bare toggle + positional
+		{[]string{"-stats", "dir"}, []string{"-stats", "dir"}},         // bare toggle + positional
 		{[]string{"-stats", "-c", "x"}, []string{"-stats", "-c", "x"}}, // bare toggle before another flag
 		// -prepare space form: a level token is consumed, a dir is not.
 		{[]string{"-prepare", "full", "dir"}, []string{"-prepare=full", "dir"}},
@@ -170,5 +170,39 @@ func TestExampleForQuotes(t *testing.T) {
 	}
 	if got := exampleFor("events", 1); got != "SELECT * FROM events LIMIT 3;" {
 		t.Errorf("exampleFor(events,1) = %q", got)
+	}
+}
+
+// TestSplitArgsQuoted covers ISSUE-08: quote-aware .multi argument tokenization so a
+// token can hold spaces (--desc "two words", a path with a space, a large --to).
+func TestSplitArgsQuoted(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{`a b c`, []string{"a", "b", "c"}},
+		{`--desc "two words here"`, []string{"--desc", "two words here"}},
+		{`--desc 'two words here'`, []string{"--desc", "two words here"}},
+		{`--pack /has\ space/dir`, []string{"--pack", "/has space/dir"}},
+		{`--cursor-store "/My Project/cs" --desc x`, []string{"--cursor-store", "/My Project/cs", "--desc", "x"}},
+		// Unquoted JSON is MANGLED — its own `"` are treated as shell quotes and
+		// stripped — so a position token with a space MUST be single-quoted or passed
+		// via --to-file. That hazard is the reason --to-file exists (ISSUE-08 #2).
+		{`--to {"a b.jsonl":10}`, []string{"--to", `{a b.jsonl:10}`}},
+		{`--to '{"a b.jsonl":10}'`, []string{"--to", `{"a b.jsonl":10}`}}, // single-quoted: whole token, intact
+		{`   spaced   out   `, []string{"spaced", "out"}},
+		{`--x=""`, []string{`--x=`}}, // empty quoted value keeps the token
+	}
+	for _, c := range cases {
+		got := splitArgsQuoted(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("splitArgsQuoted(%q) = %q, want %q", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("splitArgsQuoted(%q)[%d] = %q, want %q (full %q)", c.in, i, got[i], c.want[i], got)
+			}
+		}
 	}
 }
