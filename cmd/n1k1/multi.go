@@ -80,6 +80,8 @@ func (c *cli) cmdMulti(arg string) {
 		c.cmdMultiCursor(rest)
 	case "compose":
 		c.cmdMultiCompose(rest)
+	case "census":
+		c.cmdMultiCensus(rest)
 	case "", "help":
 		c.cmdMultiHelp()
 	default:

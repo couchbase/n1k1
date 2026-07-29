@@ -52,6 +52,7 @@ COMMANDS
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
   .multi cursor <verb> ...                         named "what's new since I last looked" cursors over a pack (.multi cursor help)
   .multi compose <dir> [--only a,b | --terminal] [--allow-rejected]   run a DAG of packs: each *.sql++ = a node; "-- needs: a" reads FROM pack_a (topo-ordered). --only/--terminal limit which nodes emit rows; a node that fails to parse is "rejected" and hard-fails unless --allow-rejected
+  .multi census <keyspace> [--bind <m>] [--type-field <f>] [--time-field <f>] [--depth 1|2] [--exclude a,b]   time-aware key-space census: per (type, path, val_type) -> docs, coverage, first/last-seen (schema drift)
   .multi help                                      this guide
 
 FLAGS
