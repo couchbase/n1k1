@@ -56,8 +56,9 @@ type CursorState struct {
 	Bind string `json:"bind,omitempty"`
 	// PackID is "<name>@<sha>" captured at create time (a drift check on peek).
 	PackID string `json:"pack_id,omitempty"`
-	// Mode is the delta strategy: "append" (offset high-water, Phase 1) or "diff"
-	// (snapshot-keyed-by-id, Phase 2 — for mutable / current-state-only sources).
+	// Mode is the delta strategy: "append" (offset high-water, Phase 1), "diff"
+	// (snapshot-keyed-by-id, Phase 2 — mutable / current-state sources), or "census"
+	// (incremental schema census, Phase 3 — a keyspace, not a pack).
 	Mode string `json:"mode"`
 
 	// --- append mode ---
@@ -72,6 +73,20 @@ type CursorState struct {
 	// SnapVersion is the committed snapshot generation, surfaced as the "snap:N"
 	// position token; it bumps on each advance that changed the snapshot.
 	SnapVersion int `json:"snap_version,omitempty"`
+
+	// --- census mode (Phase 3) ---
+	// Keyspace is the keyspace being censused; CensusTypeField/TimeField/Depth/Exclude
+	// are the census options. Census is the ACCUMULATED census (folded incrementally),
+	// stored HERE with Water so both commit in one atomic write (the two-store wall).
+	Keyspace        string           `json:"keyspace,omitempty"`
+	CensusTypeField string           `json:"census_type_field,omitempty"`
+	CensusTimeField string           `json:"census_time_field,omitempty"`
+	CensusDepth     int              `json:"census_depth,omitempty"`
+	CensusExclude   []string         `json:"census_exclude,omitempty"`
+	Census          []CensusRow      `json:"census,omitempty"`
+	CensusTotals    map[string]int64 `json:"census_totals,omitempty"`
+	CensusRecords   int64            `json:"census_records,omitempty"`
+	CensusVersion   int              `json:"census_version,omitempty"` // "census:N" token; bumps on drift
 
 	// Metadata (k8s labels-vs-annotations split): Labels are for selection/
 	// grouping; Annotations is free-form provenance the client attaches.

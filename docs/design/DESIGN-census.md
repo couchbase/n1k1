@@ -113,14 +113,22 @@ sub-selects. Suppression **must reuse `annotations`** (already shipped, already 
 noise everyone mutes — do **not** invent a parallel config surface. And a census-vs-detector delta
 needs *explaining*, not just reporting ("gate excluded 8", not "anomaly").
 
-**Phase 3 — Census cursors (incremental, via the monoid).** Snapshot the census per window into the
-cursor store; drift is then a `diff` over the *key space* rather than a recomputation. The cursor
-machinery already expresses this for rows — `SnapshotFromResults` + `ChangeEvent`
-(`insert`/`update`/`delete`) map onto `field_added` / `field_removed` / `type_changed` with no new
-concepts, and the monoid guarantees the fold-forward is exact. ⚠ **The two-store atomicity wall:**
-the census artifact and the cursor watermark must commit together, or a crash between them
-double-counts silently (the prototype hit exactly this). A native census owns both sides and writes
-them in one transaction — an argument for the operator that the prototype could not engineer around.
+**Phase 3 — Census cursors (incremental, via the monoid) — SHIPPED.** `.multi cursor create NAME
+--mode census --keyspace <ks>` seeds an accumulated census; `peek`/`advance` census only the records
+appended past the watermark and fold them in via the monoid (no re-read of history), emitting the
+schema drift. Because every column is mergeable, the fold is a plain re-aggregation
+(`glue.MergeCensus`), and the diff is the alarm for free (`glue.CensusDrift`): a window cell whose
+`(type,path,val_type)` is new is a **`field_added`** (a wholly new path) or **`type_changed`** (a new
+value-type on a known path) — the exact two signals the dogfooding split-census surfaced, with no
+alarm logic. `peek` recomputes without moving; `advance` commits. Position token `census:N`.
+
+> **The two-store atomicity wall is retired.** The accumulated census AND its watermark live in ONE
+> cursor-state file (`CursorState.Census` + `Water`), so `advance` commits both in a single atomic
+> write-temp-rename. The external prototype hit silent double-counting because its `census.jsonl` and
+> cursor position were two files that couldn't commit together; a native census owns both sides.
+> Core: `glue/census_cursor.go` (`MergeCensus`/`CensusDrift`) + `Session.Census(…Since…)`; CLI
+> `cmd/n1k1/multi_census_cursor.go`. *MVP scope:* append-corpus drift (`field_added`/`type_changed`);
+> `field_removed` (a stale path) is the last-seen check, deferred with the Phase-2 stale-check.
 
 **Phase 4 — Yield-drift alarm (ISSUE-07) — the cheap complement.** Persist the `.multi run`
 per-detector funnel (`scanned → woken → matched`) next to the cursor state and alarm when yield moves

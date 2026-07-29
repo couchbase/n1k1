@@ -38,6 +38,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,6 +65,13 @@ type cursorArgs struct {
 	only          []string // --only <node,...>, compose-only (emit rows for just these)
 	terminal      bool     // --terminal, compose-only (emit rows for leaf nodes only)
 	allowRejected bool     // --allow-rejected, compose-only (don't hard-fail on a rejected node)
+
+	// census-mode create (--mode census)
+	keyspace      string   // --keyspace <ks>
+	censusType    string   // --type-field <f>
+	censusTime    string   // --time-field <f>
+	censusDepth   int      // --depth 1|2
+	censusExclude []string // --exclude a,b
 }
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
@@ -182,6 +190,47 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.terminal = !hasEq || val == "true" || val == "1"
 		case "allow-rejected":
 			a.allowRejected = !hasEq || val == "true" || val == "1"
+		case "keyspace":
+			if !hasEq {
+				if err := need(&i, &val, "--keyspace"); err != nil {
+					return a, err
+				}
+			}
+			a.keyspace = val
+		case "type-field":
+			if !hasEq {
+				if err := need(&i, &val, "--type-field"); err != nil {
+					return a, err
+				}
+			}
+			a.censusType = val
+		case "time-field":
+			if !hasEq {
+				if err := need(&i, &val, "--time-field"); err != nil {
+					return a, err
+				}
+			}
+			a.censusTime = val
+		case "depth":
+			if !hasEq {
+				if err := need(&i, &val, "--depth"); err != nil {
+					return a, err
+				}
+			}
+			if n, e := strconv.Atoi(val); e == nil {
+				a.censusDepth = n
+			}
+		case "exclude":
+			if !hasEq {
+				if err := need(&i, &val, "--exclude"); err != nil {
+					return a, err
+				}
+			}
+			for _, e := range strings.Split(val, ",") {
+				if e = strings.TrimSpace(e); e != "" {
+					a.censusExclude = append(a.censusExclude, e)
+				}
+			}
 		default:
 			return a, fmt.Errorf("unknown flag %q", t)
 		}
@@ -359,6 +408,11 @@ func (c *cli) cursorCreate(arg string) {
 		c.cursorFail("", "bad-args", fmt.Errorf("cursor NAME is required"))
 		return
 	}
+	// A census cursor binds a KEYSPACE, not a pack — separate create path.
+	if strings.EqualFold(a.mode, "census") {
+		c.cursorCensusCreate(a)
+		return
+	}
 	if len(a.pack) == 0 {
 		c.cursorFail(a.name, "bad-args", fmt.Errorf("--pack <dir> is required for create"))
 		return
@@ -503,6 +557,12 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
+	// A census cursor has a keyspace, not a pack — its own peek/advance path.
+	if st.Mode == "census" {
+		c.cursorCensusPeekAdvance(a, st, store, advance)
+		return
+	}
+
 	dets, err := loadPackPaths(strings.Split(st.Pack, ","))
 	if err != nil {
 		c.cursorFail(a.name, "pack-load", err)
@@ -613,8 +673,11 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 // an agent passes back to `advance --to`: the `{container→offset}` water token for
 // append, "snap:N" for diff. (Display uses committedField instead.)
 func (c *cli) positionToken(st *glue.CursorState) string {
-	if st.Mode == "diff" {
+	switch st.Mode {
+	case "diff":
 		return fmt.Sprintf("snap:%d", st.SnapVersion)
+	case "census":
+		return fmt.Sprintf("census:%d", st.CensusVersion)
 	}
 	return encodeWater(st.Water)
 }
@@ -627,6 +690,9 @@ func (c *cli) positionToken(st *glue.CursorState) string {
 func committedField(st *glue.CursorState, verbose bool) interface{} {
 	if st.Mode == "diff" {
 		return fmt.Sprintf("snap:%d", st.SnapVersion)
+	}
+	if st.Mode == "census" {
+		return fmt.Sprintf("census:%d", st.CensusVersion)
 	}
 	if verbose || len(st.Water) <= 1 {
 		return st.Water
@@ -813,8 +879,11 @@ func (c *cli) cursorShow(arg string) {
 	}
 	c.printJSON(struct {
 		Cursor        string            `json:"cursor"`
-		Pack          string            `json:"pack"`
-		PackDir       string            `json:"pack_dir"`
+		Pack          string            `json:"pack,omitempty"`
+		PackDir       string            `json:"pack_dir,omitempty"`
+		Keyspace      string            `json:"keyspace,omitempty"`     // census mode
+		CensusCells   int               `json:"census_cells,omitempty"` // census mode
+		CensusRecords int64             `json:"census_records,omitempty"`
 		Bind          string            `json:"bind,omitempty"`
 		Mode          string            `json:"mode"`
 		IdField       string            `json:"id_field,omitempty"`
@@ -827,7 +896,9 @@ func (c *cli) cursorShow(arg string) {
 		LastCount     int               `json:"last_count"`
 		TotalAdvances int               `json:"total_advances"`
 	}{
-		Cursor: st.Name, Pack: st.PackID, PackDir: st.Pack, Bind: st.Bind,
+		Cursor: st.Name, Pack: st.PackID, PackDir: st.Pack,
+		Keyspace: st.Keyspace, CensusCells: len(st.Census), CensusRecords: st.CensusRecords,
+		Bind: st.Bind,
 		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions), Description: st.Description,
 		Labels: st.Labels, Annotations: st.Annotations, Created: st.Created, Updated: st.Updated,
 		LastCount: st.LastCount, TotalAdvances: st.TotalAdvances,
@@ -1305,9 +1376,14 @@ const cursorHelpText = `.multi cursor <verb> — CEP named cursors (a durable "w
 
   create NAME --pack <dir> [--bind <m>] [--from now|start] [--mode append|diff]
               [--id-field <name>] [--desc <t>]
-                       bind + validate a pack; set the start position. No rows.
+  create NAME --mode census --keyspace <ks> [--bind <m>] [--type-field <f>]
+              [--time-field <f>] [--depth 1|2] [--exclude a,b] [--from now|start]
+                       bind + validate; set the start position. No rows.
                        --mode diff tracks a snapshot keyed by --id-field (default id)
                        and emits {op:insert|update|delete, id, before, after}.
+                       --mode census accumulates a schema census of <keyspace>;
+                       peek/advance fold new records + emit drift (field_added /
+                       type_changed). The census + watermark commit atomically.
   peek   NAME          the pending delta; does NOT move the cursor (re-peek is safe).
   advance NAME [--to <pos> | --to-file <path>] [--quiet]
                        commit (get + move). Echoes the delta unless --quiet.
