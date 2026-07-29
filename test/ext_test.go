@@ -416,9 +416,10 @@ func TestExtShippedJSExamples(t *testing.T) {
 		t.Fatalf("RegisterExtensionDir(shipped): %v", err)
 	}
 	// Scalar UDF demos (*.js), the builtin_decimal / builtin_ejson multi-export MODULES
-	// (a whole family per file), the geomean aggregate (*.agg.js), and the series
-	// streaming source (*.stream.js), sorted by filename stem.
-	want := []string{"add_two_numbers", "builtin_decimal", "builtin_ejson", "celsius_to_fahrenheit", "geomean", "series", "slugify"}
+	// (a whole family per file), the geomean + hll aggregates (*.agg.js; hll is the
+	// mergeable HyperLogLog sketch), and the series streaming source (*.stream.js),
+	// sorted by filename stem.
+	want := []string{"add_two_numbers", "builtin_decimal", "builtin_ejson", "celsius_to_fahrenheit", "geomean", "hll", "series", "slugify"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("shipped extension names = %v, want %v", names, want)
 	}
@@ -435,6 +436,10 @@ func TestExtShippedJSExamples(t *testing.T) {
 		{`SELECT RAW EJSON_DECODE(DECIMAL_ADD("0.1", "0.2"))`, `0.3`},
 		{`SELECT RAW ROUND(geomean(v), 4) FROM [1,2,4,8] AS v`, `2.8284`}, // 64^(1/4)
 		{`SELECT RAW SUM(x.n) FROM series(1, 5) AS x`, `15`},              // streaming source
+		// hll (mergeable HyperLogLog): exact via linear counting for tiny distinct sets
+		// (the FNV hash is deterministic, so these are stable across runs/builds).
+		{`SELECT RAW hll(v) FROM [1,1,1,1,1] AS v`, `1`},
+		{`SELECT RAW hll(v) FROM [1,2,3,1,2,3] AS v`, `3`},
 	}
 	for _, c := range cases {
 		got := extRawRows(t, sess, c.stmt)
