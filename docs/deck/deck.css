@@ -1,0 +1,311 @@
+/* ==========================================================================
+   n1k1 — technical deck stylesheet (impress.js)
+
+   Design intent: a dark, terminal-flavored look that suits a CLI query
+   engine. One accent color for emphasis, one for code. Everything is
+   plain CSS — edit freely.
+
+   Contents:
+     1. Design tokens (colors, fonts)
+     2. Page / fallback (browser without impress.js support)
+     3. Step (slide) base styles, per-kind sizing: hub / detail / leaf
+     4. Typography inside slides
+     5. Components: code blocks, tables, stat rows, kickers, pills
+     6. Hint footer
+   ========================================================================== */
+
+/* 1. Design tokens ------------------------------------------------------- */
+
+:root {
+  --bg:          #0e1116;   /* page background                     */
+  --panel:       #161b22;   /* slide card background               */
+  --panel-edge:  #2b3340;   /* slide card border                   */
+  --ink:         #e6e9ee;   /* main text                           */
+  --ink-dim:     #9aa4b2;   /* secondary text                      */
+  --accent:      #ff6a55;   /* headings / emphasis (coral red)     */
+  --accent-2:    #6fd3c7;   /* code / highlights (teal)            */
+  --accent-3:    #e8c268;   /* numbers worth quoting (amber)       */
+  --code-bg:     #0b0e13;   /* code block background               */
+
+  --font-sans: "Avenir Next", "Segoe UI", -apple-system, "Helvetica Neue",
+               Arial, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+/* 2. Page & fallback ----------------------------------------------------- */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--bg);
+  /* subtle radial glow so the zoomed-out overview isn't a flat void */
+  background-image: radial-gradient(ellipse at 50% 40%,
+                      #182030 0%, var(--bg) 65%);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 18px;
+  line-height: 1.45;
+}
+
+/* Browser without CSS 3D support: show the steps as a plain vertical doc. */
+.impress-not-supported .step {
+  position: relative;
+  opacity: 1;
+  margin: 30px auto;
+}
+.impress-not-supported .fallback-message {
+  display: block;
+  max-width: 780px;
+  margin: 30px auto;
+  padding: 16px 24px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.impress-supported .fallback-message { display: none; }
+
+/* 3. Steps ---------------------------------------------------------------
+   Slide kinds, sized by class:
+     .hub    — a giant borderless section PANEL (data-scale="5"): a big
+               heading + a watermark numeral, with deliberate empty space
+               below where its child slides physically sit. Children
+               overlap the panel, so at any child the panel's tint and
+               numeral surround the card — that's the grounding.
+     (plain) — a content slide (data-scale="1"), a floating borderless card
+     .leaf   — fine print (data-scale ~0.4), smaller still
+   Per-section tint: each hub sets --hue inline in the HTML.
+   The pixel width here is the *design* width; impress.js scales the whole
+   slide, so text set at these sizes stays proportionate.
+   ------------------------------------------------------------------------ */
+
+.step {
+  position: relative;
+  box-sizing: border-box;
+  width: 1100px;
+  padding: 44px 52px;
+  border-radius: 18px;
+  background: rgba(17, 22, 29, 0.94);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+  transition: opacity 0.6s;
+  opacity: 0.55;               /* dimmed when not the active step */
+}
+.step.active { opacity: 1; }
+
+/* When the active step is an invisible camera position (the map, the
+   overview, or an up-<section> waypoint), there is no card to spotlight —
+   brighten the whole world instead of leaving everything dimmed.
+   (impress.js stamps  impress-on-<step-id>  onto <body>.) */
+.impress-on-map .step,      .impress-on-overview .step,
+.impress-on-up-why .step,   .impress-on-up-sqlpp .step,
+.impress-on-up-data .step,  .impress-on-up-engine .step,
+.impress-on-up-compiler .step, .impress-on-up-multi .step,
+.impress-on-up-extend .step,   .impress-on-up-rigor .step {
+  opacity: 0.95;
+}
+
+/* Hubs: the section panels. Fixed height on purpose — the empty lower
+   region is the parking lot for the section's child slides. */
+.step.hub {
+  width: 1100px;
+  height: 780px;
+  padding: 38px 48px;
+  overflow: hidden;            /* clips the watermark numeral to the panel */
+  text-align: center;
+  border-radius: 36px;
+  background: hsl(var(--hue, 215) 26% 14% / 0.55);
+  box-shadow: none;
+}
+.step.hub h1 { font-size: 54px; margin: 4px 0 8px; }
+.step.hub .dim { font-size: 20px; }
+
+/* Watermark numeral filling the panel behind the child slides. */
+.hub .bignum {
+  position: absolute;
+  left: 50%;
+  top: 150px;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 520px;
+  font-weight: 800;
+  line-height: 0.9;
+  color: #ffffff;
+  opacity: 0.05;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Title & closing: bare text floating on the page — no card at all. */
+.step.title {
+  width: 1000px;
+  text-align: center;
+  background: none;
+  box-shadow: none;
+}
+
+/* Camera pseudo-slides: invisible steps used purely as camera positions —
+   the whole-poster #map/#overview shots, and the per-section "pull back
+   up the hierarchy" waypoints between sections. */
+.step.camera {
+  width: 1px;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+/* 4. Typography ----------------------------------------------------------- */
+
+.step h1 {
+  margin: 0 0 12px;
+  font-size: 64px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.step h2 {                      /* slide title */
+  margin: 0 0 20px;
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+.step h2 code, .step h1 code { color: var(--accent-2); }
+
+.step p  { margin: 10px 0; }
+.step ul { margin: 10px 0; padding-left: 26px; }
+.step li { margin: 7px 0; }
+.step li::marker { color: var(--accent); }
+
+.step strong { color: #fff; }
+.step em     { color: var(--ink-dim); font-style: italic; }
+.step a      { color: var(--accent-2); }
+
+.dim   { color: var(--ink-dim); }
+.num   { color: var(--accent-3); font-weight: 700; }  /* quotable numbers */
+
+/* 5. Components ----------------------------------------------------------- */
+
+/* Kicker: small overline above a slide title ("THE COMPILER · 2 of 3"). */
+.kicker {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* Code, inline and block. */
+code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--accent-2);
+}
+pre {
+  margin: 14px 0;
+  padding: 16px 20px;
+  overflow-x: auto;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  background: var(--code-bg);
+  font-size: 16px;
+  line-height: 1.5;
+}
+pre code { color: #d5dae2; }
+pre .c   { color: #626f80; }              /* comment  */
+
+/* ASCII-art diagrams: a quiet phosphor-green terminal treatment. */
+pre.diagram        { background: #0a100c; border-color: #1f3327; }
+pre.diagram code   { color: #a9d8ab; }
+pre.diagram .c     { color: #5d7a63; }
+
+pre .k   { color: var(--accent); }        /* keyword  */
+pre .s   { color: var(--accent-2); }      /* string / value */
+pre .n   { color: var(--accent-3); }      /* number   */
+
+/* Stat row: a strip of big quotable numbers. */
+.stats {
+  display: flex;
+  gap: 18px;
+  margin: 18px 0;
+}
+.stat {
+  flex: 1;
+  padding: 14px 18px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 10px;
+  background: var(--code-bg);
+  text-align: center;
+}
+.stat .v {
+  display: block;
+  font-size: 34px;
+  font-weight: 700;
+  color: var(--accent-3);
+  font-variant-numeric: tabular-nums;
+}
+.stat .l {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  color: var(--ink-dim);
+}
+
+/* Two-column layout inside a slide. */
+.cols        { display: flex; gap: 32px; }
+.cols > div  { flex: 1; min-width: 0; }
+
+/* Pills: compact inline tag list (formats, features). */
+.pills      { margin: 12px 0; line-height: 2.2; }
+.pills span {
+  margin-right: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  background: var(--code-bg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* Simple tables. */
+table       { border-collapse: collapse; margin: 14px 0; width: 100%; }
+th, td      { padding: 8px 14px; text-align: left; border-bottom: 1px solid var(--panel-edge); }
+th          { color: var(--ink-dim); font-weight: 600; font-size: 15px;
+              text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* 6. Hint footer & help popup ---------------------------------------------- */
+
+#impress-help {              /* filled + toggled by impress.js's help plugin (key: H) */
+  position: fixed;
+  right: 20px;
+  bottom: 40px;
+  z-index: 200;
+  padding: 14px 20px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 10px;
+  background: rgba(11, 14, 19, 0.95);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--ink);
+}
+#impress-help td { padding: 2px 10px; border: 0; }
+
+
+.hint {
+  position: fixed;
+  left: 0; right: 0; bottom: 14px;
+  z-index: 100;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-dim);
+  opacity: 0;
+  transition: opacity 1s;
+  pointer-events: none;
+}
+.impress-enabled .hint { opacity: 1; }
