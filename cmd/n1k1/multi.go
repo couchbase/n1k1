@@ -82,6 +82,8 @@ func (c *cli) cmdMulti(arg string) {
 		c.cmdMultiCompose(rest)
 	case "census":
 		c.cmdMultiCensus(rest)
+	case "doctor":
+		c.cmdMultiDoctor(rest)
 	case "", "help":
 		c.cmdMultiHelp()
 	default:

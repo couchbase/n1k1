@@ -53,6 +53,7 @@ COMMANDS
   .multi cursor <verb> ...                         named "what's new since I last looked" cursors over a pack (.multi cursor help)
   .multi compose <dir> [--only a,b | --terminal] [--allow-rejected]   run a DAG of packs: each *.sql++ = a node; "-- needs: a" reads FROM pack_a (topo-ordered). --only/--terminal limit which nodes emit rows; a node that fails to parse is "rejected" and hard-fails unless --allow-rejected
   .multi census <keyspace> [--bind <m>] [--type-field <f>] [--time-field <f>] [--depth 1|2] [--exclude a,b]   time-aware key-space census: per (type, path, val_type) -> docs, coverage, first/last-seen (schema drift)
+  .multi doctor --queries <dir> [--bind <m>]   join the pack against a census: flag a detector reading a field the corpus lacks (birth-in-error) + corpus fields no detector reads
   .multi help                                      this guide
 
 FLAGS

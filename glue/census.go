@@ -155,11 +155,11 @@ func (s *Session) Census(keyspace string, opts CensusOptions) (*CensusResult, er
 			}
 		}
 		for k, v := range doc {
-			emit(k, jsonTypeName(v))
+			emit(k, censusTypeName(v))
 			if opts.Depth >= 2 && !exclude[k] {
 				if child, isObj := v.(map[string]interface{}); isObj {
 					for ck, cv := range child {
-						emit(k+"."+ck, jsonTypeName(cv))
+						emit(k+"."+ck, censusTypeName(cv))
 					}
 				}
 			}
@@ -185,6 +185,15 @@ func (s *Session) Census(keyspace string, opts CensusOptions) (*CensusResult, er
 		return rows[i].ValType < rows[j].ValType
 	})
 	return &CensusResult{Rows: rows, TypeTotals: typeTotals, Records: total}, nil
+}
+
+// censusTypeName is jsonTypeName spelled to match SQL++ TYPE_NAME (so a census
+// diffs cleanly against a TYPE_NAME-based one): boolean, not bool.
+func censusTypeName(v interface{}) string {
+	if t := jsonTypeName(v); t != "bool" {
+		return t
+	}
+	return "boolean"
 }
 
 func stringField(doc map[string]interface{}, field string) string {

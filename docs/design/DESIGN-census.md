@@ -82,14 +82,26 @@ Design decisions, verified against the prototype:
 
 **Phase 1 — `.multi census` (SHIPPED).** The operator above.
 
-**Phase 2 — `.multi doctor` — the join (the differentiator).** Extend the `.multi lint` / run report
-card. Cheapest checks first:
+**Phase 2 — `.multi doctor` — the join (the differentiator).** Cheapest checks first:
 
-| check | needs history? | catches |
-|---|---|---|
-| pack references a path **absent from the census** | no | typos, renames — instant win, no baseline |
-| a referenced path's `last_seen` is stale while the corpus grew | census only | a detector went blind (a retired field) |
-| a detector's match rate fell off a cliff | cursor history | behavior *or* instrumentation change (see Phase 4) |
+| check | needs history? | catches | status |
+|---|---|---|---|
+| pack references a path **absent from the census** | no | typos, renames, birth-in-error — instant win | **SHIPPED** |
+| census paths **no detector references** | no | unexplored surface — a detector-generation queue | **SHIPPED** |
+| a referenced path's `last_seen` is stale while the corpus grew | census only | a detector went blind (a retired field) | roadmap |
+| a detector's match rate fell off a cliff | cursor history | behavior *or* instrumentation change (see Phase 4) | roadmap |
+
+> **SHIPPED — `.multi doctor --queries <dir> [--bind <m>]`** (`glue/doctor.go`,
+> `cmd/n1k1/multi_doctor.go`). The referenced-field set is **planner-sourced** — `EntryReferencedFields`
+> parses each entry and walks it with `ExprFieldPath` (the same static-path extractor `conv` uses),
+> yielding doc-relative paths rooted at the FROM alias, so `META()`/function args are excluded and
+> there's no text-heuristic suffix-match bug (the failure the dogfooding team hit from the wrong side).
+> The first two checks are live: `references_absent` (a detector reads a top-level field the corpus
+> lacks → **hard-fails**, the birth-in-error catch a yield alarm structurally can't make) and
+> `unreferenced` (corpus fields no detector reads). The first check is TOP-LEVEL granularity for
+> precision (no false positives against a depth-limited census). *Roadmap:* stale-`last_seen` and
+> match-rate checks (need the census's time axis / cursor history); per-record-type scoping;
+> `annotations`-based suppression (already the shipped substrate) so a blessed-rare field is quiet.
 | **census paths no detector references** | no | unexplored surface — a **detector-generation queue** |
 
 The last row inverts the feature from defensive to offensive: "here are the actively-written fields
