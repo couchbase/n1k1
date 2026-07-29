@@ -173,3 +173,77 @@ func TestMultiComposeSelection(t *testing.T) {
 		t.Fatalf("--queries: want rejection, failed=%v stderr=%q", c.failed, errb.String())
 	}
 }
+
+// TestMultiComposeRejectedNode covers ISSUE-09: a node whose SQL fails to parse must
+// surface as status:"rejected" with a reason (not a silent count:0) and hard-fail by
+// default; --allow-rejected downgrades to a soft continue.
+func TestMultiComposeRejectedNode(t *testing.T) {
+	root := t.TempDir()
+	logs := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logs, "l.jsonl"), []byte(`{"host":"h1","sev":"ERROR"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dag := t.TempDir()
+	w := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dag, name+".sql++"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w("errs", "-- label: errs\n"+`SELECT l.host FROM logs l WHERE l.sev = "ERROR"`)
+	// `value` is a reserved word => this node fails to parse.
+	w("roll", "-- label: roll\n-- needs: errs\n"+"SELECT p.result.host AS value FROM `pack_errs` p")
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	nodeStatus := func() (map[string]string, string) {
+		var env struct {
+			Nodes []struct {
+				Node   string `json:"node"`
+				Status string `json:"status"`
+				Reason string `json:"reason"`
+			} `json:"nodes"`
+		}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env)
+		m := map[string]string{}
+		reason := ""
+		for _, n := range env.Nodes {
+			m[n.Node] = n.Status
+			if n.Node == "roll" {
+				reason = n.Reason
+			}
+		}
+		return m, reason
+	}
+
+	// Default: the rejected node is surfaced AND hard-fails.
+	out.Reset()
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("compose " + dag)
+	st, reason := nodeStatus()
+	if st["roll"] != "rejected" {
+		t.Fatalf("want roll status=rejected, got %v", st)
+	}
+	if !strings.Contains(reason, "reserved word") && !strings.Contains(reason, "value") {
+		t.Fatalf("want a reason naming the reserved word, got %q", reason)
+	}
+	if !c.failed {
+		t.Fatalf("a rejected node must hard-fail by default")
+	}
+
+	// --allow-rejected: still surfaced, but soft (no failure).
+	out.Reset()
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("compose " + dag + " --allow-rejected")
+	st, _ = nodeStatus()
+	if st["roll"] != "rejected" {
+		t.Fatalf("--allow-rejected: still want status=rejected, got %v", st)
+	}
+	if c.failed {
+		t.Fatalf("--allow-rejected must not hard-fail")
+	}
+}

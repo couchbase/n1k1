@@ -44,11 +44,15 @@ type ComposeNode struct {
 	Entries []MultiQueryEntry
 }
 
-// ComposeNodeResult is one node's output after the DAG runs.
+// ComposeNodeResult is one node's output after the DAG runs. Rejected is set when
+// the node's pack failed to parse/plan/convert (so Count is a "never ran" zero, not
+// a "ran, matched nothing" zero) — Reason carries the parser message.
 type ComposeNodeResult struct {
 	Node         string
 	Count        int
 	LabelResults []LabelResult
+	Rejected     bool
+	Reason       string
 }
 
 // ComposeResult is the whole DAG run: the topological order and each node's rows.
@@ -133,6 +137,18 @@ func (s *Session) Compose(nodes []ComposeNode) (*ComposeResult, error) {
 		cc, cerr := s.MultiQueryCompile(nd.Entries)
 		if cerr != nil {
 			return nil, fmt.Errorf("compose %q: compile: %v", name, cerr)
+		}
+		// A node's single-entry pack that fails to parse/plan/convert lands in
+		// cc.Rejected and would otherwise run to a silent zero (ISSUE-09). Surface it
+		// as a rejected node with its reason rather than an indistinguishable count:0.
+		if len(cc.Rejected) > 0 {
+			res.Nodes = append(res.Nodes, ComposeNodeResult{
+				Node: name, Count: 0, Rejected: true, Reason: cc.Rejected[0].Reason})
+			// Materialize an empty keyspace so a downstream FROM resolves (to nothing).
+			if merr := s.materializeLabelResults(ComposeKeyspace(name), nil); merr != nil {
+				return nil, fmt.Errorf("compose %q: materialize: %v", name, merr)
+			}
+			continue
 		}
 		lrs, _, rerr := cc.RunReport()
 		if rerr != nil {

@@ -51,7 +51,7 @@ COMMANDS
   .multi explain --queries <dir> [--bind <manifest>] [--sql]  show the fused shared-scan plan + fusion map; --sql = pretty SQL++ w/ provenance + hints (does NOT run)
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
   .multi cursor <verb> ...                         named "what's new since I last looked" cursors over a pack (.multi cursor help)
-  .multi compose <dir> [--only a,b | --terminal]   run a DAG of packs: each *.sql++ = a node; "-- needs: a" reads FROM pack_a (topo-ordered). --only/--terminal limit which nodes emit rows
+  .multi compose <dir> [--only a,b | --terminal] [--allow-rejected]   run a DAG of packs: each *.sql++ = a node; "-- needs: a" reads FROM pack_a (topo-ordered). --only/--terminal limit which nodes emit rows; a node that fails to parse is "rejected" and hard-fails unless --allow-rejected
   .multi help                                      this guide
 
 FLAGS

@@ -124,15 +124,22 @@ func (c *cli) cmdMultiCompose(arg string) {
 	type nodeOut struct {
 		Node         string   `json:"node"`
 		Count        int      `json:"count"`
+		Status       string   `json:"status,omitempty"` // "rejected" for a node that failed to parse
+		Reason       string   `json:"reason,omitempty"`
 		LabelResults []rowOut `json:"labelResults,omitempty"`
 	}
 	out := struct {
 		Order []string  `json:"order"`
 		Nodes []nodeOut `json:"nodes"`
 	}{Order: res.Order}
+	var rejected []string
 	for _, n := range res.Nodes {
 		no := nodeOut{Node: n.Node, Count: n.Count}
-		if emit[n.Node] {
+		if n.Rejected {
+			no.Status = "rejected"
+			no.Reason = n.Reason
+			rejected = append(rejected, n.Node)
+		} else if emit[n.Node] {
 			for _, lr := range n.LabelResults {
 				no.LabelResults = append(no.LabelResults, rowOut{Label: lr.Label, Result: lr.Result})
 			}
@@ -141,6 +148,21 @@ func (c *cli) cmdMultiCompose(arg string) {
 	}
 	c.printJSON(out)
 	fmt.Fprintf(c.stderr, "%s%d node(s), order: %s\n", c.icon("🧩 "), len(res.Nodes), strings.Join(res.Order, " -> "))
+
+	// A rejected node (invalid SQL) is never a clean zero -- surface each reason and,
+	// for a committed/scheduled DAG, hard-fail by default so it can't feed a silent
+	// count:0 into a downstream number (ISSUE-09). --allow-rejected opts into soft mode.
+	for _, n := range res.Nodes {
+		if n.Rejected {
+			fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), n.Node, c.style.Yellow(n.Reason))
+		}
+	}
+	if len(rejected) > 0 && !a.allowRejected {
+		fmt.Fprintf(c.stderr, "%s: .multi compose: aborting -- %d rejected node(s): %s "+
+			"(a rejected node poisons everything downstream; --allow-rejected to continue)\n",
+			c.prog, len(rejected), strings.Join(rejected, ", "))
+		c.failed = true
+	}
 }
 
 // selectComposeNodes decides which nodes emit their labelResults: --only <list>

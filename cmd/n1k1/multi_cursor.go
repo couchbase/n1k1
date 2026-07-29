@@ -48,21 +48,22 @@ import (
 // the per-verb flags. Unlike parseMultiArgs it does NOT require --queries (a
 // peek/advance is addressed by cursor name; --pack is create-only).
 type cursorArgs struct {
-	name      string   // the cursor NAME (first positional)
-	pack      []string // --pack <dir> (repeatable / comma-list), create-only
-	bind      string   // --bind <manifest>
-	to        string   // --to <pos>, advance-only (the opaque position token)
-	toFile    string   // --to-file <path>, advance-only (read --to from a file: large positions)
-	from      string   // --from now|start, create-only (default: now)
-	desc      string   // --desc <text>, create-only
-	store     string   // --cursor-store <dir> (override the default state dir)
-	mode      string   // --mode append|diff, create-only (default: append)
-	idField   string   // --id-field <name>, create-only diff (default: id)
-	quiet     bool     // --quiet, advance-only (ack only, no labelResults echo)
-	prune     bool     // --prune, apply-only (destroy managed cursors not declared)
-	positions bool     // --positions, show-only (full position map, not a summary)
-	only      []string // --only <node,...>, compose-only (emit rows for just these)
-	terminal  bool     // --terminal, compose-only (emit rows for leaf nodes only)
+	name          string   // the cursor NAME (first positional)
+	pack          []string // --pack <dir> (repeatable / comma-list), create-only
+	bind          string   // --bind <manifest>
+	to            string   // --to <pos>, advance-only (the opaque position token)
+	toFile        string   // --to-file <path>, advance-only (read --to from a file: large positions)
+	from          string   // --from now|start, create-only (default: now)
+	desc          string   // --desc <text>, create-only
+	store         string   // --cursor-store <dir> (override the default state dir)
+	mode          string   // --mode append|diff, create-only (default: append)
+	idField       string   // --id-field <name>, create-only diff (default: id)
+	quiet         bool     // --quiet, advance-only (ack only, no labelResults echo)
+	prune         bool     // --prune, apply-only (destroy managed cursors not declared)
+	positions     bool     // --positions, show-only (full position map, not a summary)
+	only          []string // --only <node,...>, compose-only (emit rows for just these)
+	terminal      bool     // --terminal, compose-only (emit rows for leaf nodes only)
+	allowRejected bool     // --allow-rejected, compose-only (don't hard-fail on a rejected node)
 }
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
@@ -179,6 +180,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			}
 		case "terminal":
 			a.terminal = !hasEq || val == "true" || val == "1"
+		case "allow-rejected":
+			a.allowRejected = !hasEq || val == "true" || val == "1"
 		default:
 			return a, fmt.Errorf("unknown flag %q", t)
 		}
