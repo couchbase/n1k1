@@ -634,7 +634,11 @@ func reportSuite(t *testing.T, nFiles, pass, errPass, skipped int, nonPass []cas
 	}
 	sort.Strings(stale)
 
-	total := pass + errPass + fail + unsupported + panicked
+	// Every case lands in exactly one bucket -- pass, errPass, a nonPass
+	// (fail/unsupported/panic), or skipped -- so "# cases" is their sum: the full
+	// corpus. skipped MUST be included or the reported sub-buckets (which show it)
+	// wouldn't add up to # cases.
+	total := pass + errPass + fail + unsupported + panicked + skipped
 
 	// valW is the width of the widest count, so the value column right-aligns
 	// (tabwriter left-aligns each cell, so we right-justify the digits ourselves
