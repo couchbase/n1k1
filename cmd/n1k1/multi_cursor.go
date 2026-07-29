@@ -34,7 +34,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,6 +57,7 @@ type cursorArgs struct {
 	mode    string   // --mode append|diff, create-only (default: append)
 	idField string   // --id-field <name>, create-only diff (default: id)
 	quiet   bool     // --quiet, advance-only (ack only, no labelResults echo)
+	prune   bool     // --prune, apply-only (destroy managed cursors not declared)
 }
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
@@ -147,6 +150,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.idField = val
 		case "quiet":
 			a.quiet = !hasEq || val == "true" || val == "1"
+		case "prune":
+			a.prune = !hasEq || val == "true" || val == "1"
 		default:
 			return a, fmt.Errorf("unknown flag %q", t)
 		}
@@ -170,6 +175,10 @@ func (c *cli) cmdMultiCursor(arg string) {
 		c.cursorShow(rest)
 	case "rm", "remove", "delete":
 		c.cursorRemove(rest)
+	case "plan":
+		c.cursorReconcile(rest, false)
+	case "apply":
+		c.cursorReconcile(rest, true)
 	case "", "help":
 		c.cursorHelp()
 	default:
@@ -230,6 +239,26 @@ func (c *cli) cursorStore(override string) (*glue.CursorStore, error) {
 		dir = filepath.Join(c.dir, ".n1k1-state", "cursors")
 	}
 	return glue.NewCursorStore(dir), nil
+}
+
+// loadPackPaths loads a cursor's pack from a comma-list of paths, each a *.sql++
+// FILE (the GitOps one-file-one-cursor case) or a DIR of them (imperative --pack).
+func loadPackPaths(paths []string) ([]glue.MultiQueryEntry, error) {
+	var all []glue.MultiQueryEntry
+	for _, p := range paths {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		es, err := glue.LoadPack(p)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, es...)
+	}
+	if len(all) == 0 {
+		return nil, fmt.Errorf("empty pack")
+	}
+	return all, nil
 }
 
 func fingerprint(label string, result json.RawMessage) string {
@@ -313,7 +342,7 @@ func (c *cli) cursorCreate(arg string) {
 		return
 	}
 
-	dets, err := loadMultiQueryEntries(a.pack)
+	dets, err := loadPackPaths(a.pack)
 	if err != nil {
 		c.cursorFail(a.name, "pack-load", err)
 		return
@@ -387,6 +416,11 @@ func (c *cli) cursorCreate(arg string) {
 		fromTok = "snap:0"
 	}
 
+	// Imperative create is unmanaged (never pruned by `apply`), but carries a
+	// SpecHash so a later `apply` declaring the same name can adopt it.
+	st.SpecHash = glue.SpecHash(st.PackID, st.Mode, st.Bind, st.IdField, st.Description, st.Labels)
+	st.Managed = false
+
 	if err := store.Save(st); err != nil {
 		c.cursorFail(a.name, "state-write", err)
 		return
@@ -438,7 +472,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
-	dets, err := loadMultiQueryEntries(strings.Split(st.Pack, ","))
+	dets, err := loadPackPaths(strings.Split(st.Pack, ","))
 	if err != nil {
 		c.cursorFail(a.name, "pack-load", err)
 		return
@@ -758,6 +792,293 @@ func (c *cli) cursorRemove(arg string) {
 	}{Removed: a.name, OK: true})
 }
 
+// ------------------------------------------------------------- GitOps reconcile
+
+// desiredCursor is one cursor declared by a *.sql++ file in a desired-state dir:
+// name = the file stem, pack = the file itself, policy read from its front-matter.
+type desiredCursor struct {
+	name     string
+	file     string
+	mode     string
+	bind     string
+	idField  string
+	from     string
+	desc     string
+	labels   map[string]string
+	packID   string
+	specHash string
+	entries  []glue.MultiQueryEntry
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func parseLabels(s string) map[string]string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	m := map[string]string{}
+	if json.Unmarshal([]byte(s), &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// buildDesired reads a desired-state dir: one *.sql++ file => one cursor (name =
+// stem, pack = the file, policy from front-matter mode/bind/id-field/from/labels +
+// description). Returns the cursors keyed + ordered by name.
+func buildDesired(dir, globalBind string) (map[string]*desiredCursor, []string, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "*.sql++"))
+	if err != nil {
+		return nil, nil, err
+	}
+	sort.Strings(files)
+	if len(files) == 0 {
+		return nil, nil, fmt.Errorf("no *.sql++ files in %q", dir)
+	}
+	out := map[string]*desiredCursor{}
+	var names []string
+	for _, f := range files {
+		body, rerr := os.ReadFile(f)
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		e, perr := glue.ParseMultiQueryEntry(f, string(body))
+		if perr != nil {
+			return nil, nil, fmt.Errorf("%s: %v", f, perr)
+		}
+		name := e.Label
+		if _, dup := out[name]; dup {
+			return nil, nil, fmt.Errorf("duplicate cursor name %q (two files share the stem)", name)
+		}
+		d := &desiredCursor{name: name, file: f, entries: []glue.MultiQueryEntry{e}}
+		d.mode = strings.ToLower(firstNonEmpty(e.Meta["mode"], "append"))
+		d.bind = firstNonEmpty(e.Meta["bind"], globalBind)
+		d.idField = firstNonEmpty(e.Meta["id-field"], e.Meta["id_field"], "id")
+		d.from = firstNonEmpty(e.Meta["from"], "now")
+		d.desc = e.Description
+		d.labels = parseLabels(e.Meta["labels"])
+		d.packID = glue.PackID(name, d.entries)
+		d.specHash = glue.SpecHash(d.packID, d.mode, d.bind, d.idField, d.desc, d.labels)
+		out[name] = d
+		names = append(names, name)
+	}
+	return out, names, nil
+}
+
+// validateDesired compiles a desired cursor's pack (fold-in `.multi lint`) and
+// probes its binding — the plan-time / pre-apply check.
+func (c *cli) validateDesired(d *desiredCursor) error {
+	if d.mode != "append" && d.mode != "diff" {
+		return fmt.Errorf("--mode must be append or diff, got %q", d.mode)
+	}
+	sess, binding, err := c.multiSession(d.bind)
+	if err != nil {
+		return err
+	}
+	if gap := c.reportBindingCoverage(sess, binding); gap {
+		return fmt.Errorf("source unbound (fail-loud; see stderr)")
+	}
+	if _, err := sess.MultiQueryCompile(d.entries); err != nil {
+		return err
+	}
+	return nil
+}
+
+// provisionCursor creates a new managed cursor or updates an existing one in place
+// from a desired spec. The committed position is PRESERVED when the mode is
+// unchanged (the idempotency guarantee: re-apply never rewinds a cursor); a new
+// cursor or a mode change re-baselines per the file's `from` (default now).
+func (c *cli) provisionCursor(store *glue.CursorStore, d *desiredCursor, prior *glue.CursorState) error {
+	sess, binding, err := c.multiSession(d.bind)
+	if err != nil {
+		return err
+	}
+	if gap := c.reportBindingCoverage(sess, binding); gap {
+		return fmt.Errorf("source unbound (fail-loud; see stderr)")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	fromStart := strings.EqualFold(d.from, "start") || strings.EqualFold(d.from, "beginning")
+	preserve := prior != nil && prior.Mode == d.mode
+
+	st := &glue.CursorState{}
+	if prior != nil {
+		*st = *prior // keep bookkeeping (created, advances) + position when preserving
+	}
+	st.Name = d.name
+	st.Pack = d.file
+	st.Bind = d.bind
+	st.PackID = d.packID
+	st.Mode = d.mode
+	st.IdField = d.idField
+	st.Description = d.desc
+	st.Labels = d.labels
+	st.SpecHash = d.specHash
+	st.Managed = true
+	st.Updated = now
+	if st.Created == "" {
+		st.Created = now
+	}
+
+	if d.mode == "append" {
+		if !preserve {
+			res, rerr := sess.RunCursorPack(d.entries, nil)
+			if rerr != nil {
+				return rerr
+			}
+			st.Water = res.NewWater
+			if fromStart {
+				st.Water = map[string]int64{}
+			}
+			st.SnapVersion = 0
+		}
+	} else { // diff
+		if !preserve {
+			lrs, rerr := sess.RunPackFull(d.entries)
+			if rerr != nil {
+				return rerr
+			}
+			snap, _ := glue.SnapshotFromResults(lrs, d.idField)
+			if fromStart {
+				snap = map[string]glue.SnapshotEntry{}
+			}
+			if serr := store.SaveSnapshot(d.name, snap); serr != nil {
+				return serr
+			}
+			st.SnapVersion = 0
+			st.Water = nil
+		}
+	}
+	return store.Save(st)
+}
+
+// cursorReconcile implements `.multi cursor plan <dir>` (apply=false: diff only)
+// and `.multi cursor apply <dir> [--prune]` (apply=true: execute). Terraform-shaped:
+// each *.sql++ in <dir> is the desired state; unchanged cursors keep their position.
+func (c *cli) cursorReconcile(arg string, apply bool) {
+	a, err := parseCursorArgs(arg)
+	if err != nil {
+		c.cursorFail("", "bad-args", err)
+		return
+	}
+	dir := a.name // the positional is the desired-state dir here, not a cursor name
+	if dir == "" {
+		c.cursorFail("", "bad-args", fmt.Errorf("a desired-state <dir> is required"))
+		return
+	}
+	store, err := c.cursorStore(a.store)
+	if err != nil {
+		c.cursorFail("", "no-bundle", err)
+		return
+	}
+	desired, names, err := buildDesired(dir, a.bind)
+	if err != nil {
+		c.cursorFail("", "desired-load", err)
+		return
+	}
+
+	// Validate every declared cursor (fold in lint).
+	var probs []map[string]string
+	for _, n := range names {
+		if verr := c.validateDesired(desired[n]); verr != nil {
+			probs = append(probs, map[string]string{"cursor": n, "error": verr.Error()})
+		}
+	}
+
+	live := map[string]*glue.CursorState{}
+	liveNames, lerr := store.List()
+	if lerr != nil {
+		c.cursorFail("", "state-read", lerr)
+		return
+	}
+	for _, n := range liveNames {
+		if st, e := store.Load(n); e == nil {
+			live[n] = st
+		}
+	}
+	desiredHashes := map[string]string{}
+	for n, d := range desired {
+		desiredHashes[n] = d.specHash
+	}
+
+	if !apply {
+		plan := glue.PlanReconcile(desiredHashes, live, true) // show prunable destroys
+		c.printJSON(struct {
+			Plan     glue.ReconcilePlan  `json:"plan"`
+			Changes  int                 `json:"changes"`
+			Prunable int                 `json:"prunable"`
+			Errors   []map[string]string `json:"errors,omitempty"`
+		}{Plan: plan, Changes: len(plan.Create) + len(plan.Update), Prunable: len(plan.Destroy), Errors: probs})
+		if len(probs) > 0 {
+			c.failed = true
+		}
+		return
+	}
+
+	// apply: fail-loud on ANY invalid file — no partial apply.
+	if len(probs) > 0 {
+		c.printJSON(struct {
+			OK     bool                `json:"ok"`
+			Errors []map[string]string `json:"errors"`
+		}{OK: false, Errors: probs})
+		c.failed = true
+		return
+	}
+
+	plan := glue.PlanReconcile(desiredHashes, live, a.prune)
+	var created, updated, destroyed []string
+	var execErrs []map[string]string
+	for _, n := range plan.Create {
+		if e := c.provisionCursor(store, desired[n], nil); e != nil {
+			execErrs = append(execErrs, map[string]string{"cursor": n, "error": e.Error()})
+		} else {
+			created = append(created, n)
+		}
+	}
+	for _, n := range plan.Update {
+		if e := c.provisionCursor(store, desired[n], live[n]); e != nil {
+			execErrs = append(execErrs, map[string]string{"cursor": n, "error": e.Error()})
+		} else {
+			updated = append(updated, n)
+		}
+	}
+	for _, n := range plan.Destroy {
+		if e := store.Remove(n); e != nil {
+			execErrs = append(execErrs, map[string]string{"cursor": n, "error": e.Error()})
+		} else {
+			destroyed = append(destroyed, n)
+		}
+	}
+	c.printJSON(struct {
+		Applied struct {
+			Created   []string `json:"created"`
+			Updated   []string `json:"updated"`
+			Destroyed []string `json:"destroyed"`
+			Unchanged []string `json:"unchanged"`
+		} `json:"applied"`
+		Prune  bool                `json:"prune"`
+		OK     bool                `json:"ok"`
+		Errors []map[string]string `json:"errors,omitempty"`
+	}{
+		Applied: struct {
+			Created   []string `json:"created"`
+			Updated   []string `json:"updated"`
+			Destroyed []string `json:"destroyed"`
+			Unchanged []string `json:"unchanged"`
+		}{Created: created, Updated: updated, Destroyed: destroyed, Unchanged: plan.Unchanged},
+		Prune: a.prune, OK: len(execErrs) == 0, Errors: execErrs,
+	})
+	if len(execErrs) > 0 {
+		c.failed = true
+	}
+}
+
 // cursorFail prints an error envelope to stdout (so an agent parsing stdout still
 // gets structured JSON) and marks the command failed.
 func (c *cli) cursorFail(name, kind string, err error) {
@@ -788,6 +1109,14 @@ const cursorHelpText = `.multi cursor <verb> — CEP named cursors (a durable "w
   list                 the cursors in the store.
   show   NAME          one cursor's committed position + metadata.
   rm     NAME          forget a cursor.
+
+  plan   <dir>         GitOps diff: each *.sql++ in <dir> = one cursor (name = file
+                       stem, policy from front-matter mode/from/bind/id-field/labels);
+                       show create/update/destroy/unchanged vs live (no changes).
+  apply  <dir> [--prune]
+                       reconcile the store to <dir>; UNCHANGED cursors keep their
+                       position (idempotent). --prune destroys managed cursors no
+                       longer declared (imperative cursors are never pruned).
 
   --cursor-store <dir> override the state dir (default <bundle>/.n1k1-state/cursors).
 

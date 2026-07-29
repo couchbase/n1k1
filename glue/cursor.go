@@ -79,6 +79,13 @@ type CursorState struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	Annotations json.RawMessage   `json:"annotations,omitempty"`
 
+	// GitOps reconcile (Phase 3): SpecHash fingerprints the declared configuration
+	// (pack content + policy) so `apply` tells an unchanged cursor (preserve its
+	// position) from a drifted one; Managed marks a cursor created/adopted by
+	// `apply` (only managed cursors are eligible for `--prune`).
+	SpecHash string `json:"spec_hash,omitempty"`
+	Managed  bool   `json:"managed,omitempty"`
+
 	// Bookkeeping surfaced by `show`.
 	Created       string `json:"created,omitempty"`
 	Updated       string `json:"updated,omitempty"`
@@ -396,6 +403,93 @@ func (s *Session) runCursorPack(dets []MultiQueryEntry, filter *RecordScanFilter
 		res.NewWater = filter.NewWater()
 	}
 	return res, nil
+}
+
+// LoadPack loads a pack from a path that is EITHER a single *.sql++ file (one
+// entry — the GitOps "one file = one cursor" case) or a directory of them (the
+// imperative --pack <dir> case), so peek/advance reload uniformly whichever a
+// cursor was bound to.
+func LoadPack(path string) ([]MultiQueryEntry, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if fi.IsDir() {
+		return LoadMultiQueryEntries(path)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	e, err := ParseMultiQueryEntry(path, string(body))
+	if err != nil {
+		return nil, err
+	}
+	return []MultiQueryEntry{e}, nil
+}
+
+// SpecHash is the reconcile fingerprint of a cursor's DECLARED configuration: any
+// change to the pack content (packID), delta mode, binding, id-field, description,
+// or labels changes it, so `apply` can tell an unchanged cursor (whose committed
+// position must be preserved) from a drifted one that needs re-binding.
+func SpecHash(packID, mode, bind, idField, desc string, labels map[string]string) string {
+	h := sha256.New()
+	for _, s := range []string{packID, mode, bind, idField, desc} {
+		h.Write([]byte(s))
+		h.Write([]byte{0})
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{'='})
+		h.Write([]byte(labels[k]))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// ReconcilePlan is the create/update/destroy/unchanged partition a GitOps `plan`
+// computes and `apply` executes (each list holds cursor names, sorted).
+type ReconcilePlan struct {
+	Create    []string `json:"create"`
+	Update    []string `json:"update"`
+	Destroy   []string `json:"destroy"`
+	Unchanged []string `json:"unchanged"`
+}
+
+// PlanReconcile diffs the declared cursors (name -> SpecHash) against the live
+// store. A declared name absent from live => create; present with a different
+// SpecHash => update; equal => unchanged (preserve position). A live cursor absent
+// from `desired` is a destroy candidate, but only surfaces when prune is set AND
+// the cursor is Managed (so an imperative `.multi cursor create` is never pruned).
+func PlanReconcile(desired map[string]string, live map[string]*CursorState, prune bool) ReconcilePlan {
+	var p ReconcilePlan
+	for name, hash := range desired {
+		switch cur := live[name]; {
+		case cur == nil:
+			p.Create = append(p.Create, name)
+		case cur.SpecHash == hash:
+			p.Unchanged = append(p.Unchanged, name)
+		default:
+			p.Update = append(p.Update, name)
+		}
+	}
+	if prune {
+		for name, st := range live {
+			if _, ok := desired[name]; !ok && st.Managed {
+				p.Destroy = append(p.Destroy, name)
+			}
+		}
+	}
+	sort.Strings(p.Create)
+	sort.Strings(p.Update)
+	sort.Strings(p.Destroy)
+	sort.Strings(p.Unchanged)
+	return p
 }
 
 // PackID returns a stable "<name>@<sha>" identity for a pack: name is the given

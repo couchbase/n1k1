@@ -305,3 +305,135 @@ func TestMultiCursorDiffLoop(t *testing.T) {
 		t.Fatalf("show: want diff/snap:1, got %v", env)
 	}
 }
+
+// TestMultiCursorGitOps drives Phase-3 declarative reconcile: plan/apply a dir of
+// *.sql++ monitors, idempotent re-apply preserves an advanced position, an edited
+// file updates, and --prune destroys a managed-but-undeclared cursor WITHOUT
+// touching an imperatively-created one.
+func TestMultiCursorGitOps(t *testing.T) {
+	root := t.TempDir()
+	logs := filepath.Join(root, "default", "logs")
+	inc := filepath.Join(root, "default", "incidents")
+	for _, d := range []string{logs, inc} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logsFile := filepath.Join(logs, "logs.jsonl")
+	if err := os.WriteFile(logsFile, []byte(`{"sev":"ERROR","msg":"boom"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inc, "i.jsonl"), []byte(`{"id":1,"status":"open"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Desired-state dir: an append monitor + a diff monitor (policy in front-matter).
+	monitors := t.TempDir()
+	writeMon := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(monitors, name+".sql++"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMon("log-errors", "-- label: log-errors\n"+`SELECT l.msg FROM logs l WHERE l.sev = "ERROR"`)
+	writeMon("open-incidents", "-- mode: diff\n-- id-field: id\n"+`SELECT e.id, e.status FROM incidents e`)
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	run := func(cmd string) map[string]interface{} {
+		out.Reset()
+		errb.Reset()
+		c.failed = false
+		c.cmdMulti("cursor " + cmd)
+		var env map[string]interface{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env); err != nil {
+			t.Fatalf("cursor %q: bad JSON %q: %v (stderr %s)", cmd, out.String(), err, errb.String())
+		}
+		return env
+	}
+	strs := func(v interface{}) []string {
+		if v == nil {
+			return nil
+		}
+		var out []string
+		for _, x := range v.([]interface{}) {
+			out = append(out, x.(string))
+		}
+		return out
+	}
+
+	// plan (fresh): two creates.
+	pl := run("plan " + monitors)["plan"].(map[string]interface{})
+	if len(strs(pl["create"])) != 2 {
+		t.Fatalf("plan(fresh): want 2 creates, got %v", pl["create"])
+	}
+
+	// apply: both created.
+	ap := run("apply " + monitors)["applied"].(map[string]interface{})
+	if len(strs(ap["created"])) != 2 {
+		t.Fatalf("apply: want 2 created, got %v", ap)
+	}
+
+	// plan again: idempotent — everything unchanged, zero changes.
+	env := run("plan " + monitors)
+	if env["changes"].(float64) != 0 || len(strs(env["plan"].(map[string]interface{})["unchanged"])) != 2 {
+		t.Fatalf("plan(idempotent): want 0 changes / 2 unchanged, got %v", env)
+	}
+
+	// Advance log-errors past its seed, then grow the source.
+	run("advance log-errors")
+	committed := run("show log-errors")["committed"].(string)
+	if err := os.WriteFile(logsFile, []byte(`{"sev":"ERROR","msg":"boom"}`+"\n"+`{"sev":"ERROR","msg":"again"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-apply (unchanged files): must PRESERVE the committed position, NOT rebaseline.
+	run("apply " + monitors)
+	if got := run("show log-errors")["committed"].(string); got != committed {
+		t.Fatalf("re-apply rebased an unchanged cursor: committed %q -> %q", committed, got)
+	}
+	// Proof the position was preserved: peek still sees the appended ERROR as new.
+	if env := run("peek log-errors"); env["count"].(float64) != 1 {
+		t.Fatalf("preserved-position peek: want 1 new row, got %v", env)
+	}
+
+	// An imperatively-created cursor (unmanaged) must survive --prune. Uses a
+	// single-entry pack (one keyspace) deliberately: a multi-keyspace fused pack
+	// trips a pre-existing cbq-fork expression.Copy race under -race (tracked in the
+	// concurrency memo; orthogonal to cursor logic), and this test stays race-clean.
+	manualPack := writeMultiQueryEntries(t, map[string]string{
+		"m": "-- label: m\n" + `SELECT l.msg FROM logs l WHERE l.sev = "ERROR"`,
+	})
+	run("create manual --pack " + manualPack)
+	// Drop open-incidents from the desired set.
+	if err := os.Remove(filepath.Join(monitors, "open-incidents.sql++")); err != nil {
+		t.Fatal(err)
+	}
+
+	// plan: open-incidents is a prunable destroy; manual is not (unmanaged).
+	env = run("plan " + monitors)
+	if env["prunable"].(float64) != 1 {
+		t.Fatalf("plan: want 1 prunable, got %v", env)
+	}
+	if got := strs(env["plan"].(map[string]interface{})["destroy"]); len(got) != 1 || got[0] != "open-incidents" {
+		t.Fatalf("plan destroy: want [open-incidents], got %v", got)
+	}
+
+	// apply --prune: destroys open-incidents only.
+	ap = run("apply " + monitors + " --prune")["applied"].(map[string]interface{})
+	if d := strs(ap["destroyed"]); len(d) != 1 || d[0] != "open-incidents" {
+		t.Fatalf("apply --prune: want destroyed [open-incidents], got %v", ap["destroyed"])
+	}
+
+	// manual (imperative) survived; open-incidents gone.
+	names := map[string]bool{}
+	out.Reset()
+	c.cmdMulti("cursor list")
+	var list []map[string]interface{}
+	json.Unmarshal([]byte(strings.TrimSpace(out.String())), &list)
+	for _, r := range list {
+		names[r["cursor"].(string)] = true
+	}
+	if !names["manual"] || !names["log-errors"] || names["open-incidents"] {
+		t.Fatalf("after prune: want {manual,log-errors} present, open-incidents gone; got %v", names)
+	}
+}
