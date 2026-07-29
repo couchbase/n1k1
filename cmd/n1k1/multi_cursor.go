@@ -60,6 +60,8 @@ type cursorArgs struct {
 	quiet     bool     // --quiet, advance-only (ack only, no labelResults echo)
 	prune     bool     // --prune, apply-only (destroy managed cursors not declared)
 	positions bool     // --positions, show-only (full position map, not a summary)
+	only      []string // --only <node,...>, compose-only (emit rows for just these)
+	terminal  bool     // --terminal, compose-only (emit rows for leaf nodes only)
 }
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
@@ -156,6 +158,19 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.prune = !hasEq || val == "true" || val == "1"
 		case "positions", "verbose":
 			a.positions = !hasEq || val == "true" || val == "1"
+		case "only":
+			if !hasEq {
+				if err := need(&i, &val, "--only"); err != nil {
+					return a, err
+				}
+			}
+			for _, n := range strings.Split(val, ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					a.only = append(a.only, n)
+				}
+			}
+		case "terminal":
+			a.terminal = !hasEq || val == "true" || val == "1"
 		default:
 			return a, fmt.Errorf("unknown flag %q", t)
 		}

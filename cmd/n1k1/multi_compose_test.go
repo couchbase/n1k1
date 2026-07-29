@@ -105,3 +105,71 @@ func TestMultiCompose(t *testing.T) {
 		t.Fatalf("cycle: want failure mentioning cycle; failed=%v stderr=%q stdout=%q", c.failed, errb.String(), out.String())
 	}
 }
+
+// TestMultiComposeSelection covers ISSUE-02 #3/#4: --queries is rejected, and
+// --terminal / --only gate which nodes emit their (potentially huge) labelResults
+// while every node still reports a count.
+func TestMultiComposeSelection(t *testing.T) {
+	root := t.TempDir()
+	logs := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logs, "l.jsonl"),
+		[]byte(`{"host":"h1","sev":"ERROR"}`+"\n"+`{"host":"h1","sev":"ERROR"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dag := t.TempDir()
+	mustWrite := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dag, name+".sql++"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("errs", "-- label: errs\n"+`SELECT l.host FROM logs l WHERE l.sev = "ERROR"`)
+	mustWrite("roll", "-- label: roll\n-- needs: errs\n"+
+		`SELECT p.result.host AS host, COUNT(*) AS n FROM pack_errs p GROUP BY p.result.host`)
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	rows := func(cmd string) map[string]int { // node -> labelResults length
+		out.Reset()
+		errb.Reset()
+		c.failed = false
+		c.cmdMulti("compose " + cmd)
+		var env struct {
+			Nodes []struct {
+				Node         string        `json:"node"`
+				Count        int           `json:"count"`
+				LabelResults []interface{} `json:"labelResults"`
+			} `json:"nodes"`
+		}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env)
+		m := map[string]int{}
+		for _, n := range env.Nodes {
+			m[n.Node] = len(n.LabelResults)
+		}
+		return m
+	}
+
+	// default: both nodes emit their rows.
+	if m := rows(dag); m["errs"] != 2 || m["roll"] != 1 {
+		t.Fatalf("default: want errs=2,roll=1 rows, got %v", m)
+	}
+	// --terminal: only the leaf (roll) emits; errs is count-only.
+	if m := rows(dag + " --terminal"); m["errs"] != 0 || m["roll"] != 1 {
+		t.Fatalf("--terminal: want errs=0,roll=1, got %v", m)
+	}
+	// --only errs: only errs emits.
+	if m := rows(dag + " --only errs"); m["errs"] != 2 || m["roll"] != 0 {
+		t.Fatalf("--only errs: want errs=2,roll=0, got %v", m)
+	}
+
+	// --queries is rejected.
+	out.Reset()
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("compose " + dag + " --queries /tmp/x")
+	if !c.failed || !strings.Contains(errb.String(), "single <dir>") {
+		t.Fatalf("--queries: want rejection, failed=%v stderr=%q", c.failed, errb.String())
+	}
+}

@@ -82,12 +82,22 @@ func (c *cli) cmdMultiCompose(arg string) {
 		c.failed = true
 		return
 	}
+	if len(a.pack) > 0 {
+		fmt.Fprintf(c.stderr, "%s: .multi compose: takes a single <dir>; --queries/--pack are not valid here "+
+			"(the DAG is the files in <dir>)\n", c.prog)
+		c.failed = true
+		return
+	}
 	nodes, err := buildComposeNodes(dir)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi compose: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
+	// Which nodes emit their labelResults: --only <list>, else --terminal (leaf
+	// nodes = no downstream dependents), else all. Non-selected nodes report a count
+	// only, so an upstream 75k-row detector isn't a firehose in a rollup pipeline.
+	emit := selectComposeNodes(nodes, a.only, a.terminal)
 	sess, binding, err := c.multiSession(a.bind)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi compose: %v\n", c.prog, err)
@@ -122,11 +132,43 @@ func (c *cli) cmdMultiCompose(arg string) {
 	}{Order: res.Order}
 	for _, n := range res.Nodes {
 		no := nodeOut{Node: n.Node, Count: n.Count}
-		for _, lr := range n.LabelResults {
-			no.LabelResults = append(no.LabelResults, rowOut{Label: lr.Label, Result: lr.Result})
+		if emit[n.Node] {
+			for _, lr := range n.LabelResults {
+				no.LabelResults = append(no.LabelResults, rowOut{Label: lr.Label, Result: lr.Result})
+			}
 		}
 		out.Nodes = append(out.Nodes, no)
 	}
 	c.printJSON(out)
 	fmt.Fprintf(c.stderr, "%s%d node(s), order: %s\n", c.icon("🧩 "), len(res.Nodes), strings.Join(res.Order, " -> "))
+}
+
+// selectComposeNodes decides which nodes emit their labelResults: --only <list>
+// (exactly those), else --terminal (nodes no other node depends on), else all.
+func selectComposeNodes(nodes []glue.ComposeNode, only []string, terminal bool) map[string]bool {
+	emit := map[string]bool{}
+	if len(only) > 0 {
+		for _, n := range only {
+			emit[n] = true
+		}
+		return emit
+	}
+	if terminal {
+		depended := map[string]bool{}
+		for _, nd := range nodes {
+			for _, dep := range nd.Needs {
+				depended[dep] = true
+			}
+		}
+		for _, nd := range nodes {
+			if !depended[nd.Name] {
+				emit[nd.Name] = true
+			}
+		}
+		return emit
+	}
+	for _, nd := range nodes {
+		emit[nd.Name] = true
+	}
+	return emit
 }
