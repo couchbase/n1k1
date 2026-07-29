@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -340,6 +341,14 @@ func TestFixtureParsing(t *testing.T) {
 	if !json.Valid(e.Fixture.Rows[0]) {
 		t.Fatalf("pretty fixture row is not valid JSON: %q", e.Fixture.Rows[0])
 	}
+	// A stored fixture row must be COMPACT (single-line) — an embedded newline breaks
+	// the one-doc-per-line JSONL contract in RunFixture, yielding zero rows.
+	if bytes.ContainsAny(e.Fixture.Rows[0], "\n") {
+		t.Fatalf("pretty fixture row contains a newline (breaks JSONL): %q", e.Fixture.Rows[0])
+	}
+	if got := string(e.Fixture.Rows[0]); got != `{"id":"s1","n":{"a":1}}` {
+		t.Fatalf("pretty fixture row not compacted: got %q", got)
+	}
 
 	// A malformed / unterminated fixture row is a HARD ERROR (the ISSUE-05 bug).
 	bad := "-- label: B\nSELECT s.id FROM sessions s\n-- @fixture\n-- {\n--   \"id\": \"s1\"\n"
@@ -360,5 +369,50 @@ func TestFixtureParsing(t *testing.T) {
 	b := MultiQueryEntry{Label: "X", Stmt: "SELECT 1   \n\n\nFROM t\n"}
 	if PackID("x", []MultiQueryEntry{a}) != PackID("x", []MultiQueryEntry{b}) {
 		t.Fatal("PackID changed under a cosmetic blank-line/whitespace reformat")
+	}
+}
+
+// TestFixturePrettyEquivalence is the ISSUE-05 regression guard: a pretty-printed
+// (multi-line) fixture and its single-line equivalent must produce BYTE-IDENTICAL
+// labelResults through RunFixture (the pretty row used to yield zero rows because it
+// carried embedded newlines into the JSONL temp keyspace).
+func TestFixturePrettyEquivalence(t *testing.T) {
+	compact := "-- label: E\n-- source: t\n" +
+		"SELECT s.id, s.n FROM t s\n" +
+		"-- @fixture\n" +
+		`-- {"id":"a","n":{"x":1}}` + "\n"
+	pretty := "-- label: E\n-- source: t\n" +
+		"SELECT s.id, s.n FROM t s\n" +
+		"-- @fixture\n" +
+		"-- {\n" +
+		`--   "id": "a",` + "\n" +
+		`--   "n": {"x": 1}` + "\n" +
+		"-- }\n"
+
+	run := func(text string) []LabelResult {
+		e, err := ParseMultiQueryEntry("e.sql++", text)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if len(e.Fixture.Rows) != 1 {
+			t.Fatalf("want 1 fixture row, got %d", len(e.Fixture.Rows))
+		}
+		actual, err := e.RunFixture()
+		if err != nil {
+			t.Fatalf("RunFixture: %v", err)
+		}
+		return actual
+	}
+
+	c := run(compact)
+	p := run(pretty)
+	if len(c) != 1 {
+		t.Fatalf("compact fixture: want 1 labelResult, got %d", len(c))
+	}
+	if len(p) != len(c) {
+		t.Fatalf("pretty yielded %d labelResults, compact yielded %d (regression: pretty rows dropped)", len(p), len(c))
+	}
+	if string(p[0].Result) != string(c[0].Result) || p[0].Label != c[0].Label {
+		t.Fatalf("pretty vs compact differ:\n pretty : %s %s\n compact: %s %s", p[0].Label, p[0].Result, c[0].Label, c[0].Result)
 	}
 }

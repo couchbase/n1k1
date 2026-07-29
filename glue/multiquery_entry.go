@@ -60,6 +60,7 @@ package glue
 //   - SHA-keyed cache / re-run delta: unrelated build-economics concerns.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -264,7 +265,17 @@ func parseFixtureSection(lines []string, kind string) ([][]byte, error) {
 		}
 		buf.WriteString(inner)
 		if json.Valid([]byte(buf.String())) { // a complete document has arrived
-			docs = append(docs, []byte(buf.String()))
+			// COMPACT it: a multi-line doc was joined with '\n', but a fixture row is
+			// later written one-per-line into a JSONL temp keyspace (RunFixture), where
+			// an embedded newline would split it into malformed records and yield zero
+			// rows -- the pretty-fixture regression. Compacting makes a pretty row
+			// byte-identical to its single-line equivalent.
+			var compact bytes.Buffer
+			if json.Compact(&compact, []byte(buf.String())) == nil {
+				docs = append(docs, append([]byte(nil), compact.Bytes()...))
+			} else {
+				docs = append(docs, []byte(buf.String())) // unreachable (json.Valid passed)
+			}
 			buf.Reset()
 		}
 	}
