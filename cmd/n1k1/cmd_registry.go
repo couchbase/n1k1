@@ -141,7 +141,7 @@ func builtinCmds() []Cmd {
 
 		{names: []string{".open"},
 			run:  func(c *cli, _, arg string) bool { c.cmdOpen(arg); return false },
-			help: func(c *cli) string { return ".open <dir>           open a different datastore directory" }},
+			help: func(c *cli) string { return ".open <dir> | <src>...  open a datastore dir, or multiple sources (name=path/bare) as keyspaces" }},
 
 		{names: []string{".tables", ".keyspaces"},
 			run: func(c *cli, _, arg string) bool {

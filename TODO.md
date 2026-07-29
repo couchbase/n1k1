@@ -117,17 +117,23 @@ in glue/patches/README.md.
   niceties (DESIGN-cli.md §7): tab completion, FROM 'file.csv' table-functions.
   (mid-query cancel: DONE -- Ctrl-C / closed pipe halts a running query.)
 
-- [ ] Multiple data sources on one command line -> one keyspace per source,
-      joinable in a single SQL++ query (DESIGN-data.md §2). E.g.
-      `n1k1 drive=~/Drive/** docs=~/Documents/** 'sp=~/SharePoint/**'`.
-      Phase 1 (local mounts, ~free): CLI positional args -> a `Binding`
-      (glue/binding.go already maps name->path/glob, absolute/`~`/outside-root
-      capable, fail-loud, `.tables`-enumerated) + name derivation + collision
-      check + synthetic empty root -> `OpenSessionBound`; add a thin
-      `Source{Name,Path}` / `OpenSessionSources` glue helper + a `.source`
-      add/list/rm dot-command (a new Cmd in the registry) + extend `.open`.
-      Phase 2: a federating (composite) datastore to mix heterogeneous source
-      KINDS (local dir + `s3://` iceberg + `.parquet`, per-source `-formats`).
+- [x] Multiple LOCAL data sources on one command line -> one keyspace per
+      source, joinable in a single SQL++ query (DESIGN-data.md §2 Phase 1). E.g.
+      `n1k1 drive=~/Drive/** docs=~/Documents/** 'sp=~/SharePoint/**'`. DONE:
+      glue.OpenSessionSources/Source (glue/sources.go) turns each source into a
+      Binding entry (~ expansion, CWD-anchored abs, bare-dir -> `dir/**`,
+      basename/stem name derivation, collision = hard error) over a synthetic
+      empty root; CLI arg parser + multi-source `.open` (cmd_sources.go /
+      cmd_open.go). One bare path stays the classic single root. No engine change.
+
+- [ ] Multi-source Phase 2 -- heterogeneous federation (DESIGN-data.md §2). A
+      federating (composite) datastore to mix source KINDS (local dir + `s3://`
+      iceberg + `.parquet`), each built by the full FileStoreBound pipeline, with
+      per-source options (formats/sortedness/namespace). Plus a declarative
+      `-sources` JSON/YAML/TOML config file (parsed with n1k1's own decoders --
+      handles space-in-path + per-source options the CLI/`.open` can't) and a
+      catalog.json `"sources"` map; both build the same []Source. Optional:
+      `.source add/list/rm` live-attach dot-command.
 
 - UI / terminal and/or web-based?
 

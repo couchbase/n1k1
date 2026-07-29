@@ -18,24 +18,48 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/couchbase/n1k1/glue"
 )
 
-func (c *cli) cmdOpen(dir string) {
-	if dir == "" {
-		fmt.Fprintln(c.stderr, "usage: .open <dir>")
+// cmdOpen switches the datastore. `.open <dir>` opens one root (classic); `.open
+// <src>...` (2+ whitespace-separated paths, or any name=path) opens MULTIPLE data
+// sources, each a keyspace (DESIGN-data.md §2 Phase 1, glue.OpenSessionSources).
+// ⚠ REPL word-splitting is on whitespace, so a source PATH containing spaces can't be
+// given here -- that (and richer per-source options) is what the §2 Phase 2 config
+// file is for.
+func (c *cli) cmdOpen(arg string) {
+	if strings.TrimSpace(arg) == "" {
+		fmt.Fprintln(c.stderr, "usage: .open <dir>   |   .open <src>... (name=path or bare; multiple sources)")
 		return
 	}
-	sess, err := glue.OpenSession(dir, defaultNamespace)
+	sources, multi := parseSourceArgs(strings.Fields(arg))
+
+	var sess *glue.Session
+	var err error
+	var label string
+	if multi {
+		sess, err = glue.OpenSessionSources(sources, defaultNamespace)
+		label = fmt.Sprintf("%d data sources: %s", len(sources), strings.Join(sourceNames(sources), ", "))
+	} else {
+		sess, err = glue.OpenSession(arg, defaultNamespace)
+		label = arg
+	}
 	if err != nil {
-		fmt.Fprintf(c.stderr, "cannot open %q: %v\n", dir, err)
+		fmt.Fprintf(c.stderr, "cannot open %s: %v\n", label, err)
 		return
 	}
+
 	c.sess.Close() // release the previous datastore's TEMP KEYSPACE spill files
-	c.sess, c.dir = sess, dir
+	c.sess = sess
+	if multi {
+		c.dir = "" // no single root; the keyspaces are the named sources
+	} else {
+		c.dir = arg
+	}
 	c.eagerBuildIndexes() // re-apply -index=eager to the newly opened datastore
-	fmt.Fprintf(c.stderr, "opened %s\n", dir)
+	fmt.Fprintf(c.stderr, "opened %s\n", label)
 }
 
 func (c *cli) cmdOutput(path string) {

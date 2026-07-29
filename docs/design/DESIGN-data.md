@@ -26,7 +26,9 @@ the bundle is an *example*, not a built-in.
 
 **Done (all `records/` + `glue/`, `//go:build n1ql`, zero fork changes):**
 - **Discovery/layout** — multi-file / flat-root / single-file / grab-bag keyspaces + backtick
-  inline globs (`` FROM `./data/**/*.json` ``).
+  inline globs (`` FROM `./data/**/*.json` ``); **multiple local data sources on one command line**
+  (`n1k1 drive=~/Drive/** docs=~/Documents …`) → one keyspace per source, joinable in a single query
+  (§2 Phase 1, `glue.OpenSessionSources`).
 - **Decoders** — JSONL, multi-doc JSON, CSV/TSV, YAML, office/PDF/media (opaque-document path);
   Parquet as a queryable keyspace with column-projection pushdown + footer-stats vectorized aggs
   (`DESIGN-col.md`); transparent gzip.
@@ -50,9 +52,9 @@ through a VIEW); catalog-defined query VIEWs (expansion + branch pushdown; `UNIO
 landed) + materialized views; zstd decode (walker recognizes `.zst`; decode is a stub) + `.zip`
 container; encryption-at-rest; full column-batch Parquet execution (`DESIGN-col.md`); catalogs
 beyond a filesystem/object-store metadata path (REST/Glue); a `[]byte`-oriented zero-copy CSV
-reader + the allocs/op benchmark gate; **multiple data sources on one command line** → one keyspace
-per source, joinable in a single query (§2 — Phase 1 local-mount federation is ~free over the existing
-`Binding` seam; heterogeneous kinds need a composite datastore).
+reader + the allocs/op benchmark gate; **heterogeneous multi-source federation** (§2 Phase 2 — mixing a
+local dir + an `s3://` Iceberg table + Parquet, with per-source options, via a composite datastore + a
+declarative `-sources` config file; Phase 1 local multi-root has shipped).
 
 ## Relationship to `DESIGN-indexing.md`
 
@@ -216,11 +218,11 @@ cheap cases shipped fast. Key insight that shipped: **CSV and office both ride t
 reconciliation is forced only by columnar Parquet** (columns without a per-row JSON object) and by
 hive/projected partition virtual-columns.
 
-### Multiple data sources on one command line → multiple keyspaces (proposal)
+### Multiple data sources on one command line → multiple keyspaces (Phase 1 ✅ shipped)
 
-Today the CLI takes **one** `<dataRoot>` (`main.go` uses `flag.Args()[0]`; extra positional args are
-ignored) and that root flattens into keyspaces via the modes above. The ask: point n1k1 at **several
-independent roots at once** and get one keyspace per source, so a single SQL++ query joins across
+Originally the CLI took **one** `<dataRoot>` (`main.go` used `flag.Args()[0]`; extra positional args
+were ignored) and that root flattened into keyspaces via the modes above. Now n1k1 can be pointed at
+**several independent roots at once** — one keyspace per source, so a single SQL++ query joins across
 them — e.g. a local Google Drive mirror, `~/Documents`, and a local SharePoint mirror:
 
 ```
@@ -233,7 +235,9 @@ A `Binding` is already `map[logical-name → path/glob]`, already anchors bare p
 while honoring `./`, `../`, and **absolute** patterns (`globAbsPattern`), already treats a single
 file as a degenerate glob, already **fails loudly** when a source matches zero files, and is already
 enumerated by `.tables` (`bindingNamespace.KeyspaceNames`). `OpenSessionBound(dir, ns, Binding)`
-threads it in. So a source list *is* a `Binding`; the work is turning CLI args into one.
+threads it in. So a source list *is* a `Binding`; the work was turning CLI args into one — which is
+exactly what `glue.OpenSessionSources`/`Source` (`glue/sources.go`) + `cmd/n1k1`'s arg parser
+(`cmd_sources.go`: `parseSourceArgs`/`splitSourceArg`) now do.
 
 - **CLI surface.** Each positional arg is a source, in either form:
   - `name=path` — explicit keyspace name (needed for globs, dotted names, or to avoid a collision).
@@ -259,24 +263,49 @@ threads it in. So a source list *is* a `Binding`; the work is turning CLI args i
 
 **Two phases (be honest about which is nearly free):**
 
-- **Phase 1 — local multi-root, ~free (🟡 small).** Because a binding path can already be an absolute
-  or `~` glob to **any local mount**, and Drive-File-Stream / OneDrive / SharePoint sync clients all
-  surface as **local filesystem mounts**, the motivating example is Phase 1: CLI arg parsing → `Binding`
-  + name derivation + `~` expansion + synthetic-root selection. Little to no engine change.
-- **Phase 2 — heterogeneous federation (🟣 real work).** To mix source *kinds* — a local dir **plus** an
-  `s3://…` Iceberg table (§8) **plus** a `.parquet`, each possibly with its own `-formats` — one
-  `Binding` over one `file.NewDatastore` is insufficient: object-store URIs branch off early
+- **Phase 1 — local multi-root (✅ shipped).** Because a binding path can already be an absolute or `~`
+  glob to **any local mount**, and Drive-File-Stream / OneDrive / SharePoint sync clients all surface as
+  **local filesystem mounts**, the motivating example was nearly free: `glue.OpenSessionSources([]Source,
+  ns)` turns each source into a `Binding` entry — `~` expansion (`expandTilde`), CWD-anchored
+  abs-resolution, a bare dir expanded to a recursive `dir/**` union, basename/stem/glob-base name
+  derivation, collision-is-a-hard-error — over a process-wide **synthetic empty root** (`os.MkdirTemp`,
+  so only the named sources appear). The CLI (`cmd_sources.go`) parses `name=path`/bare positional args
+  (one bare path stays the classic single root); a remote object-store URI as a source is rejected here
+  (→ Phase 2). Engine change: none — pure glue over the existing `Binding`/glob machinery.
+- **Phase 2 — heterogeneous federation (🟣 real work, not built).** To mix source *kinds* — a local dir
+  **plus** an `s3://…` Iceberg table (§8) **plus** a `.parquet`, each possibly with its own `-formats` —
+  one `Binding` over one `file.NewDatastore` is insufficient: object-store URIs branch off early
   (`objectStoreStore`) and Iceberg tables are built by `maybeIcebergTable`. This needs a **federating
   (composite) datastore** that builds each source through the *full* `FileStoreBound` pipeline and unions
   their `default` namespaces (generalizing `maybeBind` from "N globs over one store" to "N sub-stores").
-  Per-source options (`-formats`, sortedness) then attach to the source, not globally.
+  Per-source options (`-formats`, sortedness, a name) then attach to the source, not globally.
 
-**REPL.** Extend `.open` to accept several sources (`name=path` / bare), and add a first-class
-`.source` command family — `.source add docs=~/Documents/**` / `.source list` / `.source rm docs` — to
-attach/detach sources live; each is just a new `Cmd` in the registry (`cmd_registry.go`), and `.tables`
-already lists bound keyspaces. **Catalog symmetry (Mode 3).** The imperative CLI list is the ad-hoc
-form; a durable `"sources"` map in `.n1k1/catalog.json` (persisted like `.formats`) is the declarative
-form, so a workspace remembers its sources across runs.
+**REPL (Phase 1 ✅).** `.open <dir>` still opens one root; `.open <src>…` (2+ whitespace-separated paths,
+or any `name=path`) opens multiple sources as keyspaces (`cmd_open.go`, same parser as the argv path),
+and `.tables` lists them. A `.source add/list/rm` command family — each a new `Cmd` in the registry
+(`cmd_registry.go`) — to attach/detach sources live is a natural follow-up.
+
+**Why the command line isn't enough for Phase 2 — a config file.** The REPL splits `.open` args on
+**whitespace**, so a source path containing spaces (`~/Google Drive`) can't be given interactively at
+all, and argv can't carry *per-source* options (this source is `-formats=parquet` + sorted-by-`ts`;
+that one is an `s3://` Iceberg table with credentials). The command line is the wrong surface for that
+structure. The fix is an **optional config file** naming the sources declaratively — and n1k1 already
+**reads JSON/YAML/TOML natively**, so it can parse its own config with its own decoders:
+
+```yaml
+# sources.yaml  —  n1k1 -sources sources.yaml   (or  .open @sources.yaml)
+sources:
+  drive:  { path: "~/Google Drive/**" }
+  docs:   { path: "~/Documents" }
+  events: { path: "s3://bucket/warehouse/db/events", formats: parquet, sorted: ts }  # Phase 2
+```
+
+Design: a `-sources <file>` flag (and an `.open @<file>` form) parsed into `[]Source` (Phase 2 grows
+`Source` with per-source `Formats`/`Sorted`/`Namespace`), the file's own directory anchoring relative
+paths. This is the **declarative twin** of the imperative CLI list and of the Mode 3 catalog: a durable
+`"sources"` map in `.n1k1/catalog.json` (persisted like `.formats`) lets a workspace remember its
+sources across runs. All three (argv, `-sources` file, catalog) build the same `[]Source` → `Binding`
+(Phase 1) or composite datastore (Phase 2).
 
 ### Query-defined VIEWs (proposal — expansion + pushdown remain)
 
@@ -464,7 +493,7 @@ CLI `n1k1 [-c "<stmt>"] <dataRoot>` (one root today; **multiple sources proposed
 | J | CSV/TSV + header | header names columns, one JSON object per row | ✅ |
 | K | Parquet | transpose-to-rows + projection + footer-stats aggs | ✅ (+partial vectorization) |
 | L | office/PDF/media | one `{filename,kind,text,…}` record/file | ✅ (pure-Go; OCR later) |
-| M | multiple roots on the CLI (`drive=~/Drive/** docs=~/Documents/**`) | one keyspace per source (siblings under `default`), joinable in one query | 🟡 local via `Binding` / 🟣 heterogeneous federation (§2) |
+| M | multiple roots on the CLI (`drive=~/Drive/** docs=~/Documents/**`) | one keyspace per source (siblings under `default`), joinable in one query | ✅ local (§2 Phase 1) / 🟣 heterogeneous federation (§2 Phase 2) |
 
 **O — query-defined VIEW over a morphed source** 🟣 (`.n1k1/catalog.json` defines each era as a
 keyspace + a normalizing `UNION ALL` view). The `UNION ALL` converts (`VisitUnionAll`); remaining is
@@ -739,9 +768,10 @@ DuckDB (MIT) is design inspiration, not a dep.
   or stay pure-Go and narrower?
 - **Default doc-ID scheme & encryption seekability** — positional (addressable, shifts on edit) vs
   content-hash vs requiring a natural key; which segmented-encryption format (Tink vs age).
-- **Multi-source naming & federation scope (§2).** For bare (nameless) sources, is basename/stem the
-  right derived keyspace name, and is a collision a hard error or an auto-suffix (`docs`, `docs_2`)?
-  Where should per-source options (`-formats`, sortedness) attach once sources are heterogeneous — and
-  is the composite (federating) datastore worth building, or does "point each source at a local mount +
-  one `Binding`" (Phase 1) cover the real cases? Bare *relative* source anchoring (CWD vs the synthetic
-  root) and cross-source `_meta` provenance tagging are the sharp edges.
+- **Multi-source federation scope & config surface (§2 Phase 2).** Phase 1 shipped the local case
+  (collision = hard error, basename/stem derived names, CWD-anchored bare-relative paths). Open: is the
+  composite (federating) datastore worth building for heterogeneous *kinds* (local + `s3://` Iceberg +
+  Parquet), or does "point each source at a local mount + one `Binding`" cover the real cases? Where do
+  per-source options (`-formats`, sortedness, namespace) attach, and is the declarative `-sources`
+  JSON/YAML/TOML config file (parsed with n1k1's own decoders) the right surface — the twin of the Mode 3
+  catalog `"sources"` map? Cross-source `_meta` provenance tagging under `UNION ALL` remains a sharp edge.

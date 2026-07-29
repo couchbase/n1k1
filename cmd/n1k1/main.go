@@ -153,10 +153,14 @@ func main() {
 		os.Exit(2)
 	}
 
+	// One bare path is the classic single datastore root; two or more paths (or any
+	// name=path) are MULTIPLE data sources, each becoming a keyspace (DESIGN-data.md
+	// §2 Phase 1 -- glue.OpenSessionSources). See cmd_sources.go.
+	sources, multiSource := parseSourceArgs(flag.Args())
 	dir := "."
 	explicit := false
-	if args := flag.Args(); len(args) > 0 {
-		dir = args[0]
+	if !multiSource && len(flag.Args()) > 0 {
+		dir = flag.Args()[0]
 		explicit = true
 	}
 
@@ -171,7 +175,7 @@ func main() {
 	})
 
 	formatsStr := *formatsFlag
-	if !formatsGiven {
+	if !formatsGiven && !multiSource { // multi-source has no single catalog root
 		if cf, cerr := glue.CatalogFormats(dir); cerr == nil {
 			formatsStr = cf
 		}
@@ -209,16 +213,29 @@ func main() {
 		}
 	}
 
-	sess, dir, cleanup, err := resolveSession(dir, explicit)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
-		os.Exit(1)
+	var sess *glue.Session
+	var err error
+	cleanup := func() {}
+	if multiSource {
+		if sess, err = glue.OpenSessionSources(sources, defaultNamespace); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+			os.Exit(1)
+		}
+		dir = "" // no single datastore root; the keyspaces are the named sources
+		fmt.Fprintf(os.Stderr, "%s: querying %d data sources: %s\n",
+			prog, len(sources), strings.Join(sourceNames(sources), ", "))
+	} else {
+		sess, dir, cleanup, err = resolveSession(dir, explicit)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, err)
+			os.Exit(1)
+		}
+		if dir == "" { // fell back to an empty store (no path was given)
+			fmt.Fprintf(os.Stderr, "%s: no datastore; starting empty — use %s\n",
+				prog, ".open <dir>")
+		}
 	}
 	defer cleanup() // removes an empty-store temp dir, if one was made
-	if dir == "" {  // fell back to an empty store (no path was given)
-		fmt.Fprintf(os.Stderr, "%s: no datastore; starting empty — use %s\n",
-			prog, ".open <dir>")
-	}
 
 	stdinIsTTY := isTTY(os.Stdin)
 
@@ -381,7 +398,7 @@ func resolveSession(dir string, explicit bool) (sess *glue.Session, effDir strin
 func usage() {
 	fmt.Fprintf(os.Stderr, `%[1]s -- SQL++ for local files (json, jsonl, csv, yaml, toml, gz, and more)
 
-usage: %[1]s [flags] [datastore-dir | file]
+usage: %[1]s [flags] [datastore-dir | file | source...]
 
   # a single file -- the keyspace is the filename minus its extension:
   %[1]s -c "SELECT * FROM events LIMIT 5"                   events.jsonl
@@ -391,6 +408,11 @@ usage: %[1]s [flags] [datastore-dir | file]
   # a directory tree of files (flat, <ns>/<keyspace>/, or nested subdirs):
   %[1]s ./test/suite/json
   %[1]s -c "SELECT * FROM invoices WHERE total > 5" path/to/biz-datastore-dir
+
+  # multiple sources at once -- each becomes a keyspace (dir, file, or glob), so one
+  # query can join across them; name=path names it, else the basename/stem is used:
+  %[1]s drive=~/Drive/** docs=~/Documents 'sp=~/SharePoint/**/*.json'
+  %[1]s -c "SELECT d.title FROM docs d JOIN drive g ON d.id = g.doc_id" docs=~/a drive=~/b
 
   # object stores (S3 / GCS / Azure) -- Iceberg tables & Parquet, read over ranged
   # GETs (creds from AWS_*/GOOGLE_APPLICATION_CREDENTIALS/AZURE_*; see .help keyspaces):
