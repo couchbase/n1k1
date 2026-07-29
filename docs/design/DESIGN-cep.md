@@ -53,9 +53,8 @@ am I watching and where did I leave off?" from nothing.
 
 - **cursor** — a small **named, durable high-water position** (`NAME → {source → offset}`), **bound
   to the query-pack it polls** (its record also holds the `(pack, binding)` identity — see Command
-  taxonomy). The *only* thing that persists in poll mode (nothing is "monitoring"): `.multi run
-  cursor create NAME --pack <pack>` binds it, then `peek`/`advance` drive it. **The poll-mode
-  primitive.**
+  taxonomy). The *only* thing that persists in poll mode (nothing is "monitoring"): `.multi cursor
+  create NAME --pack <pack>` binds it, then `peek`/`advance` drive it. **The poll-mode primitive.**
 - **detector** — the SQL++ rule (existing n1k1 term). **labelResult** — an emitted output row: the
   struct `glue.LabelResult` pairs a `label` (which detector fired) with its `result` value (the
   row's `SELECT` projection). Named distinctly (not plain "result") so it's greppable and unmistakable.
@@ -513,9 +512,9 @@ the continuous-operation engine work lands.
 
 None of the above touches the SQL++ dialect: **query = pure SQL++**, **source liveness = the
 late-binding manifest** (`orders → glob(*.json)` static vs `tail(app.log)` / `kafka://` / `cdc://`
-/ `poll(url, every=5m)` live), **cadence = a run modifier** (`--cursor` / mode / monitor policy).
-The same detector replays statically, catches up via poll, and follows live — liveness is *data*
-(the binding), not *code* (the query).
+/ `poll(url, every=5m)` live), **cadence = how it's driven** (`once` batch / the `peek`+`advance`
+verbs / a monitor's schedule). The same detector replays statically, catches up via poll, and
+follows live — liveness is *data* (the binding), not *code* (the query).
 
 ## Build plan
 
