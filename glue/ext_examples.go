@@ -45,6 +45,8 @@ import (
 	"strings"
 
 	"github.com/dop251/goja"
+
+	"github.com/couchbase/query/value"
 )
 
 // ExtExample is one inline golden example: an invocation input and its expected
@@ -411,7 +413,10 @@ func gojaArgsFromJSON(rt *goja.Runtime, in json.RawMessage) ([]goja.Value, error
 	}
 	args := make([]goja.Value, len(raw))
 	for i, a := range raw {
-		args[i] = rt.ToValue(a)
+		// Marshal each example argument through the SAME path a real query call uses
+		// (value.NewValue -> toGoja), so a golden exercises the SQL++ -> JS boundary
+		// -- not a bypass that hides marshaling bugs like ISSUE-01.
+		args[i] = toGoja(rt, value.NewValue(a))
 	}
 	return args, nil
 }

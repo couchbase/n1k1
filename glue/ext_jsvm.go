@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -256,10 +257,17 @@ type jsRuntimeHost interface {
 }
 
 // toGoja marshals a cbq value into the given runtime. MISSING -> undefined,
-// NULL -> null; scalars pass by value; OBJECT/ARRAY are DEEP-COPIED first
-// (CopyForUpdate) because goja wraps a Go map/slice by reference, so without the
-// copy a UDF that mutates an object/array argument would write through into the
-// shared source document -- silent corruption of the query's input.
+// NULL -> null; scalars pass by value; OBJECT/ARRAY are DEEP-unwrapped to plain Go
+// (map[string]interface{} / []interface{}) via a JSON round-trip.
+//
+// The deep unwrap matters: a shallow value.Actual() returns a top-level map whose
+// NESTED values are still cbq value.Value, and goja then wraps each as a Go struct
+// -- so a UDF sees the Go method set (Object.keys -> Actual,Append,Collate,...),
+// typeof "object" on a nested number, and Array.isArray false on a nested array;
+// depth>=2 field access is undefined (ISSUE-01). Round-tripping through JSON yields
+// fully-plain values at every depth. It also produces a FRESH, fully-owned copy,
+// so a UDF mutating its argument can't write through into the shared source
+// document (the invariant the old CopyForUpdate provided).
 func toGoja(rt *goja.Runtime, v value.Value) goja.Value {
 	if v == nil {
 		return goja.Undefined()
@@ -270,7 +278,13 @@ func toGoja(rt *goja.Runtime, v value.Value) goja.Value {
 	case value.NULL:
 		return goja.Null()
 	case value.OBJECT, value.ARRAY:
-		return rt.ToValue(v.CopyForUpdate().Actual())
+		if b, err := v.MarshalJSON(); err == nil {
+			var plain interface{}
+			if json.Unmarshal(b, &plain) == nil {
+				return rt.ToValue(plain)
+			}
+		}
+		return rt.ToValue(v.CopyForUpdate().Actual()) // fallback (unmarshalable value)
 	default:
 		return rt.ToValue(v.Actual())
 	}
