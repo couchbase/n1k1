@@ -173,35 +173,96 @@ A recipe declares one (front-matter `mode:`):
 
 ### Dynamic sub-stream sources (directory trees, git) — the non-monotonic case
 
-Two grounding use cases — **follow `~/.claude/`** (a growing tree of jsonl files that get appended,
-and occasionally shrink/rotate as 30-day cleanup runs) and **follow git commits across sibling
-worktrees** (agents spinning up branches) — both reduce to the *same* shape the plain `append`
-model under-specifies: **a dynamic set of append-mostly sub-streams (files / git refs) that each
-grow, occasionally *rewind* (truncate/rotate; rebase/force/ff), and eventually *disappear* (cleanup;
-branch delete).** They fit the design in shape but pin down four things:
+Two grounding use cases — **follow `~/.claude/`** (a growing tree of jsonl files) and **follow git
+commits across sibling worktrees** (agents spinning up branches) — both reduce to the *same* shape
+the plain `append` model under-specifies: **a dynamic set of append-mostly sub-streams (files / git
+refs) that each grow, appear, and eventually disappear.** They fit the design in shape but pin down
+four things:
 
-- **Position is a per-sub-stream map**, not a scalar: `{file → (offset, identity)}` /
-  `{ref → commit-sha}`. Sub-streams appear over time (new files/subdirs; new worktree branches) and
-  the recursive glob / ref-set picks them up on the next `peek`.
-- ⚠ **Non-monotonic rewind is the real gap** — `append` assumes the offset only grows. A file that
-  **shrinks/rotates** (its size went backwards or its inode/identity changed) and a git ref whose
-  cursor SHA is **no longer an ancestor** (rebased/reset) both invalidate the stored position.
-  Detect it (size-backwards / identity change / SHA-not-ancestor) and **reset that sub-stream**
-  (re-read from 0 / re-baseline). This is the classic log-rotation problem (`tail -F`, Filebeat,
-  Vector) and its git twin. Re-reads are safe *because* fingerprint-dedup absorbs the repeats — so
-  the **fingerprint must be content/identity-based, not offset-based**, or a rotate-and-re-read
-  re-emits already-seen rows as new.
-- **Set-membership changes (create / DELETE) are a `diff` concern, not `append`.** `append` surfaces
-  new rows and silently ignores a file/branch vanishing; to *observe* cleanup or a deleted branch,
-  run a `diff` cursor over the sub-stream **set** (names + sizes / ref→sha). A tree/repo monitor may
-  want **both**: `append` over contents + `diff` over membership.
+- **Position is a per-sub-stream map**, not a scalar: `{file → offset}` / `{ref → commit-sha}`.
+  Sub-streams appear over time (new files/subdirs; new worktree branches) and the recursive glob /
+  ref-set picks them up on the next `peek`.
+- **Set-membership (create / DELETE) is a `diff` concern, not `append`** — and it's the *primary*
+  cleanup signal, not front-truncation. The `~/.claude/` layout is **date-named** files/dirs
+  (`YYYYMMDD…`), so a file only ever **grows or is deleted whole** — no shrink, no front-prune. Day-31
+  cleanup is therefore a **whole-file/dir delete**, detected precisely because the cursor tracks the
+  **path set**: a tracked path vanished. `append` surfaces new rows and silently ignores that
+  vanishing; a `diff` cursor over the path set emits `{op:delete}` if you want to *observe* cleanup.
+  So a tree monitor is `append` over contents + (optionally) `diff` over membership.
+- ⚠ **The genuinely non-monotonic case is git, not files.** Date-named files don't rewind; but a git
+  ref **can** — rebase/reset/force leaves the cursor SHA **no longer an ancestor** of the ref. Detect
+  (`merge-base --is-ancestor` fails) and re-baseline (see the git provider below). (A *few* file
+  sources do rewind — `logrotate copytruncate` shrinks in place; handle the same way, size-backwards
+  → reset — but the common date-named layout sidesteps it.) Either way the **fingerprint must be
+  content/identity-based** (a commit's SHA; a row's content) so any re-read dedupes rather than
+  re-emitting as new.
 - **Cursor-map retention** — the position map grows with every sub-stream ever seen; cleanup / dead
   worktrees leave stale entries, so prune them, or cursor state grows unbounded.
 
-New source providers this implies: a **recursive jsonl-dir** source with rotation-aware per-file
-offsets (n1k1 nearly has it), and a **`git://` source** (git-log-as-records, `<cursor-sha>..<ref>`
-as the since-query) — both wired through the late-binding manifest (`sessions → dir("~/.claude/**/*.jsonl")`,
-`commits → git-log(worktrees)`).
+New source providers this implies: a **recursive jsonl-dir** source (per-file append offsets + path-set
+membership; n1k1 nearly has it), and a **`git://` source** (next), both wired through the
+late-binding manifest (`sessions → dir("~/.claude/**/*.jsonl")`, `commits → git(worktrees)`).
+
+### The `git://` source provider (design)
+
+A git repo exposed as **queryable, cursor-followable keyspaces** — so `SELECT … FROM commits`, a
+detector, or a monitor runs over the commit log. It's the cleanest possible fit for the cursor
+model because git's object store *is* a content-addressed append log with built-in ancestry: the
+**commit SHA is the opaque, comparable, serializable position** the design already asks for, and the
+SHA doubles as the row **fingerprint** (identity-stable across re-read and rewrite).
+
+**Keyspaces (record shapes).** One binding surfaces several:
+- **`commits`** (primary, `append`) — one record per commit:
+  ```jsonc
+  { "sha","short","parents":[…], "author":{name,email,time}, "committer":{…},
+    "subject","body", "refs":["refs/heads/master",…],           // decoration: who points here
+    "files":[{path,added,deleted,status}], "insertions","deletions",
+    "_meta":{ "ref":"refs/heads/worktree-x" } }                  // which ref this arrived through
+  ```
+  `files`/diff-stat is **lazy** (computed only if the query projects/filters on it — reuse the
+  `ColumnsProjector` pushdown). So detectors do `WHERE author.email=… AND subject LIKE 'fix%'`,
+  `WHERE ANY f IN files SATISFIES f.path LIKE 'glue/%' END`, `GROUP BY author.name`, commits/hour
+  rate-windows, etc.
+- **`refs`** (`diff`) — the current `{ref → sha}` set; a `diff` cursor emits `{op:insert}` (new
+  branch), `{op:update, before, after}` (ref moved), `{op:delete}` (branch gone). The
+  "did someone create/delete/force-push a branch?" monitor.
+- **`worktrees`** (`diff`) — `{path, branch, head, locked, prunable}` per `git worktree list`; new
+  worktree appears / torn-down worktree disappears.
+
+**Binding & selectors** (late-binding manifest): `commits → git(<repo>, refs=<selector>)`:
+- `repo`: a local path (`.`); worktrees share one object DB, so `git(".")` sees every sibling
+  worktree's branch — exactly use-case-2 (`this repo + .claude/worktrees/*`).
+- `refs`: `master` | glob `refs/heads/worktree-*` | `--all` | **`worktrees`** (every worktree HEAD).
+- **pushdown**: `WHERE` on author/time/path lowers to `git log --author= --since= -- <path>` — a
+  cheap source-level predicate prune (like the Iceberg/Parquet pushdown seam).
+
+**Position & the "since" query.** Cursor position = `{ref → sha}` (a per-ref map, per the sub-stream
+model). "What's new" for each ref is literally `git log <cursor-sha>..<ref>` (commits reachable from
+the ref but not the old position) — git's own since-query. New ref → start per the `create --from`
+policy (`now` = its current HEAD, empty until new commits; `beginning` = all reachable, bounded/warned
+on huge history). Cross-ref dedup is free: **dedupe by SHA** (a commit merged into two followed refs
+emits once). A unified time-ordered timeline across refs uses the merge/sorted-stream substrate; per-ref
+"what's new" needs no merge.
+
+**Non-monotonic (rewrite) reconciliation — where git is *easier* than files** (it has exact
+ancestry): on each `peek`, if `merge-base --is-ancestor <cursor-sha> <ref>` is false, the ref was
+rewritten (rebase/reset/force). Reconcile by computing the symmetric difference —
+`dropped = git log <ref>..<cursor>`, `added = git log <cursor>..<ref>` — then reset the ref's cursor
+to the new HEAD. Per the open rewind-policy question: **silent** (just reset + re-emit
+`merge-base..HEAD`, SHA-dedup absorbing survivors) or **surfaced** as
+`{op:rewind, ref, dropped:[sha…], added:[sha…], new_base}` for a "did someone force-push?" monitor.
+
+**Implementation (pure-Go, CGO-free).** A `records.Source` (like `records/parquet.go`,
+`//go:build !js`) backed by **go-git** (`github.com/go-git/go-git`, pure-Go — fits the arrow-go /
+bleve provider pattern): structured commit objects (no fragile `git log` text parsing), and
+`CommitObject.IsAncestor` / merge-base for the rewrite check. Shelling out to the `git` binary is
+the fallback (trivial, exact, but needs `git` on PATH + subprocess + parsing). `create`-time
+validation: repo opens as a git dir, the `refs` selector resolves to ≥1 ref, the pack compiles.
+
+**Open edges:** remote refs need a periodic `git fetch` (a `fetch=every 5m` bind option; local
+worktrees need none — the use case is all-local); shallow clones/grafts have incomplete ancestry;
+merge commits' diff-stat is first-parent by default; `--from beginning` on a large repo must be
+bounded.
 
 ### State & idempotency — the agent holds a name, not a cookie
 
