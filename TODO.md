@@ -117,6 +117,18 @@ in glue/patches/README.md.
   niceties (DESIGN-cli.md §7): tab completion, FROM 'file.csv' table-functions.
   (mid-query cancel: DONE -- Ctrl-C / closed pipe halts a running query.)
 
+- [ ] Multiple data sources on one command line -> one keyspace per source,
+      joinable in a single SQL++ query (DESIGN-data.md §2). E.g.
+      `n1k1 drive=~/Drive/** docs=~/Documents/** 'sp=~/SharePoint/**'`.
+      Phase 1 (local mounts, ~free): CLI positional args -> a `Binding`
+      (glue/binding.go already maps name->path/glob, absolute/`~`/outside-root
+      capable, fail-loud, `.tables`-enumerated) + name derivation + collision
+      check + synthetic empty root -> `OpenSessionBound`; add a thin
+      `Source{Name,Path}` / `OpenSessionSources` glue helper + a `.source`
+      add/list/rm dot-command (a new Cmd in the registry) + extend `.open`.
+      Phase 2: a federating (composite) datastore to mix heterogeneous source
+      KINDS (local dir + `s3://` iceberg + `.parquet`, per-source `-formats`).
+
 - UI / terminal and/or web-based?
 
 - advanced wizard to show more what-if's?
