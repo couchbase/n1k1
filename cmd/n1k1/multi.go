@@ -76,6 +76,8 @@ func (c *cli) cmdMulti(arg string) {
 		c.cmdMultiExplain(rest)
 	case "test":
 		c.cmdMultiTest(rest)
+	case "cursor":
+		c.cmdMultiCursor(rest)
 	case "", "help":
 		c.cmdMultiHelp()
 	default:

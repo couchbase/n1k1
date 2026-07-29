@@ -50,6 +50,7 @@ COMMANDS
   .multi lint --queries <dir> [--bind <manifest>]  authoring report card (compiles, does NOT run)
   .multi explain --queries <dir> [--bind <manifest>] [--sql]  show the fused shared-scan plan + fusion map; --sql = pretty SQL++ w/ provenance + hints (does NOT run)
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
+  .multi cursor <verb> ...                         named "what's new since I last looked" cursors over a pack (.multi cursor help)
   .multi help                                      this guide
 
 FLAGS
