@@ -30,46 +30,45 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
+
+	"github.com/couchbase/query/datastore"
+	"github.com/couchbase/query/util"
 
 	"github.com/couchbase/n1k1/records"
 )
 
-// Source names one data source for OpenSessionSources. Name is the keyspace it
-// becomes ("" = derive from Path); Path is a directory, a single file, or a glob
-// (absolute, ~-prefixed, ./ ../ or bare-relative -- bare/relative anchor at CWD).
+// Source names one data source for OpenSessionSources. Name is the keyspace it becomes
+// ("" = derive from Path); Path is a local directory, a single file, or a glob
+// (absolute, ~-prefixed, ./ ../ or bare-relative -- bare/relative anchor at CWD), a
+// local Apache Iceberg table directory, or an object-store URI (s3://, gs://, abfs://)
+// naming a remote Parquet object or Iceberg table.
 type Source struct {
 	Name string
 	Path string
 }
 
-// OpenSessionSources opens a session over multiple local data sources, each becoming
-// a sibling keyspace under the namespace (default "default"), so one SQL++ query can
-// join across them. Names are taken from Source.Name, or derived from the path (a
-// file's stem, a dir's or glob-base's basename); two sources that resolve to the same
-// keyspace name are a hard error (pass an explicit Name to disambiguate). A bare
-// directory is expanded to a recursive union (`dir/**`) of its decodable files. A
-// source that matches zero files is a hard error at query time (the Binding seam's
-// fail-loud), never a silently empty keyspace.
+// OpenSessionSources opens a session over multiple data sources, each becoming a
+// sibling keyspace under the namespace (default "default"), so one SQL++ query can join
+// across them (DESIGN-data.md §2). Sources may be HETEROGENEOUS kinds -- a local dir/
+// glob/file, a local or remote Iceberg table, a remote Parquet object -- federated into
+// one namespace by building a flatKeyspace per source (each carrying the fields its kind
+// needs; KeyspaceRecordsOpen already routes on them) over an inert base datastore.
 //
-// Phase 1 is local-filesystem only (a Google Drive / OneDrive / SharePoint mirror is a
-// local mount, so those are covered); a remote object-store URI (s3://, gs://, …) as a
-// source is rejected here -- heterogeneous federation is DESIGN-data.md §2 Phase 2.
+// Names are taken from Source.Name or derived from the path (a file's stem, a dir/glob-
+// base/table basename); two sources resolving to the same name are a hard error (pass an
+// explicit Name). A bare directory becomes a recursive union (`dir/**`) of its decodable
+// files. A local source matching zero files is a hard error (fail-loud), never a
+// silently empty keyspace.
 func OpenSessionSources(sources []Source, namespace string) (*Session, error) {
 	if len(sources) == 0 {
 		return nil, fmt.Errorf("no data sources given")
 	}
-	b := make(Binding, len(sources))
+	keyspaces := make(map[string]*flatKeyspace, len(sources))
 	origin := make(map[string]string, len(sources)) // name -> original arg, for a clear collision error
 	for _, s := range sources {
 		path := expandTilde(strings.TrimSpace(s.Path))
 		if path == "" {
 			return nil, fmt.Errorf("empty data-source path")
-		}
-		if records.IsObjectStoreURI(path) {
-			return nil, fmt.Errorf(
-				"data source %q: remote/object-store sources are not yet supported here "+
-					"(local mirrors are; heterogeneous federation is DESIGN-data.md §2 Phase 2)", path)
 		}
 		name := strings.TrimSpace(s.Name)
 		if name == "" {
@@ -79,23 +78,42 @@ func OpenSessionSources(sources []Source, namespace string) (*Session, error) {
 			}
 			name = dn
 		}
-		pat, err := sourcePattern(path)
-		if err != nil {
-			return nil, err
-		}
 		if prev, ok := origin[name]; ok {
 			return nil, fmt.Errorf(
 				"two data sources map to keyspace %q (%q and %q); pass a name (name=path) to disambiguate",
 				name, prev, s.Path)
 		}
-		b[name] = pat
+		ks, err := sourceFlatKeyspace(path)
+		if err != nil {
+			return nil, err
+		}
+		keyspaces[name] = ks
 		origin[name] = s.Path
 	}
-	root, err := syntheticSourcesRoot()
+
+	// Federate: an inert (empty) base datastore satisfies cbq's planner, TEMP KEYSPACEs
+	// overlay at the bottom, and the source keyspaces are the synthetic "default"
+	// namespace (wrapFlatKeyspaces wires each a virtual keyspace + primary indexer).
+	base, err := inertBaseDatastore()
 	if err != nil {
 		return nil, err
 	}
-	return OpenSessionBound(root, namespace, b)
+	temp := newTempKeyspaces()
+	ds := wrapTempKeyspaces(base, temp)
+	ds = wrapFlatKeyspaces(ds, keyspaces, nil)
+	store := &Store{
+		Datastore:       ds,
+		IndexApiVersion: datastore.INDEX_API_MAX,
+		FeatureControls: util.DEF_N1QL_FEAT_CTRL,
+		Temp:            temp,
+	}
+	if err := store.InitParser(); err != nil {
+		return nil, err
+	}
+	if namespace == "" {
+		namespace = "default"
+	}
+	return &Session{Store: store, Namespace: namespace}, nil
 }
 
 // SourcesConfig is the on-disk shape of a -sources config file (JSON / YAML / TOML) --
@@ -192,11 +210,65 @@ func configRelPath(p, configBase string) string {
 	return filepath.Join(configBase, p)
 }
 
-// sourcePattern turns a (tilde-expanded) source path into the absolute path/glob a
-// Binding entry stores. It anchors a bare/relative path at CWD (so it doesn't depend
-// on the synthetic root), and expands a plain existing directory into a recursive
-// union `dir/**` of its decodable files (a bare dir, matched literally, would match
-// no files and trip the fail-loud). A single file or an explicit glob passes through.
+// sourceFlatKeyspace classifies one (tilde-expanded) source path into the flatKeyspace
+// its KIND needs -- the heart of heterogeneous federation. KeyspaceRecordsOpen later
+// routes on these fields: iceberg -> records.OpenIcebergTable, parquetURL -> a remote
+// Parquet reader, dir/glob -> a local walk. The order matters: object-store URIs and
+// Iceberg tables are recognized before the generic local dir/glob path.
+func sourceFlatKeyspace(path string) (*flatKeyspace, error) {
+	// Object-store URI (s3:// / gs:// / abfs://): a *.parquet object, else an Iceberg table.
+	if records.IsObjectStoreURI(path) {
+		if strings.HasSuffix(strings.ToLower(path), ".parquet") {
+			return &flatKeyspace{parquetURL: path}, nil
+		}
+		metadataLoc := path
+		if !strings.HasSuffix(path, ".metadata.json") { // a bare table dir: resolve current metadata
+			resolved, rerr := records.ResolveObjectStoreIcebergMetadata(path)
+			if rerr != nil {
+				return nil, fmt.Errorf("data source %q: %w", path, rerr)
+			}
+			metadataLoc = resolved
+		}
+		tableDir, _, ok := records.SplitIcebergMetadataLocation(metadataLoc)
+		if !ok {
+			return nil, fmt.Errorf(
+				"data source %q: cannot resolve an Iceberg table (expected .../<table>/metadata/<file>.metadata.json)", path)
+		}
+		return &flatKeyspace{dir: tableDir, iceberg: metadataLoc}, nil
+	}
+
+	abs := path
+	if a, err := filepath.Abs(abs); err == nil {
+		abs = a
+	}
+	// Local Iceberg table directory (has metadata/<v>.metadata.json).
+	if meta, ok := records.IcebergTableMetadata(abs); ok {
+		return &flatKeyspace{dir: abs, iceberg: meta}, nil
+	}
+
+	// Local dir / glob / single file: resolve to an absolute pattern, then fail loudly on
+	// a zero-match resolution (never a silently empty keyspace). A single local Parquet
+	// file rides this path too (Parquet is an ordinary record format).
+	pat, err := sourcePattern(path)
+	if err != nil {
+		return nil, err
+	}
+	base, files, gerr := records.GlobFiles(pat, ScanWalkOptions)
+	if gerr != nil {
+		return nil, fmt.Errorf("data source %q: %v", path, gerr)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf(
+			"data source %q resolves to no files (pattern %q); refusing to open an empty keyspace", path, pat)
+	}
+	return &flatKeyspace{dir: base, glob: pat}, nil
+}
+
+// sourcePattern turns a (tilde-expanded) local source path into the absolute path/glob
+// a flatKeyspace's glob field stores. It anchors a bare/relative path at CWD, and
+// expands a plain existing directory into a recursive union `dir/**` of its decodable
+// files (a bare dir, matched literally, would match no files and trip the fail-loud).
+// A single file or an explicit glob passes through.
 func sourcePattern(path string) (string, error) {
 	abs := path
 	if !filepath.IsAbs(abs) {
@@ -249,21 +321,4 @@ func expandTilde(p string) string {
 		}
 	}
 	return p
-}
-
-// syntheticSourcesRoot returns a process-wide empty directory used as the datastore
-// root for a multi-source session: file discovery finds nothing there, so only the
-// named sources (bindings) become keyspaces. One empty dir is reused for the whole
-// process (bindings are per-Store, so sharing the root is safe).
-var (
-	sourcesRootOnce sync.Once
-	sourcesRootDir  string
-	sourcesRootErr  error
-)
-
-func syntheticSourcesRoot() (string, error) {
-	sourcesRootOnce.Do(func() {
-		sourcesRootDir, sourcesRootErr = os.MkdirTemp("", "n1k1-sources-")
-	})
-	return sourcesRootDir, sourcesRootErr
 }

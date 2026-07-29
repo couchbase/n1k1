@@ -133,13 +133,19 @@ in glue/patches/README.md.
       space-in-path + many-sources the CLI/`.open` can't. Per-source options
       (formats/namespace/sorted) are parsed but rejected pending the composite.
 
-- [ ] Multi-source Phase 2 -- heterogeneous federation (DESIGN-data.md §2). A
-      federating (composite) datastore to mix source KINDS (local dir + `s3://`
-      iceberg + `.parquet`), each built by the full FileStoreBound pipeline, with
-      per-source options (formats/sortedness/namespace) then attaching per source
-      (un-reject them in glue.LoadSources once landed). Plus a catalog.json
-      `"sources"` map (durable twin). Optional: `.source add/list/rm` live-attach
-      dot-command.
+- [x] Multi-source Phase 2 -- federate heterogeneous KINDS (DESIGN-data.md §2).
+      DONE: glue.OpenSessionSources builds a map[name]*flatKeyspace via a per-source
+      classifier (sourceFlatKeyspace: {dir,glob} local / {dir,iceberg} local+remote
+      table / {parquetURL} remote parquet), federated by wrapFlatKeyspaces over an
+      inert base -- KeyspaceRecordsOpen's existing per-kind routing scans them, no new
+      scan code. Local dir + local Iceberg join in one query (guard test).
+
+- [ ] Multi-source per-source options + niceties (DESIGN-data.md §2). Remaining
+      Phase 2 bits: per-source `-formats`/sortedness/namespace (needs a per-keyspace
+      WalkOptions threaded through the process-global scan path -- ~10 call sites;
+      un-reject the fields in glue.LoadSources once landed); a catalog.json
+      `"sources"` map (durable twin); a `.source add/list/rm` live-attach
+      dot-command; cross-source `_meta` provenance under UNION ALL.
 
 - UI / terminal and/or web-based?
 

@@ -103,9 +103,6 @@ func TestOpenSessionSourcesErrors(t *testing.T) {
 	if _, err := OpenSessionSources([]Source{{Path: a}, {Path: b}}, "default"); err == nil {
 		t.Error("expected a name-collision error for two 'data' basenames")
 	}
-	if _, err := OpenSessionSources([]Source{{Path: "s3://bucket/t/metadata/x.json"}}, "default"); err == nil {
-		t.Error("expected object-store sources to be rejected in Phase 1")
-	}
 	if _, err := OpenSessionSources([]Source{{Path: "**/*.json"}}, "default"); err == nil {
 		t.Error("expected an error deriving a name from a rootless glob")
 	}
@@ -138,6 +135,81 @@ func TestDeriveSourceName(t *testing.T) {
 	}
 	if _, err := deriveSourceName("*"); err == nil {
 		t.Error("deriveSourceName(\"*\") should error (no usable base)")
+	}
+}
+
+// TestSourceFlatKeyspaceKinds: the per-source classifier maps each KIND to the right
+// flatKeyspace fields (what KeyspaceRecordsOpen routes on) -- the heart of Phase 2
+// federation. Object-store cases that need no network are checked offline.
+func TestSourceFlatKeyspaceKinds(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.json"), []byte(`{"k":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Local directory -> a recursive glob keyspace.
+	if ks, err := sourceFlatKeyspace(root); err != nil {
+		t.Errorf("local dir: %v", err)
+	} else if ks.glob == "" || ks.iceberg != "" || ks.parquetURL != "" {
+		t.Errorf("local dir -> %+v, want glob set", ks)
+	}
+	// Remote Parquet object -> parquetURL (offline: just records the URL).
+	if ks, err := sourceFlatKeyspace("s3://bucket/data/t.parquet"); err != nil {
+		t.Errorf("remote parquet: %v", err)
+	} else if ks.parquetURL != "s3://bucket/data/t.parquet" {
+		t.Errorf("remote parquet -> %+v, want parquetURL set", ks)
+	}
+	// Remote Iceberg via an explicit metadata JSON -> iceberg + table dir (offline).
+	loc := "s3://bucket/warehouse/db/orders/metadata/00003-abc.metadata.json"
+	if ks, err := sourceFlatKeyspace(loc); err != nil {
+		t.Errorf("remote iceberg: %v", err)
+	} else if ks.iceberg != loc || ks.dir != "s3://bucket/warehouse/db/orders" {
+		t.Errorf("remote iceberg -> %+v, want iceberg+dir set", ks)
+	}
+	// A malformed object-store Iceberg location (no .../metadata/…metadata.json) errors
+	// offline, not silently.
+	if _, err := sourceFlatKeyspace("s3://bucket/x.metadata.json"); err == nil {
+		t.Error("expected a malformed object-store Iceberg location to error")
+	}
+}
+
+// TestOpenSessionSourcesHeterogeneous federates DIFFERENT kinds in one session -- a
+// local JSON directory and a local Apache Iceberg table -- and queries across both.
+func TestOpenSessionSourcesHeterogeneous(t *testing.T) {
+	root := t.TempDir()
+	jsonDir := filepath.Join(root, "logs")
+	if err := os.MkdirAll(jsonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jsonDir, "l.jsonl"),
+		[]byte(`{"id":0,"sev":"info"}`+"\n"+`{"id":1,"sev":"error"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeIcebergTable(t, root, "events", []string{"disk full", "oom killed"}) // {id,msg}, local Iceberg
+
+	sess, err := OpenSessionSources([]Source{
+		{Name: "logs", Path: jsonDir},
+		{Name: "events", Path: filepath.Join(root, "events")}, // a local Iceberg table dir
+	}, "default")
+	if err != nil {
+		t.Fatalf("OpenSessionSources (heterogeneous): %v", err)
+	}
+	defer sess.Close()
+
+	// Each kind scans on its own: the JSON dir and the Iceberg table.
+	if res, err := sess.Run(`SELECT COUNT(*) AS n FROM logs`); err != nil || string(res.Rows[0]) != `{"n":2}` {
+		t.Errorf("count logs (json dir): rows=%v err=%v", stringsOf(res.Rows), err)
+	}
+	if res, err := sess.Run(`SELECT COUNT(*) AS n FROM events`); err != nil || string(res.Rows[0]) != `{"n":2}` {
+		t.Errorf("count events (iceberg): rows=%v err=%v", stringsOf(res.Rows), err)
+	}
+	// A join ACROSS the two kinds in one query -- the whole point of federation.
+	res, err := sess.Run(`SELECT e.msg AS msg FROM logs l JOIN events e ON l.id = e.id WHERE l.sev = "error"`)
+	if err != nil {
+		t.Fatalf("cross-kind join: %v", err)
+	}
+	if len(res.Rows) != 1 || string(res.Rows[0]) != `{"msg":"oom killed"}` {
+		t.Errorf("cross-kind join rows = %v, want one {\"msg\":\"oom killed\"}", stringsOf(res.Rows))
 	}
 }
 
