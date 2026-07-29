@@ -212,7 +212,21 @@ model because git's object store *is* a content-addressed append log with built-
 SHA doubles as the row **fingerprint** (identity-stable across re-read and rewrite).
 
 **Keyspaces (record shapes).** One binding surfaces several:
-- **`commits`** (primary, `append`) — one record per commit:
+- **`reflog`** (the primary *followable* stream, `append`) — git's own append-only journal of ref
+  movements (`.git/logs/**`), one record per entry:
+  ```jsonc
+  { "ref":"refs/heads/master", "old_sha","new_sha", "op":"commit|merge|rebase|reset|checkout|branch|pull",
+    "actor":{name,email,time}, "message":"rebase (finish): returning to refs/heads/master" }
+  ```
+  **Why follow the reflog, not ref-state:** it's append-only *even through rewrites* — a
+  rebase/force/reset doesn't rewind it, it *appends* `{old→new, "rebase"}`. So the non-monotonic
+  problem (below) largely **disappears**: a rewrite is just another event, the cursor is plain
+  `append` (offset = last entry per ref), and force-pushes/rebases become first-class rows an agent
+  can watch. Caveats: the reflog is **local & unshared** (per clone; local worktrees share the
+  common `.git` so they're followable together, but a teammate's work only appears post-`fetch`),
+  **expiring** (`gc.reflogExpire` 90d/30d — fine for near-real-time, not deep backfill), and
+  **event-thin** (SHAs + op, no commit content — see Reconstruction).
+- **`commits`** (the *content* keyspace, `append`) — one record per commit:
   ```jsonc
   { "sha","short","parents":[…], "author":{name,email,time}, "committer":{…},
     "subject","body", "refs":["refs/heads/master",…],           // decoration: who points here
@@ -244,19 +258,38 @@ on huge history). Cross-ref dedup is free: **dedupe by SHA** (a commit merged in
 emits once). A unified time-ordered timeline across refs uses the merge/sorted-stream substrate; per-ref
 "what's new" needs no merge.
 
-**Non-monotonic (rewrite) reconciliation — where git is *easier* than files** (it has exact
-ancestry): on each `peek`, if `merge-base --is-ancestor <cursor-sha> <ref>` is false, the ref was
-rewritten (rebase/reset/force). Reconcile by computing the symmetric difference —
-`dropped = git log <ref>..<cursor>`, `added = git log <cursor>..<ref>` — then reset the ref's cursor
-to the new HEAD. Per the open rewind-policy question: **silent** (just reset + re-emit
-`merge-base..HEAD`, SHA-dedup absorbing survivors) or **surfaced** as
-`{op:rewind, ref, dropped:[sha…], added:[sha…], new_base}` for a "did someone force-push?" monitor.
+**Reconstruction — the `.multi` hierarchy (why the reflog isn't enough alone).** The `reflog` is the
+*event* half (ref moved old→new, via op X, when) and `commits` is the *content/structure* half
+(parents, author, files); higher-level views are a composition DAG ([Composition](#composition--a-dag-of-packs-one-packs-labelresults-feed-the-next)) that joins them:
+- **L0** — follow `reflog` (append, rewrite-proof).
+- **L1 — enrich**: join each reflog entry to the commits it *introduced* (`rev-list old_sha..new_sha`)
+  → per-commit rows with content, tagged by the triggering op. (`reflog` ⋈ `commits`.)
+- **L2 — reconstruct/correlate**: branch lifecycle (create/reset/delete, from the op events), rates,
+  "rebase dropped N commits", "a merge introduced a detector-match", etc.
+
+What's derivable from where: **merges** are a *graph* fact — a commit with ≥2 parents
+(`WHERE ARRAY_LENGTH(parents) >= 2`); the reflog's `merge X:` names the merged-in ref. **Branch
+lifecycle** (and *when*) is the reflog event stream. **Branch membership / ancestry / merge-base** is
+a DAG walk — expressible in pure SQL++ via `WITH RECURSIVE` over `{sha, parents[]}` (n1k1 has
+recursive CTEs), but far cheaper as **provider helpers** (`rev-list` / `merge-base` / `is-ancestor`)
+than a brute recursive scan. So a fancy-enough `.multi` hierarchy *can* rebuild branches/merges/
+rebases — but only by composing the reflog (events) with the commit graph (structure); neither
+alone suffices.
+
+**Ref-state fallback (if you follow `refs` instead of `reflog`).** Where the reflog is unavailable
+(remote/shared history, expired) you follow ref-*state* with position `{ref → sha}` and
+`git log <cursor>..<ref>` as the since-query — but then rewrites *are* non-monotonic: on each `peek`,
+if `merge-base --is-ancestor <cursor-sha> <ref>` is false, reconcile via the symmetric difference
+(`dropped = <ref>..<cursor>`, `added = <cursor>..<ref>`) and reset to HEAD — **silent** (re-emit
+`merge-base..HEAD`, SHA-dedup absorbing survivors) or **surfaced** as `{op:rewind, ref, dropped, added}`.
+Following the `reflog` instead makes this the exception, not the rule.
 
 **Implementation (pure-Go, CGO-free).** A `records.Source` (like `records/parquet.go`,
 `//go:build !js`) backed by **go-git** (`github.com/go-git/go-git`, pure-Go — fits the arrow-go /
-bleve provider pattern): structured commit objects (no fragile `git log` text parsing), and
-`CommitObject.IsAncestor` / merge-base for the rewrite check. Shelling out to the `git` binary is
-the fallback (trivial, exact, but needs `git` on PATH + subprocess + parsing). `create`-time
+bleve provider pattern): reflog iteration (`.git/logs/**`, incl. per-worktree `HEAD` logs),
+structured commit objects (no fragile `git log` text parsing), and `CommitObject.IsAncestor` /
+merge-base for `rev-list old..new` + the fallback rewrite check. Shelling out to the `git` binary is
+the alternative (trivial, exact, but needs `git` on PATH + subprocess + parsing). `create`-time
 validation: repo opens as a git dir, the `refs` selector resolves to ≥1 ref, the pack compiles.
 
 **Open edges:** remote refs need a periodic `git fetch` (a `fetch=every 5m` bind option; local
