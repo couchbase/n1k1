@@ -241,9 +241,13 @@ exactly what `glue.OpenSessionSources`/`Source` (`glue/sources.go`) + `cmd/n1k1`
 
 - **CLI surface.** Each positional arg is a source, in either form:
   - `name=path` — explicit keyspace name (needed for globs, dotted names, or to avoid a collision).
-  - bare `path` — name **derived** from the path: a file's stem, a dir's basename, or for a glob the
-    basename of its deepest literal ancestor (`records.GlobBase`). Two sources deriving the same name
-    is a **hard error** ("pass `name=` to disambiguate") — never a silent union of unrelated trees.
+  - bare `path` — name **derived** from the path's **deepest literal segment** (case preserved): a
+    file's stem, a dir's basename, or a glob's base basename (`records.GlobBase`, the part before the
+    first `*`/`?`/`[`). So a shared parent is never the name — `~/Drive/reports/**` + `~/Drive/ecommerce`
+    → `reports` + `ecommerce` (not two `Drive`s), and `~/Drive/**/*.json` → `Drive` (the `*.json` suffix
+    is irrelevant). Two sources deriving the **same** name is a **hard error** ("pass `name=` to
+    disambiguate") — never a silent union of unrelated trees; a metacharacter-only glob (`**/*.json`,
+    no literal base) has nothing to derive from and also requires `name=`.
   - `~`/`~user` expansion: the shell expands unquoted `~`, but a quoted glob (`'~/x/**'`) reaches us
     literally, so n1k1 must expand a leading `~` itself (small addition to `globAbsPattern`).
 - **Root & namespace model.** With ≥2 sources (or any `name=`), there is no meaningful single root, so
