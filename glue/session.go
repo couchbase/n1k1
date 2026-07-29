@@ -111,6 +111,12 @@ type Session struct {
 	// dir at most once. Freed by Close. Safe because a Session runs one query at a time. See
 	// rt.SpillState / MakeVarsFor and DESIGN-concurrency.md.
 	spill *rt.SpillState
+
+	// cursorFilter, when set (by RunCursorPack for a CEP `append` cursor), is copied
+	// onto each Run's root GlueContext so DatastoreScanRecords wraps the record source
+	// to skip already-seen records and track the new high-water. nil for a normal
+	// query (no filtering, no cost). See cursor.go / DESIGN-cep.md.
+	cursorFilter *RecordScanFilter
 }
 
 // Interrupt requests the current Run halt as soon as it reaches its next cooperative
@@ -454,6 +460,7 @@ func (s *Session) PlanExec(pp *PreparedPlan,
 	vars.Ctx.Halt = &s.halt
 
 	gctx := NewGlueContext(time.Now())
+	gctx.scanFilter = s.cursorFilter                                          // CEP append cursor (nil = off)
 	gctx.InitSubqueries(s.Store, s.Namespace, pp.withBindings, pp.subqueries) // enable expression subqueries
 	gctx.SetNamedArgs(namedArgs)                                              // resolve $name at eval time
 	gctx.SetPositionalArgs(positionalArgs)                                    // resolve $1,$2 at eval time

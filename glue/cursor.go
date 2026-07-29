@@ -1,0 +1,324 @@
+//  Copyright (c) 2026 Couchbase, Inc.
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the
+//  License. You may obtain a copy of the License at
+//  http://www.apache.org/licenses/LICENSE-2.0
+//  Unless required by applicable law or agreed to in writing,
+//  software distributed under the License is distributed on an "AS
+//  IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+//  express or implied. See the License for the specific language
+//  governing permissions and limitations under the License.
+
+package glue
+
+// CEP named cursors (DESIGN-cep.md, Phase 1). A cursor is a durable, named
+// high-water position bound to a query pack: `create` binds+validates, `peek`
+// reports the pending delta WITHOUT moving the position, `advance` commits it.
+// This file owns the three pieces the engine needs:
+//
+//   1. CursorState / CursorStore -- the durable, tfstate-style local state (one
+//      JSON file per cursor NAME, atomic write-temp-rename).
+//   2. RecordScanFilter -- the `append` delta mechanism: a records.Source wrapper
+//      (installed at the single KeyspaceRecordsOpen choke point in
+//      DatastoreScanRecords) that skips records at/below the committed per-source
+//      offset and tracks the new high-water. No engine/records hot-path change.
+//   3. Session.RunCursorPack -- run a pack under a filter and return both the
+//      (delta-only) labelResults and the recomputed high-water.
+//
+// The offset is the cursor's "don't re-emit" mechanism; the per-labelResult
+// fingerprint (dedup_key, added by the CLI) is a SEPARATE concern -- it lets the
+// agent dedupe its own side effects. n1k1 persists no seen-set in Phase 1.
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/couchbase/n1k1/records"
+)
+
+// CursorState is one cursor's durable state -- an opaque, serializable,
+// comparable value (so the same code works when the backend later becomes a
+// served KV). Persisted as <store>/<name>.json.
+type CursorState struct {
+	Name string `json:"name"`
+	// Pack is the comma-joined query-pack dir(s) the cursor is bound to; Bind is
+	// the optional keyspace binding string (as passed to `.multi run --bind`).
+	Pack string `json:"pack"`
+	Bind string `json:"bind,omitempty"`
+	// PackID is "<name>@<sha>" captured at create time (a drift check on peek).
+	PackID string `json:"pack_id,omitempty"`
+	// Mode is the delta strategy; only "append" in Phase 1.
+	Mode string `json:"mode"`
+	// Water is the committed high-water: source-container key -> offset. Empty
+	// means "from the very beginning" (every record is new).
+	Water map[string]int64 `json:"water"`
+
+	// Metadata (k8s labels-vs-annotations split): Labels are for selection/
+	// grouping; Annotations is free-form provenance the client attaches.
+	Description string            `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations json.RawMessage   `json:"annotations,omitempty"`
+
+	// Bookkeeping surfaced by `show`.
+	Created       string `json:"created,omitempty"`
+	Updated       string `json:"updated,omitempty"`
+	LastCount     int    `json:"last_count"`
+	TotalAdvances int    `json:"total_advances"`
+}
+
+// CursorStore is a tfstate-style local directory of cursor state files
+// (DESIGN-cep.md § State & idempotency). Default location is
+// <datastore>/.n1k1-state/cursors, overridable via `--cursor-store`.
+type CursorStore struct{ dir string }
+
+// NewCursorStore roots a store at dir (created lazily on first Save).
+func NewCursorStore(dir string) *CursorStore { return &CursorStore{dir: dir} }
+
+// Dir is the store's root directory.
+func (s *CursorStore) Dir() string { return s.dir }
+
+// cursorNameOK rejects a name that would escape the store dir or collide with the
+// temp suffix, keeping <name>.json a plain file directly under dir.
+func cursorNameOK(name string) error {
+	if name == "" {
+		return fmt.Errorf("cursor name is required")
+	}
+	if strings.ContainsAny(name, "/\\") || name == "." || name == ".." ||
+		strings.HasPrefix(name, ".") || strings.Contains(name, "\x00") {
+		return fmt.Errorf("invalid cursor name %q", name)
+	}
+	return nil
+}
+
+func (s *CursorStore) path(name string) string {
+	return filepath.Join(s.dir, name+".json")
+}
+
+// ErrCursorNotExist is returned by Load/Remove for an unknown cursor name.
+var ErrCursorNotExist = os.ErrNotExist
+
+// Load reads a cursor's state; returns ErrCursorNotExist if absent.
+func (s *CursorStore) Load(name string) (*CursorState, error) {
+	if err := cursorNameOK(name); err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(s.path(name))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrCursorNotExist
+		}
+		return nil, err
+	}
+	var st CursorState
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil, fmt.Errorf("cursor %q: corrupt state: %v", name, err)
+	}
+	if st.Water == nil {
+		st.Water = map[string]int64{}
+	}
+	return &st, nil
+}
+
+// Save atomically persists a cursor's state (write-temp-then-rename, so a crash
+// mid-write never leaves a torn file -- the crash-safety the two-step advance
+// relies on).
+func (s *CursorStore) Save(st *CursorState) error {
+	if err := cursorNameOK(st.Name); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	// Single-process CLI: a fixed per-name temp suffix is safe (no concurrent
+	// writer of the same cursor) and needs no rand/time (unavailable in some build
+	// contexts anyway).
+	tmp := s.path(st.Name) + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.path(st.Name)); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// List returns the cursor names in the store, sorted.
+func (s *CursorStore) List() ([]string, error) {
+	ents, err := os.ReadDir(s.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var names []string
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".json") {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(n, ".json"))
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// Remove deletes a cursor's state; returns ErrCursorNotExist if absent.
+func (s *CursorStore) Remove(name string) error {
+	if err := cursorNameOK(name); err != nil {
+		return err
+	}
+	if err := os.Remove(s.path(name)); err != nil {
+		if os.IsNotExist(err) {
+			return ErrCursorNotExist
+		}
+		return err
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------- scan filter
+
+// RecordScanFilter drives the `append` delta: given the committed per-container
+// high-water `since`, it wraps a records.Source to skip already-seen records and
+// track the max position seen per container (the recomputed water). It is
+// installed once per scan at DatastoreScanRecords via GlueContext.scanFilter.
+type RecordScanFilter struct {
+	since map[string]int64 // committed high-water (read-only), container -> offset
+	mu    sync.Mutex
+	seen  map[string]int64 // max position observed this run, container -> offset
+}
+
+// NewRecordScanFilter builds a filter for the committed high-water `since` (nil
+// means "from the beginning" -- admit everything).
+func NewRecordScanFilter(since map[string]int64) *RecordScanFilter {
+	return &RecordScanFilter{since: since, seen: map[string]int64{}}
+}
+
+// wrap returns a Source that yields only records past the committed high-water,
+// observing every record's position so NewWater reflects the full source extent.
+func (f *RecordScanFilter) wrap(inner records.Source) records.Source {
+	return &filteringSource{inner: inner, f: f}
+}
+
+// admit reports whether a record at container position `pos` is new. An untracked
+// container (a freshly-appeared file) admits ALL its records -- including the one
+// at offset 0 -- while a tracked one admits strictly past its committed offset.
+func (f *RecordScanFilter) admit(path string, pos int64) bool {
+	if f.since == nil {
+		return true
+	}
+	w, ok := f.since[path]
+	if !ok {
+		return true
+	}
+	return pos > w
+}
+
+// observe records the max position seen in a container (new + already-seen), so
+// the recomputed water covers everything currently present.
+func (f *RecordScanFilter) observe(path string, pos int64) {
+	f.mu.Lock()
+	if cur, ok := f.seen[path]; !ok || pos > cur {
+		f.seen[path] = pos
+	}
+	f.mu.Unlock()
+}
+
+// NewWater merges the committed high-water with what was observed this run: the
+// per-container max of the two (a container present before but not scanned this
+// run keeps its old offset; a container scanned this run advances to its max).
+func (f *RecordScanFilter) NewWater() map[string]int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]int64, len(f.since)+len(f.seen))
+	for k, v := range f.since {
+		out[k] = v
+	}
+	for k, v := range f.seen {
+		if cur, ok := out[k]; !ok || v > cur {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+type filteringSource struct {
+	inner records.Source
+	f     *RecordScanFilter
+}
+
+func (s *filteringSource) Next(rec *records.Record) (bool, error) {
+	for {
+		ok, err := s.inner.Next(rec)
+		if !ok || err != nil {
+			return ok, err
+		}
+		path, pos, hasPos := records.ParseRecordPos(rec.ID)
+		if !hasPos {
+			return true, nil // whole-file unit: no within-file position to filter on
+		}
+		s.f.observe(path, pos)
+		if s.f.admit(path, pos) {
+			return true, nil
+		}
+		// Already seen (<= committed offset): skip and pull the next record.
+	}
+}
+
+func (s *filteringSource) Close() error { return s.inner.Close() }
+
+// ---------------------------------------------------------------- run a pack
+
+// CursorRunResult is the outcome of running a pack under an append filter.
+type CursorRunResult struct {
+	LabelResults []LabelResult    // the delta only (records past the water)
+	NewWater     map[string]int64 // recomputed high-water (the candidate `to`)
+	Report       *MultiQueryRunReport
+}
+
+// RunCursorPack compiles and runs the pack `dets` with an `append` scan filter
+// seeded at the committed high-water `since`, returning the delta labelResults and
+// the recomputed high-water. Used by both `peek` (discards the water) and
+// `advance` (commits it).
+func (s *Session) RunCursorPack(dets []MultiQueryEntry, since map[string]int64) (*CursorRunResult, error) {
+	filter := NewRecordScanFilter(since)
+	s.cursorFilter = filter
+	defer func() { s.cursorFilter = nil }()
+
+	cc, err := s.MultiQueryCompile(dets)
+	if err != nil {
+		return nil, err
+	}
+	lrs, report, err := cc.RunReport()
+	if err != nil {
+		return nil, err
+	}
+	return &CursorRunResult{LabelResults: lrs, NewWater: filter.NewWater(), Report: report}, nil
+}
+
+// PackID returns a stable "<name>@<sha>" identity for a pack: name is the given
+// label, sha a short hash over each entry's id + normalized SQL (order-
+// independent), so an unchanged pack keeps its id and any edit changes it.
+func PackID(name string, dets []MultiQueryEntry) string {
+	lines := make([]string, 0, len(dets))
+	for _, d := range dets {
+		lines = append(lines, d.Label+"\x00"+strings.TrimSpace(d.Stmt))
+	}
+	sort.Strings(lines)
+	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return name + "@" + hex.EncodeToString(h[:])[:8]
+}

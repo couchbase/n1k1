@@ -997,6 +997,38 @@ func appendRecordID(dst []byte, prefix string, n int) []byte {
 	return dst
 }
 
+// ParseRecordPos decomposes a record id into a stable per-container key and a
+// monotonic within-container position, for the CEP append cursor (DESIGN-cep.md
+// § Delta strategies). An id built by appendRecordID + the jsonl seekable suffix
+// looks like "<path>#<line>@<byteOffset>" (e.g. "default/app/app.jsonl#41@20480").
+//
+// The returned path is everything before the "#" -- an opaque, stable key (it need
+// not be a real filesystem path, only consistent across scans of the same
+// container). pos is the byte offset when a "@<offset>" suffix is present (the
+// robust append high-water: strictly increasing as lines are appended, unaffected
+// by blank-line skipping), else the line ordinal from "#<n>". ok is false for a
+// bare one-doc-per-file stem (no "#"), which has no within-file position -- such a
+// source is a whole-file unit the append filter passes through unfiltered.
+func ParseRecordPos(id []byte) (path string, pos int64, ok bool) {
+	h := bytes.LastIndexByte(id, '#')
+	if h < 0 {
+		return string(id), 0, false
+	}
+	path = string(id[:h])
+	rest := id[h+1:]
+	if at := bytes.LastIndexByte(rest, '@'); at >= 0 {
+		if n, err := strconv.ParseInt(string(rest[at+1:]), 10, 64); err == nil {
+			return path, n, true // byte offset (seekable jsonl) -- preferred
+		}
+		rest = rest[:at] // malformed suffix: fall back to the "#<n>" ordinal
+	}
+	n, err := strconv.ParseInt(string(rest), 10, 64)
+	if err != nil {
+		return path, 0, false
+	}
+	return path, n, true
+}
+
 // -------------------------------------------------------------- CSV/TSV source
 
 // csvSource decodes a delimited file (CSV/TSV) into one JSON object per data

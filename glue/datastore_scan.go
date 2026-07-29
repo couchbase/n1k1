@@ -382,6 +382,17 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 		yieldErr(fmt.Errorf("DatastoreScanRecords, open %q: %v", keyspace.Name(), err))
 		return
 	}
+	// CEP append cursor (DESIGN-cep.md): wrap the source so only records past the
+	// committed per-container high-water are yielded (and the new water is tracked).
+	// Reached via getRoot() so a UNION-ALL clone shares the one collector. Wrapping
+	// here -- before the pushdown asserts below -- means a filtered scan forgoes
+	// column/predicate pushdown, but that only happens under an active cursor (nil
+	// for every normal query), and jsonl/dir append sources have no pushdown anyway.
+	if context != nil {
+		if f := context.getRoot().scanFilter; f != nil {
+			src = f.wrap(src)
+		}
+	}
 	defer src.Close()
 
 	// Column-projection pushdown (DESIGN-col.md Step 4): if the planner determined

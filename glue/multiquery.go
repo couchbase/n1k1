@@ -158,10 +158,10 @@ type LabelResult struct {
 // no entry fused (empty pack, or all standalone/rejected) -- an honestly empty
 // fused plan; Run() still produces the standalone entries' labelResults.
 type CompiledMultiQueryEntries struct {
-	Plan           *base.Op
-	Temps          []interface{}
-	Standalone     []MultiQueryEntry
-	Rejected       []RejectedEntry
+	Plan               *base.Op
+	Temps              []interface{}
+	Standalone         []MultiQueryEntry
+	Rejected           []RejectedEntry
 	LabelResultsLabels base.Labels
 
 	// DetKeyspace maps a FUSED entry's Label to the keyspace it scans (its qualified
@@ -377,15 +377,15 @@ func (s *Session) MultiQueryCompile(dets []MultiQueryEntry) (*CompiledMultiQuery
 	}
 
 	return &CompiledMultiQueryEntries{
-		Plan:              planOp,
-		Temps:             unified.Temps,
-		Standalone:        standalone,
-		Rejected:          rejected,
-		LabelResultsLabels:    labelResultsLabels,
-		EntryKeyspace:     detKeyspace,
-		CorrelationGroups: correlationGroups,
-		wokenByTag:        wokenByTag,
-		session:           s,
+		Plan:               planOp,
+		Temps:              unified.Temps,
+		Standalone:         standalone,
+		Rejected:           rejected,
+		LabelResultsLabels: labelResultsLabels,
+		EntryKeyspace:      detKeyspace,
+		CorrelationGroups:  correlationGroups,
+		wokenByTag:         wokenByTag,
+		session:            s,
 	}, nil
 }
 
@@ -901,6 +901,7 @@ func (cc *CompiledMultiQueryEntries) runStream(onLabelResult func(LabelResult) e
 	}
 
 	gctx := NewGlueContext(time.Now())
+	gctx.scanFilter = s.cursorFilter                    // CEP append cursor (nil = off)
 	gctx.InitSubqueries(s.Store, s.Namespace, nil, nil) // no subqueries in fusable entries
 	vars.Ctx.Warn = func(w string) { gctx.Warning(errors.NewWarning(w)) }
 

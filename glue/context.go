@@ -155,6 +155,12 @@ type GlueContext struct {
 	// after the run into Result.BoxedEvals. See ExprTree and DESIGN-exprs.md.
 	boxedEvals int64
 
+	// scanFilter, when set on the request root, is the CEP append-cursor filter:
+	// DatastoreScanRecords (reaching it via getRoot(), so UNION-ALL clones share the
+	// one collector) wraps the record source to drop already-seen records and track
+	// the new high-water. nil for a normal query. See cursor.go / DESIGN-cep.md.
+	scanFilter *RecordScanFilter
+
 	// jsRT is the lazily-built goja runtime for JS UDFs, scoped to THIS context.
 	// A fresh GlueContext per Session.Run makes it per-query (JS globals reset each
 	// query); ChainClone deliberately does NOT copy it, so each concurrent UNION
