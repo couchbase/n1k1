@@ -17,12 +17,13 @@ Concrete capabilities, from the user/agent point of view — in the order they'd
   It holds **only a name** — n1k1 holds the high-water mark.
 
   ```
-  $ n1k1 .multi cursor fetch new-github-issues   # git-shaped; or the MCP tool call
-  → { "cursor":"new-github-issues", "tick":"t-0008", "status":"open", "count":3,
+  $ n1k1 .multi cursor peek new-github-issues   # a safe look; or the MCP tool call
+  → { "cursor":"new-github-issues", "status":"pending", "count":3,
       "from":"gh:issues@321", "to":"gh:issues@324",
       "findings":[ {"op":"insert","id":"#322","fingerprint":"f5e1a2", "…":"…"}, "…" ] }
-  # fetch STAGES the delta (cursor not moved yet); agent acts, then `.multi cursor ack … t-0008`
-  # advances it. Crash before ack? re-fetch re-delivers t-0008 verbatim. (`pull` = fetch+ack in one.)
+  # peek does NOT move the cursor (idempotent). Agent acts, then
+  # `.multi cursor advance new-github-issues --to gh:issues@324` commits. Crash before that?
+  # re-peek shows the same pending set. (`next` = peek + advance in one.)
   ```
 
 - **Two flavors of "changed":** new **appended** rows (new issues / tickets / emails / log lines),
@@ -43,7 +44,7 @@ Concrete capabilities, from the user/agent point of view — in the order they'd
   to. Same names, same recipes — the CLI cursors *become* server monitors.
 
 The through-line: **the store of named cursors/monitors is an episodic agent's externalized standing
-memory** — a fresh wake asks `cursor list` / `cursor fetch <name>` instead of reconstructing "what
+memory** — a fresh wake asks `cursor list` / `cursor peek <name>` instead of reconstructing "what
 am I watching and where did I leave off?" from nothing.
 
 ## Model & vocabulary
@@ -89,34 +90,38 @@ The query is *pure stock SQL++*, unchanged across all three; cadence is an execu
 | mode | behavior | who | lift |
 |---|---|---|---|
 | **`once`** (today) | scan to EOF, emit, exit | ad-hoc / batch | done |
-| **`fetch`/`pull`** (poll cadence) | one caller-driven step: run the bound pack from the named cursor, emit the delta. `fetch` *stages* it (advance later on `ack`); `pull` advances now | **the cron/harness agent** | small |
+| **`peek`/`next`** (poll cadence) | one caller-driven step: run the bound pack from the named cursor, emit the delta. `peek` does *not* move the cursor (advance later); `next` advances now | **the cron/harness agent** | small |
 | **`follow`** | block on a live source, emit continuously; process stays alive | dashboards, alerting daemons | large (engine work — see the gap) |
 
-### Verbs: `fetch` / `ack` / `pull` (git-shaped, so mutation is self-evident)
+### Verbs: `peek` / `advance` / `next` (plain cursor/stream — not git)
 
-The poll cadence is realized by a **run modifier** + a small verb set — never a monitor object and
-never SQL syntax. The verbs borrow git's `fetch`-vs-`pull` split, which maps *exactly* onto "safe vs
-advancing" and needs no explanation to any dev or agent:
+What we're building is a **durable consumer reading forward over a change stream** — a cursor with a
+committed position, lag, and at-least-once redelivery. That's the queue/stream-consumer model (Kafka
+offsets, message acks), **not git's content-DAG** — so beyond the one useful borrow (git's
+`fetch`-vs-`pull` = "safe get" vs "get + advance"), git words (`commit`, `reset --hard`, a
+commit/stage-id) drag in versioning baggage that doesn't fit. Plain cursor/queue words say it
+straight — three honest verbs, **peek looks, advance moves, next does both**:
 
-- **`.multi cursor fetch NAME`** — run the bound pack from the cursor, emit the delta, and **stage a
-  tick** (journaled) — but do **not** advance the committed cursor (like `git fetch` not moving your
-  branch). **Idempotent and safe:** re-`fetch` re-delivers the same open tick, so a crash before you
-  act loses nothing → the at-least-once default.
-- **`.multi cursor ack NAME <tick>`** — advance the committed cursor past a staged tick, once you've
-  acted on it. (Pairs as "fetch … ack"; `fetch-ack` is a fine explicit-name alternative.)
-- **`.multi cursor pull NAME`** — `fetch` + `ack` in one shot (like `git pull` = fetch + advance):
-  fire-and-forget for "I don't mind missing some." Advances immediately.
-- **`--cursor=NAME`** on `.multi run <pack>` is the **first-run bind** (establishes the cursor +
-  does the first fetch/pull); thereafter you name the cursor, not the pack.
-- **`peek`** *(optional)* — a pure preview that stages nothing (`git ls-remote`-ish). Likely
-  redundant, since `fetch`-without-`ack` is already a safe non-committal read; kept only if a
-  journal-free glance proves worthwhile.
+- **`.multi cursor peek NAME`** — return the pending delta (everything since the committed position);
+  the cursor does **not** move. **Idempotent until you advance** — re-`peek` shows the same pending
+  set, so a crash before you act loses nothing. Honestly non-mutating (queue/stack *peek* = look
+  without consuming) — the "safe read" the earlier names muddied.
+- **`.multi cursor advance NAME [--to <pos>]`** — commit the cursor forward past what you handled
+  (default: past the last `peek`; `--to` pins it and errors if the committed position moved under you
+  — optimistic concurrency). This is Kafka's *commit-offset*, said plainly.
+- **`.multi cursor next NAME`** — `peek` + `advance` in one shot (an iterator's `next()`): the
+  fire-and-forget for "I don't mind missing some."
+- **`--cursor=NAME`** on `.multi run <pack>` is the **first-run bind** (establishes the cursor + does
+  the first `next`/`peek`); thereafter you name the cursor, not the pack.
 
-`fetch`/`ack`/`pull` are the mutation-honest replacement for a single misleading `poll` (which reads
-like a safe getter but would advance state). A **tick** is the *noun*: one staged delivery
-(`{tick-id, from→to, findings}`) — `fetch` opens it, `ack` commits it, `pull` does both.
+**No tick-id.** You don't identify a batch; you commit a *position* (`advance --to <pos>`), exactly
+as a stream consumer commits an offset — so the earlier `tick`/`tick-id` noun is dropped. (An
+internal per-cursor journal can make replay exact + re-scan-free, but that's an optimization, not a
+user-facing handle.) Concepts still borrowed from the stream-consumer world: **lag** (how far
+behind), **`reset`/`seek`** (jump to an arbitrary position — distinct from forward `advance`),
+**at-least-once** + **fingerprint-dedup**.
 
-Optional read-only escape hatch inside SQL: a scalar **`SINCE(NAME)`** UDF for authors who want the
+Optional read-only escape hatch inside SQL: the scalar **`SINCE(NAME)`** UDF for authors who want the
 mark visible in a predicate (`WHERE log.ts > SINCE('daily')`). Grammar-legal (scalar UDFs exist; a
 `FROM tvf(…)` would not be — [DESIGN-prepare.md](DESIGN-prepare.md), "the one gap"). It **reads** the
 mark, never advances it (the verbs own advance), and only fits append with a monotonic column.
@@ -128,8 +133,8 @@ A cursor is the persisted state of *polling a particular query-pack*, so it has 
 own — which settles where it lives: **under `.multi`**, never as a separate top-level `.cursor`.
 The first `.multi run <pack> --cursor=NAME` **binds** NAME to that pack's identity (`query+binding
 SHA`) alongside its positions; thereafter the cursor record knows its own query (`.multi cursor
-show NAME` reveals the bound pack), so `.multi cursor fetch NAME` re-runs it without re-naming the
-pack, and pointing NAME at a *different* pack is an **error, not a silent meaningless reuse**.
+show NAME` reveals the bound pack), so `.multi cursor peek/next NAME` re-runs it without re-naming
+the pack, and pointing NAME at a *different* pack is an **error, not a silent meaningless reuse**.
 
 Taxonomy choice: keep the **pack verbs flat** (`run`/`lint`/`explain`/`test`/`list`) — they *are*
 what `.multi` operates on — and give ancillary state its own **sub-noun** `.multi cursor <verb>`
@@ -142,16 +147,16 @@ container ls`/`docker image ls` once its surface sprawled; if `.multi` grows man
 replaces the earlier muddle of a top-level `.cursor` + a bare `.multi cursors`.)
 
 ```
-.multi run <pack> --cursor=NAME      # first-run BIND: NAME→(pack,binding)+positions, then a fetch/pull
-.multi cursor fetch <NAME>           # delta + STAGE a tick; committed cursor NOT advanced (safe, idempotent)
-.multi cursor ack   <NAME> <tick>    # advance the committed cursor past a staged tick (after acting)
-.multi cursor pull  <NAME>           # fetch + ack in one shot (fire-and-forget; advances now)
-.multi cursor list                   # NAME, bound pack, sources, committed offset, last-run, count, lag
-.multi cursor show  <NAME>           # positions + bound pack/binding + open tick + last-run summary
-.multi cursor log   <NAME>           # tick reflog (history)
-.multi cursor reset <NAME> [--to … | --back N]   # seek/rewind — replay/backfill
-.multi cursor rm    <NAME>           # forget it (next bind starts fresh)
-.multi cursor export/import <NAME>   # opaque token for handoff/backfill to another box (opt-in)
+.multi run <pack> --cursor=NAME         # first-run BIND: NAME→(pack,binding)+position, then a peek/next
+.multi cursor peek    <NAME>            # pending delta since the committed position; cursor NOT moved (safe, idempotent)
+.multi cursor advance <NAME> [--to <pos>]   # commit the cursor forward past what you handled
+.multi cursor next    <NAME>            # peek + advance in one shot (fire-and-forget; advances now)
+.multi cursor list                      # NAME, bound pack, sources, committed position, last-run, count, lag
+.multi cursor show    <NAME>            # committed position + bound pack/binding + pending? + last-run summary
+.multi cursor log     <NAME>            # advance history (reflog)
+.multi cursor reset   <NAME> [--to … | --back N]   # seek/rewind — replay/backfill
+.multi cursor rm      <NAME>            # forget it (next bind starts fresh)
+.multi cursor export/import <NAME>      # opaque position token for handoff/backfill (opt-in)
 ```
 
 ### Delta strategies — what "new" means
@@ -179,57 +184,54 @@ requires an agent to persist a cursor across wakes:
   n1k1 is then a pure function of `(recipe, cursor-store, source)`. Keep the cursor an **opaque,
   serializable, comparable value** so the *same* code works when the backend later becomes a served
   KV or a distributed object store.
-- **Within-tick ack** (see Delivery & crash-safety below): `fetch` returns findings + a staged tick
-  **without** advancing; a later `ack(NAME, tick-id)` commits. The only "cookie" is a *within-tick*
-  one (the tick-id) the agent holds in working context and discards — never across wakes. Because
-  agents crash, **`fetch` (stage, don't advance) is the safe default**; `pull` (fetch + advance in
-  one shot) is the fire-and-forget opt-in.
+- **Two-step advance** (see Delivery & crash-safety below): `peek` returns the pending delta
+  **without** moving the cursor; a later `advance(NAME, --to <pos>)` commits it. The only "cookie" is
+  a within-*step* one (the `to` position) the agent holds in working context and discards — never
+  across wakes. Because agents crash, **`peek` (look, don't move) is the safe default**; `next`
+  (peek + advance in one) is the fire-and-forget opt-in.
 - **Action idempotency is separate:** the cursor stops n1k1 *re-emitting*; it doesn't stop the agent
   *acting twice*. Each finding carries a **fingerprint** = hash of `(detector-sha, source-id,
   matched-key)` (the Alertmanager/PagerDuty `dedup_key`) so the agent dedupes side effects
   independently of cursor advance.
 
-### Delivery & crash-safety — the tick journal (n1k1 owns durability, not the agent)
+### Delivery & crash-safety — `peek` is idempotent until you `advance`
 
-The failure auto-advance invites: the agent runs `--cursor=NAME`, n1k1 emits to stdout and advances,
-the agent crashes *before* durably acting → those findings are lost, never re-delivered (Kafka's
-`enable.auto.commit` foot-gun). The commit point decides the guarantee: advance-before-emit =
-at-most-once; advance-on-emit-success (stdout flushed, exit 0) catches a *broken pipe* (dead reader)
-but **not** "agent read it all, then crashed while acting" — still at-most-once from the agent's
-side; **advance-only-on-ack** = at-least-once.
+The failure a get-and-advance-in-one invites: the agent gets the delta, the cursor advances, the
+agent crashes *before* durably acting → lost, never redelivered (Kafka's `enable.auto.commit`
+foot-gun). The fix is the two-step, and its whole content is: **getting the delta must not move the
+cursor.**
 
-Since the agent is the unreliable party, durability belongs on the reliable side — n1k1 — so the
-agent needn't `tee` its own `.out`. Make a **tick** a durable, replayable unit n1k1 owns:
+- **`peek` computes the pending delta from the committed position and returns it — without moving
+  the cursor.** It is **idempotent until you `advance`**: re-`peek` yields the same pending set (for
+  `append`, the same rows since the offset; for `diff`, the same diff-vs-committed-snapshot). So a
+  crash any time before `advance` loses nothing — the next `peek` redelivers it.
+- **`advance --to <pos>`** commits the position forward, once you've durably acted. `next` fuses
+  peek+advance for fire-and-forget (at-most-once — fine for "I don't mind missing some").
+- **Finding fingerprints** (the `dedup_key`) make redelivery safe: an agent that already acted on
+  part of a re-`peek`'d set dedupes the rest → at-least-once delivery + idempotent consumer =
+  exactly-once *effect*.
 
-- A `.multi cursor fetch` (or first-run `--cursor`) **opens/stages a tick**: n1k1 journals
-  `{tick-id, from→to cursor, findings, started-at}` under `.n1k1/ticks/<NAME>/` and returns it, but
-  leaves the *committed* cursor at `from` (like `git fetch` not moving your branch).
-- The agent processes, then `.multi cursor ack <NAME> <tick-id>` → advances `to`, closes the tick.
-  (`.multi cursor pull` does the fetch + ack in one shot.)
-- **Crash before ack → the next `fetch` re-delivers the open tick verbatim from the journal** (exact
-  same rows, no re-scan) instead of advancing. At-least-once with exact-content replay. Finding
-  fingerprints make re-delivery safe (idempotent consumer) → exactly-once *effect*.
-
-This one journal unifies the obvious remedies: it *is* "n1k1 records the `.out` in `.n1k1/`", its
-open-tick re-delivery *is* the crash safety net, and keeping the last K closed ticks *is* "a few
-rounds of previous cursor states" — a **reflog**: `.multi cursor log <NAME>` (history) + `.multi
-cursor reset <NAME> --back N` (rewind/replay). Bounded ring (GC old ticks); journal full findings when small,
-else positions + fingerprints + count and replay by re-running from `from` (idempotent via
-fingerprints). Prior art: git `reflog`, ZFS snapshots, Kafka seek-back, the transactional outbox.
+So the agent needn't `tee` its own `.out`, and there's **no batch id / staged "tick"** to track —
+durability *is* the committed position (n1k1's), and the pending delta is recomputable on demand.
+*(Optional internal optimization: n1k1 may journal each pending delta under `.n1k1/journal/<NAME>/`
+so replay is exact + re-scan-free and `.multi cursor log` / `reset --back N` can show/rewind an
+advance history. That's under the hood — an optimization, not a user-facing handle. Prior art: Kafka
+seek-back, git `reflog`, the transactional outbox.)*
 
 ### Worked example — the JSON an agent sees
 
 One response envelope across every case. `status` tells the agent what happened; `advanced` says
-whether the *committed* cursor moved; `tick` is null when nothing was staged. `from`/`to` are opaque
-cursor tokens (shown here in a human-legible form: `gh:issues@324`, `file:app.log#20480`, `snap:9`).
+whether the *committed* cursor moved. `from`/`to` are opaque position tokens (shown here in a
+human-legible form: `gh:issues@324`, `file:app.log#20480`, `snap:9`) — the agent passes `to` back to
+`advance`; there is no separate batch id.
 
-**1 — `fetch`, new appended rows.** A tick is staged + journaled; the committed cursor stays at
-`from` (`advanced:false`) until `ack`:
+**1 — `peek`, new appended rows.** The pending delta since the committed position; the cursor does
+**not** move (`advanced:false`, `status:"pending"`):
 
 ```jsonc
-$ n1k1 .multi cursor fetch new-github-issues
-{ "cursor":"new-github-issues", "pack":"triage@a1b2c3", "tick":"t-0008", "status":"open",
-  "from":"gh:issues@321", "to":"gh:issues@324", "advanced":false, "count":3, "ack":"pending",
+$ n1k1 .multi cursor peek new-github-issues
+{ "cursor":"new-github-issues", "pack":"triage@a1b2c3", "status":"pending",
+  "from":"gh:issues@321", "to":"gh:issues@324", "advanced":false, "count":3,
   "findings":[
     {"op":"insert","id":"#322","fingerprint":"f5e1a2","detector":"triage@a1b2c3",
      "doc":{"number":322,"title":"crash on startup","labels":["bug"]}},
@@ -237,49 +239,49 @@ $ n1k1 .multi cursor fetch new-github-issues
     {"op":"insert","id":"#324","fingerprint":"2a4f11","detector":"triage@a1b2c3","doc":{"…":"…"}} ] }
 ```
 
-**2 — `ack` the tick** (agent has acted): advances the committed cursor:
+**2 — `advance`** (agent has acted): commit the position to the `to` from the peek:
 
 ```jsonc
-$ n1k1 .multi cursor ack new-github-issues t-0008
-{ "cursor":"new-github-issues", "tick":"t-0008", "status":"committed",
+$ n1k1 .multi cursor advance new-github-issues --to gh:issues@324
+{ "cursor":"new-github-issues", "status":"advanced",
   "from":"gh:issues@321", "to":"gh:issues@324", "advanced":true }
 ```
 
-**3 — nothing new (the "nothing happened" case).** No rows past the cursor ⇒ no tick staged,
-`from==to`, `advanced:false`, empty findings — the agent's cheap "nothing to do" signal:
+**3 — nothing new (the "nothing happened" case).** No rows past the cursor ⇒ `from==to`,
+`advanced:false`, empty — the agent's cheap "nothing to do" signal:
 
 ```jsonc
-$ n1k1 .multi cursor fetch new-github-issues
-{ "cursor":"new-github-issues", "pack":"triage@a1b2c3", "tick":null, "status":"empty",
+$ n1k1 .multi cursor peek new-github-issues
+{ "cursor":"new-github-issues", "pack":"triage@a1b2c3", "status":"empty",
   "from":"gh:issues@324", "to":"gh:issues@324", "advanced":false, "count":0, "findings":[] }
 ```
 
-**4 — crash before ack → next `fetch` re-delivers the open tick verbatim.** Same `tick`, same rows
-from the journal, `status:"replay"`; the agent dedupes by `fingerprint` anything it already acted on:
+**4 — crash before `advance` → just re-`peek`.** No special path: `peek` is idempotent until you
+advance, so it returns the same pending set. The agent dedupes by `fingerprint` anything it already
+acted on:
 
 ```jsonc
-$ n1k1 .multi cursor fetch new-github-issues        # t-0008 was never acked
-{ "cursor":"new-github-issues", "pack":"triage@a1b2c3", "tick":"t-0008", "status":"replay",
-  "from":"gh:issues@321", "to":"gh:issues@324", "advanced":false, "count":3, "ack":"pending",
-  "note":"re-delivering open tick t-0008 (staged 14:00:12Z, not yet acked)",
+$ n1k1 .multi cursor peek new-github-issues        # never advanced last time
+{ "cursor":"new-github-issues", "pack":"triage@a1b2c3", "status":"pending",
+  "from":"gh:issues@321", "to":"gh:issues@324", "advanced":false, "count":3,
   "findings":[ "… same three as case 1 …" ] }
 ```
 
-**5 — `pull` (fetch + ack, fire-and-forget).** Advances immediately (`advanced:true`,
-`status:"committed"`) — at-most-once, fine for "I don't mind missing some":
+**5 — `next` (peek + advance, fire-and-forget).** Advances immediately (`advanced:true`,
+`status:"advanced"`) — at-most-once, fine for "I don't mind missing some":
 
 ```jsonc
-$ n1k1 .multi cursor pull log-errors
-{ "cursor":"log-errors", "pack":"errsev@99", "tick":"t-0042", "status":"committed",
+$ n1k1 .multi cursor next log-errors
+{ "cursor":"log-errors", "pack":"errsev@99", "status":"advanced",
   "from":"file:app.log#10240", "to":"file:app.log#20480", "advanced":true, "count":2, "findings":[ "…" ] }
 ```
 
-**6 — `diff`-mode `fetch` (mutable source).** Change events in the Debezium envelope:
+**6 — `diff`-mode `peek` (mutable source).** Change events in the Debezium envelope:
 
 ```jsonc
-$ n1k1 .multi cursor fetch open-incidents
-{ "cursor":"open-incidents", "pack":"incidents@7f", "tick":"t-0003", "status":"open",
-  "from":"snap:8", "to":"snap:9", "advanced":false, "count":3, "ack":"pending",
+$ n1k1 .multi cursor peek open-incidents
+{ "cursor":"open-incidents", "pack":"incidents@7f", "status":"pending",
+  "from":"snap:8", "to":"snap:9", "advanced":false, "count":3,
   "findings":[
     {"op":"update","id":"#42","before":{"status":"open"},"after":{"status":"closed"},"fingerprint":"…"},
     {"op":"insert","id":"#57","after":{"status":"open","sev":"high"},"fingerprint":"…"},
@@ -289,8 +291,8 @@ $ n1k1 .multi cursor fetch open-incidents
 **7 — error (fail-loud).** A binding that resolves to nothing errors; the cursor never moves:
 
 ```jsonc
-$ n1k1 .multi cursor fetch new-github-issues
-{ "cursor":"new-github-issues", "pack":"triage@a1b2c3", "tick":null, "status":"error",
+$ n1k1 .multi cursor peek new-github-issues
+{ "cursor":"new-github-issues", "pack":"triage@a1b2c3", "status":"error",
   "from":"gh:issues@324", "to":"gh:issues@324", "advanced":false, "count":0,
   "error":{"kind":"source-unbound","message":"logical keyspace 'gh_issues' resolved to nothing (fail-loud)"} }
 ```
@@ -301,16 +303,17 @@ $ n1k1 .multi cursor fetch new-github-issues
 $ n1k1 .multi cursor show new-github-issues
 { "cursor":"new-github-issues", "pack":"triage@a1b2c3",
   "binding":"gh_issues → poll(api.github.com/repos/…/issues, every=15m)", "mode":"append",
-  "committed":"gh:issues@324", "open_tick":null, "lag":"0 (current)",
-  "last_run":"2026-07-27T14:03:11Z", "last_count":3, "total_ticks":8,
+  "committed":"gh:issues@324", "pending":false, "lag":"0 (current)",
+  "last_run":"2026-07-27T14:03:11Z", "last_count":3, "total_advances":8,
   "labels":{"team":"support","severity":"normal"},
   "annotations":{"provenance":{"authored_by":"agent-x","model":"…","at":"2026-07-20",
                                "prompt":"tell me about new bug issues"}} }
 ```
 
-The `status` enum an agent switches on: **`open`** (act, then `ack`), **`committed`** (done — `pull`
-or post-`ack`), **`empty`** (nothing to do), **`replay`** (re-delivery — dedupe by fingerprint),
-**`error`** (fail-loud; cursor unmoved). Only `committed` implies `advanced:true`.
+The `status` enum an agent switches on: **`pending`** (a delta exists — act, then `advance`, or use
+`next`), **`advanced`** (position moved — after `advance`/`next`), **`empty`** (nothing to do), and
+**`error`** (fail-loud; cursor unmoved). Only `advanced` implies `advanced:true`; re-`peek` after a
+crash is just `pending` again (idempotent).
 
 ### Composition — a DAG of packs (one pack's findings feed the next)
 
@@ -322,10 +325,10 @@ DAG, cascading materialized views.
 
 - Pack A `FROM indexer_log` → findings `pack:A`. Pack B `FROM pack:A GROUP BY … HAVING count>N` →
   higher-level "incident" findings. n1k1 topologically orders the DAG (reject cycles, like dbt).
-- **Synergy with the tick journal:** A's journaled tick output *is* the materialized intermediate B
-  reads — one mechanism (the durable findings outbox) serves both crash-safety *and* inter-pack
-  dataflow. Each pack keeps its **own cursor** over its (derived) source, so incremental poll
-  composes down the DAG: A's fresh findings this tick are B's new input rows.
+- **Synergy with the journal:** A's materialized findings (the same durable outbox that makes
+  replay exact) *are* the intermediate B reads — one mechanism serves both crash-safety *and*
+  inter-pack dataflow. Each pack keeps its **own cursor** over its (derived) source, so incremental
+  polling composes down the DAG: A's fresh findings this step are B's new input rows.
 - **Lineage composes:** a B-finding carries the `detector@sha` chain + the fingerprints of the
   A-findings (and their source rows) that produced it, so an agent can answer *"why did this
   incident fire?"* by walking the lineage.
@@ -363,7 +366,7 @@ drift like `kubectl edit` vs GitOps).
   shell clients.
 
 Monitor CRUD (`create/list/show/pause/resume/reset/snooze/delete`) mirrors the CLI + these verbs.
-**Insight:** `serve` can begin as *scheduled-poll* (the server runs Phase-1 `fetch`/`pull` on a timer — no
+**Insight:** `serve` can begin as *scheduled-poll* (the server runs Phase-1 `peek`+`advance` on a timer — no
 unbounded-source engine work), and only later add true `follow`. So monitors are useful well before
 the continuous-operation engine work lands.
 
@@ -381,13 +384,13 @@ Each phase is independently shippable and useful. Phases 1–3 need **no daemon,
 engine work, and no grammar change** — pure cursor + delta + reconcile plumbing over the existing
 scan + corpus machinery.
 
-**Phase 1 — Named cursors + `fetch`/`ack` (poll cadence) + the tick journal (MVP).** *Build on:* push-based scan,
+**Phase 1 — Named cursors + `peek`/`advance` (poll cadence) (MVP).** *Build on:* push-based scan,
 `records.Source` over jsonl/dir, `.multi run`, `_meta.pos/offset`, the recipe loader. *New:* a
-cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the `--cursor=NAME` modifier
-(since-filter + advance); **append** delta only; the **tick journal** (`.n1k1/ticks/<NAME>/`,
-bounded ring) giving at-least-once open-tick re-delivery + a reflog; and the cursor verbs
-`.multi cursor {fetch,ack,pull,list,show,log,reset,rm}`. → The whole crash-safe run-and-done "what's new" loop
-for append sources.
+cursor store (`.n1k1-state/cursors/<NAME>`, atomic write-temp-rename); the `--cursor=NAME` bind + the
+cursor verbs `.multi cursor {peek,advance,next,list,show,log,reset,rm}`; **append** delta only;
+at-least-once by construction (peek is idempotent until advance). Optional: journal each pending
+delta (`.n1k1/journal/<NAME>/`, bounded ring) for exact/re-scan-free replay + a `log`/`reset --back`
+reflog. → The whole crash-safe run-and-done "what's new" loop for append sources.
 
 **Phase 2 — `diff`/snapshot delta.** *Build on:* the spillable rhmap store, doc-id extraction.
 *New:* `mode: diff` — persist a prior snapshot keyed by id under the cursor, diff on run, emit the
@@ -398,14 +401,14 @@ recipes), `.multi lint`. *New:* treat a recipe dir as desired-state; `plan` (dif
 `apply --prune` (reconcile, preserve unchanged cursors); labels/annotations in front-matter.
 
 **Phase 4 — Composition (pack DAG).** *Build on:* temp-tables / CTEs / sequence op (exist), and the
-Phase-1 tick journal as the materialized intermediate. *New:* a `pack:<name>` findings keyspace a
+Phase-1 findings journal as the materialized intermediate. *New:* a `pack:<name>` findings keyspace a
 downstream pack can `FROM`; topological ordering (reject cycles); per-pack cursors so incremental
 poll composes; lineage on findings. MVP re-polls A's materialized findings from B (not true
 cross-layer delta). → correlation/incident packs over primitive detections.
 
 **Phase 5 — `n1k1 serve` + MCP (scheduled monitors).** *New:* a long-running process holding the
 cursor store; the `monitor` object (cursor + query + schedule + status); server-driven scheduled
-scheduled `fetch`/`pull`; the MCP resource/tool/subscribe surface + long-poll HTTP. No unbounded source yet
+scheduled `peek`+`advance`; the MCP resource/tool/subscribe surface + long-poll HTTP. No unbounded source yet
 (scheduled-poll reuses Phase 1). → self-running monitors, agent-subscribable.
 
 **Phase 6 — true `follow` / continuous.** The heavy engine work (see next section): unbounded
@@ -470,12 +473,14 @@ combination — embedded + SQL++ + AI-authored git corpus + MQO — not any sing
 
 ## Prior art — nouns & verbs we're borrowing (the a-ha takeaways)
 
-- **git `fetch` vs `pull`** — the verb split we adopt: `fetch` gets new commits without moving your
-  branch (safe, non-advancing); `pull` = fetch + advance HEAD. Maps *exactly* onto stage-vs-commit,
-  so the mutation semantics are self-evident to any dev or agent. (`reflog` = the cursor's tick
-  history; `git stash`/`git remote` = the flat-core-verbs-plus-sub-noun taxonomy.)
+- **Kafka / queue-consumer model** — what we actually are: a durable consumer with a committed
+  **offset**, **lag**, **seek**, at-least-once + redelivery, and *commit-offset* (= `advance`). This,
+  not git, is the fitting mental model; `peek`/`next` are the plain cursor/iterator words for
+  "look" and "get + advance". (`git remote`/`git stash` still lend the flat-core-verbs + sub-noun
+  taxonomy; and git's `fetch`-vs-`pull` was the *inspiration* for the safe-get-vs-get-and-advance
+  split — but we say it plainly rather than force git's content-DAG verbs like `commit`/`reset --hard`.)
 - **CouchDB/Couchbase `_changes`** (on-brand): `?since=<seq>` + `feed=normal|longpoll|continuous`.
-  *The* canonical "what changed since seq N" API — maps 1:1 onto fetch/follow + cursor.
+  *The* canonical "what changed since seq N" API — maps 1:1 onto peek/follow + cursor.
 - **Snowflake Streams + Tasks:** a `STREAM` is a change-cursor that **advances on consumption**; a
   `TASK` is scheduled SQL. The STREAM-vs-TASK (cursor vs scheduled-action) split is exactly our
   cursor-vs-monitor split — and why we reserve "task"/"monitor" for the thing that *does* something.
