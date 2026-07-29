@@ -92,22 +92,43 @@ func errorCaret(stmt, errText string, st cmd.Style) string {
 // parse -- the fix is to backtick it. Returns "" when the error isn't a
 // reserved-word case. Coloring follows st (no-op when st.On is false).
 func reservedWordHint(errText string, st cmd.Style) string {
+	tok := reservedWordToken(errText)
+	if tok == "" {
+		return ""
+	}
+	// Point at the topic: this is the one moment a user is thinking about reserved
+	// words, so name the full list + the per-word lookup right here (ISSUE-10).
+	return "  " + st.Dim("hint: "+tok+" is a reserved word here — quote it as `"+tok+
+		"`  (full list: .help reserved-words "+tok+")") + "\n"
+}
+
+// reservedWordToken extracts the offending reserved-word token from a parser error
+// whose form is "... at: <TOKEN> (reserved word)", or "" when the error isn't a
+// reserved-word case. Shared by the interactive hint and the pack-lint reason
+// augmenter (reservedWordReason).
+func reservedWordToken(errText string) string {
 	const marker = " (reserved word)"
 	i := strings.Index(errText, marker)
 	if i < 0 {
 		return ""
 	}
-	// The reserved token is the last "at: <TOKEN>" segment before the marker.
 	before := errText[:i]
 	at := strings.LastIndex(before, "at: ")
 	if at < 0 {
 		return ""
 	}
-	tok := strings.TrimSpace(before[at+len("at: "):])
-	if tok == "" {
-		return ""
+	return strings.TrimSpace(before[at+len("at: "):])
+}
+
+// reservedWordReason augments a rejected-entry reason with a backtick fix when it's
+// a reserved-word parse error, so `.multi lint`/`run`/`compose` flag an `AS value`
+// alias at authoring time with the fix (and the topic) instead of a bare parser
+// message (ISSUE-10 #2 / ISSUE-09 #4). A non-reserved-word reason is returned as-is.
+func reservedWordReason(reason string) string {
+	if tok := reservedWordToken(reason); tok != "" {
+		return reason + " — `" + tok + "` is a reserved word; backtick it (.help reserved-words " + tok + ")"
 	}
-	return "  " + st.Dim("hint: "+tok+" is a reserved word here — quote it as `"+tok+"`") + "\n"
+	return reason
 }
 
 // dottedKeyspaceHint returns a one-line hint when a statement referenced a dotted

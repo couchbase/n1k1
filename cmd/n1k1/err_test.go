@@ -175,3 +175,35 @@ func TestReservedWordHint(t *testing.T) {
 		}
 	}
 }
+
+// TestReservedWordDiscoverability covers ISSUE-10: the parse-error hint names the
+// .help reserved-words topic, and a rejected-entry reason is augmented with the
+// backtick fix + the per-word lookup (so lint/compose flag an `AS value` alias).
+func TestReservedWordDiscoverability(t *testing.T) {
+	const errText = "syntax error - line 1, column 13, near 'SELECT 1 AS ', at: value (reserved word)"
+
+	if tok := reservedWordToken(errText); tok != "value" {
+		t.Fatalf("reservedWordToken: got %q, want \"value\"", tok)
+	}
+	if tok := reservedWordToken("some other parse error"); tok != "" {
+		t.Fatalf("reservedWordToken(non-reserved): got %q, want \"\"", tok)
+	}
+
+	hint := reservedWordHint(errText, cmd.Style{})
+	for _, want := range []string{"reserved word", "`value`", ".help reserved-words value"} {
+		if !strings.Contains(hint, want) {
+			t.Fatalf("hint missing %q; got %q", want, hint)
+		}
+	}
+
+	got := reservedWordReason(errText)
+	for _, want := range []string{"backtick it", ".help reserved-words value"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reason augment missing %q; got %q", want, got)
+		}
+	}
+	// A non-reserved reason is unchanged.
+	if r := reservedWordReason("plain reason"); r != "plain reason" {
+		t.Fatalf("non-reserved reason changed: %q", r)
+	}
+}

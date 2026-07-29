@@ -137,7 +137,7 @@ func (c *cli) cmdMultiCompose(arg string) {
 		no := nodeOut{Node: n.Node, Count: n.Count}
 		if n.Rejected {
 			no.Status = "rejected"
-			no.Reason = n.Reason
+			no.Reason = reservedWordReason(n.Reason)
 			rejected = append(rejected, n.Node)
 		} else if emit[n.Node] {
 			for _, lr := range n.LabelResults {
@@ -154,7 +154,7 @@ func (c *cli) cmdMultiCompose(arg string) {
 	// count:0 into a downstream number (ISSUE-09). --allow-rejected opts into soft mode.
 	for _, n := range res.Nodes {
 		if n.Rejected {
-			fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), n.Node, c.style.Yellow(n.Reason))
+			fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), n.Node, c.style.Yellow(reservedWordReason(n.Reason)))
 		}
 	}
 	if len(rejected) > 0 && !a.allowRejected {

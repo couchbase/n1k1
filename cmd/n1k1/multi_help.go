@@ -149,9 +149,11 @@ TIPS (get the best out of a collection)
     across differently-named datasets (indexer.log vs indexer.0023.log) unchanged.
   - Data drift -- field-shape changes across source data releases are handled by evolving the
     queries (or the *.extract.js entries), not by writing per-version adapters.
-  - RESERVED WORDS: field names that are SQL++ keywords must be BACKTICKED, or the query fails to
-    parse. The built-in log entry emits "level" (reserved: ISOLATION LEVEL) -- write WHERE l.` + "`level`" + ` = "error".
-    Common offenders: "level", "keys", and natural aliases like "prev" (... AS ` + "`prev`" + `).
+  - RESERVED WORDS: field names AND column aliases that are SQL++ keywords must be BACKTICKED, or the
+    query fails to parse. The built-in log entry emits "level" (reserved: ISOLATION LEVEL) -- write
+    WHERE l.` + "`level`" + ` = "error". Aliases collide just as often: SELECT ... AS ` + "`value`" + ` (a rollup naming a
+    column "value"/"path"/"type"/"matched"). There are 216 -- ".help reserved-words <word>" answers
+    which; a parse error names the topic in its hint.
 
 TEMPORAL (ASOF) -- nearest-preceding correlation across two log streams (correlate an
 error with the step that preceded it) lowers a correlated argmax subquery to a streaming
