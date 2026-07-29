@@ -23,9 +23,12 @@
 package glue
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -93,6 +96,100 @@ func OpenSessionSources(sources []Source, namespace string) (*Session, error) {
 		return nil, err
 	}
 	return OpenSessionBound(root, namespace, b)
+}
+
+// SourcesConfig is the on-disk shape of a -sources config file (JSON / YAML / TOML) --
+// the declarative twin of the positional CLI source list (DESIGN-data.md §2). It
+// solves what the command line can't: a source path with spaces, many sources kept in
+// version control, and (Phase 2) per-source options. The map key is the keyspace name.
+//
+//	sources:
+//	  drive:  { path: "~/Google Drive/**" }   # object form
+//	  docs:   "~/Documents"                   # string shorthand (just a path)
+type SourcesConfig struct {
+	Sources map[string]SourceSpec `json:"sources"`
+}
+
+// SourceSpec is one entry of a SourcesConfig. It unmarshals from either a bare path
+// string ("~/x/**") or an object ({path: "~/x/**", ...}). The non-Path fields are
+// Phase 2 (parsed so the file format is stable, but rejected by LoadSources until the
+// federating composite datastore lands).
+type SourceSpec struct {
+	Path      string `json:"path"`
+	Formats   string `json:"formats,omitempty"`   // Phase 2: per-source -formats lockdown
+	Namespace string `json:"namespace,omitempty"` // Phase 2: place under a non-default namespace
+	Sorted    string `json:"sorted,omitempty"`    // Phase 2: declared sort key (sortedness contract)
+}
+
+// UnmarshalJSON accepts both a JSON string (shorthand for {path: <string>}) and an
+// object, so a config can write `docs: "~/Documents"` or `docs: {path: "~/Documents"}`.
+func (s *SourceSpec) UnmarshalJSON(b []byte) error {
+	if t := bytes.TrimSpace(b); len(t) > 0 && t[0] == '"' {
+		return json.Unmarshal(t, &s.Path)
+	}
+	type raw SourceSpec // avoid recursing into this method
+	return json.Unmarshal(b, (*raw)(s))
+}
+
+// LoadSources reads a -sources config file into a deterministic (name-sorted) []Source
+// for OpenSessionSources. It uses n1k1's own decoders (records.DecodeConfigFile), so
+// JSON/YAML/TOML all work. A relative source path anchors at the CONFIG FILE's
+// directory (so a config is portable regardless of CWD); ~ and absolute paths pass
+// through. Per-source options are rejected for now (Phase 2, see SourceSpec).
+func LoadSources(path string) ([]Source, error) {
+	jb, err := records.DecodeConfigFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading sources config %q: %w", path, err)
+	}
+	var cfg SourcesConfig
+	if err := json.Unmarshal(jb, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing sources config %q: %w", path, err)
+	}
+	if len(cfg.Sources) == 0 {
+		return nil, fmt.Errorf("sources config %q has no `sources`", path)
+	}
+	base, _ := filepath.Abs(filepath.Dir(path))
+	names := make([]string, 0, len(cfg.Sources))
+	for name := range cfg.Sources {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic keyspace order
+	out := make([]Source, 0, len(names))
+	for _, name := range names {
+		spec := cfg.Sources[name]
+		if strings.TrimSpace(spec.Path) == "" {
+			return nil, fmt.Errorf("source %q in %q has no path", name, path)
+		}
+		if spec.Formats != "" || spec.Namespace != "" || spec.Sorted != "" {
+			return nil, fmt.Errorf(
+				"source %q: per-source options (formats/namespace/sorted) are not yet supported "+
+					"(DESIGN-data.md §2 Phase 2)", name)
+		}
+		out = append(out, Source{Name: name, Path: configRelPath(spec.Path, base)})
+	}
+	return out, nil
+}
+
+// OpenSessionSourcesFile is LoadSources + OpenSessionSources: open a session directly
+// from a -sources config file.
+func OpenSessionSourcesFile(path, namespace string) (*Session, error) {
+	sources, err := LoadSources(path)
+	if err != nil {
+		return nil, err
+	}
+	return OpenSessionSources(sources, namespace)
+}
+
+// configRelPath anchors a config's relative source path at the config file's dir
+// (configBase, already absolute), so a config is portable regardless of CWD. A ~,
+// absolute, or object-store path passes through untouched (OpenSessionSources expands
+// ~ and rejects remote URIs in Phase 1).
+func configRelPath(p, configBase string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || strings.HasPrefix(p, "~") || filepath.IsAbs(p) || records.IsObjectStoreURI(p) {
+		return p
+	}
+	return filepath.Join(configBase, p)
 }
 
 // sourcePattern turns a (tilde-expanded) source path into the absolute path/glob a

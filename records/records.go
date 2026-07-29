@@ -913,6 +913,37 @@ func DecodeYAMLDoc(r io.Reader) (doc []byte, ok bool, err error) {
 	return jb, true, nil
 }
 
+// DecodeConfigFile reads a single-document JSON / YAML / TOML file (transparently
+// gzip/zstd-decompressed) and returns its canonical JSON bytes, so a caller can decode
+// a small config with n1k1's OWN format decoders -- the same YAML/TOML->JSON
+// conversions queries use -- rather than importing separate parsers. The file's inner
+// extension selects the format; an unrecognized extension is treated as JSON.
+func DecodeConfigFile(path string) ([]byte, error) {
+	data, err := ReadWholeDecompressed(path)
+	if err != nil {
+		return nil, err
+	}
+	switch innerExt(path) {
+	case ".yaml", ".yml":
+		doc, ok, derr := DecodeYAMLDoc(bytes.NewReader(data))
+		if derr != nil {
+			return nil, derr
+		}
+		if !ok {
+			return nil, fmt.Errorf("empty YAML document in %s", path)
+		}
+		return doc, nil
+	case ".toml":
+		tree, terr := toml.LoadBytes(data)
+		if terr != nil {
+			return nil, terr
+		}
+		return json.Marshal(tree.ToMap())
+	default: // .json / .jsonl / unknown -> already JSON
+		return data, nil
+	}
+}
+
 // yamlToJSONValue makes a YAML-decoded value json.Marshal-able: it rewrites any
 // map with non-string keys (YAML allows them; JSON doesn't) to a string-keyed
 // map, recursing through nested maps/slices. yaml.v3 already decodes string-keyed

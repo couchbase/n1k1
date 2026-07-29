@@ -126,14 +126,20 @@ in glue/patches/README.md.
       empty root; CLI arg parser + multi-source `.open` (cmd_sources.go /
       cmd_open.go). One bare path stays the classic single root. No engine change.
 
+- [x] Multi-source `-sources` config file (DESIGN-data.md §2). DONE: a JSON/YAML/
+      TOML file (name->path or {path,…}) parsed with n1k1's own decoders
+      (records.DecodeConfigFile -> glue.LoadSources/OpenSessionSourcesFile),
+      config-dir-relative paths, `-sources <file>` flag + `.open @<file>`. Solves
+      space-in-path + many-sources the CLI/`.open` can't. Per-source options
+      (formats/namespace/sorted) are parsed but rejected pending the composite.
+
 - [ ] Multi-source Phase 2 -- heterogeneous federation (DESIGN-data.md §2). A
       federating (composite) datastore to mix source KINDS (local dir + `s3://`
       iceberg + `.parquet`), each built by the full FileStoreBound pipeline, with
-      per-source options (formats/sortedness/namespace). Plus a declarative
-      `-sources` JSON/YAML/TOML config file (parsed with n1k1's own decoders --
-      handles space-in-path + per-source options the CLI/`.open` can't) and a
-      catalog.json `"sources"` map; both build the same []Source. Optional:
-      `.source add/list/rm` live-attach dot-command.
+      per-source options (formats/sortedness/namespace) then attaching per source
+      (un-reject them in glue.LoadSources once landed). Plus a catalog.json
+      `"sources"` map (durable twin). Optional: `.source add/list/rm` live-attach
+      dot-command.
 
 - UI / terminal and/or web-based?
 

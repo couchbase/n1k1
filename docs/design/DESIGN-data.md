@@ -27,8 +27,8 @@ the bundle is an *example*, not a built-in.
 **Done (all `records/` + `glue/`, `//go:build n1ql`, zero fork changes):**
 - **Discovery/layout** — multi-file / flat-root / single-file / grab-bag keyspaces + backtick
   inline globs (`` FROM `./data/**/*.json` ``); **multiple local data sources on one command line**
-  (`n1k1 drive=~/Drive/** docs=~/Documents …`) → one keyspace per source, joinable in a single query
-  (§2 Phase 1, `glue.OpenSessionSources`).
+  (`n1k1 drive=~/Drive/** docs=~/Documents …`) → one keyspace per source, joinable in a single query,
+  or from a `-sources` JSON/YAML/TOML config file (§2 Phase 1, `glue.OpenSessionSources`/`LoadSources`).
 - **Decoders** — JSONL, multi-doc JSON, CSV/TSV, YAML, office/PDF/media (opaque-document path);
   Parquet as a queryable keyspace with column-projection pushdown + footer-stats vectorized aggs
   (`DESIGN-col.md`); transparent gzip.
@@ -53,8 +53,8 @@ landed) + materialized views; zstd decode (walker recognizes `.zst`; decode is a
 container; encryption-at-rest; full column-batch Parquet execution (`DESIGN-col.md`); catalogs
 beyond a filesystem/object-store metadata path (REST/Glue); a `[]byte`-oriented zero-copy CSV
 reader + the allocs/op benchmark gate; **heterogeneous multi-source federation** (§2 Phase 2 — mixing a
-local dir + an `s3://` Iceberg table + Parquet, with per-source options, via a composite datastore + a
-declarative `-sources` config file; Phase 1 local multi-root has shipped).
+local dir + an `s3://` Iceberg table + Parquet, with per-source options, via a composite datastore;
+Phase 1 local multi-root + the `-sources` config file have shipped).
 
 ## Relationship to `DESIGN-indexing.md`
 
@@ -255,11 +255,12 @@ exactly what `glue.OpenSessionSources`/`Source` (`glue/sources.go`) + `cmd/n1k1`
   sources anchor to **CWD** (not the empty root). All sources become **sibling keyspaces under the one
   `default` namespace**, so cross-source joins need no namespace prefix — the natural SQL++ ergonomics.
   (Rejected: source-per-namespace — it forces `FROM drive:docs` and muddies joins.) The one-bare-dir
-  case stays byte-for-byte today's behavior (that dir is the root; conventional discovery).
-- **Library API.** No new glue primitive is required for the local case — the CLI can build a `Binding`
-  and call `OpenSessionBound`. For embedders, a thin `Source{Name, Path}` + `OpenSessionSources([]Source,
-  ns)` that does the name-derivation + collision check + synthetic-root selection keeps the CLI thin and
-  gives library users the same one-call power (parallels `OpenSession`/`OpenSessionBound`).
+  case stays byte-for-byte today's behavior (that dir is the root; conventional discovery). (A
+  `-sources` config anchors its *relative* paths at the config file's dir instead of CWD — see below.)
+- **Library API (✅ shipped).** `glue.Source{Name, Path}` + `OpenSessionSources([]Source, ns)` do the
+  name-derivation + collision check + synthetic-root selection over the existing `Binding` seam;
+  `LoadSources`/`OpenSessionSourcesFile` add the config-file path. Embedders get the same one-call power
+  the CLI uses (parallels `OpenSession`/`OpenSessionBound`).
 - **Provenance — which source did a row come from?** The **keyspace name is the source** (that is the
   point), and `_meta.path`/`_meta.name` (`.meta on`) pin the exact file. A `UNION ALL` across sources
   should carry a source tag — select a literal (`'drive' AS _src`) or project `_meta` — noted so results
@@ -289,27 +290,31 @@ or any `name=path`) opens multiple sources as keyspaces (`cmd_open.go`, same par
 and `.tables` lists them. A `.source add/list/rm` command family — each a new `Cmd` in the registry
 (`cmd_registry.go`) — to attach/detach sources live is a natural follow-up.
 
-**Why the command line isn't enough for Phase 2 — a config file.** The REPL splits `.open` args on
-**whitespace**, so a source path containing spaces (`~/Google Drive`) can't be given interactively at
-all, and argv can't carry *per-source* options (this source is `-formats=parquet` + sorted-by-`ts`;
-that one is an `s3://` Iceberg table with credentials). The command line is the wrong surface for that
-structure. The fix is an **optional config file** naming the sources declaratively — and n1k1 already
-**reads JSON/YAML/TOML natively**, so it can parse its own config with its own decoders:
+**A `-sources` config file (✅ shipped for local sources).** The command line is the wrong surface for
+richer source lists: the REPL splits `.open` on **whitespace**, so a source path with spaces
+(`~/Google Drive`) can't be given interactively at all, and argv can't carry *per-source* options (this
+source is `-formats=parquet` + sorted-by-`ts`; that one is an `s3://` Iceberg table with credentials).
+The fix is a declarative config file — and n1k1 already **reads JSON/YAML/TOML natively**, so it parses
+its own config with its own decoders (`records.DecodeConfigFile` → canonical JSON → the struct):
 
 ```yaml
 # sources.yaml  —  n1k1 -sources sources.yaml   (or  .open @sources.yaml)
 sources:
-  drive:  { path: "~/Google Drive/**" }
-  docs:   { path: "~/Documents" }
-  events: { path: "s3://bucket/warehouse/db/events", formats: parquet, sorted: ts }  # Phase 2
+  drive:  { path: "~/Google Drive/**" }   # object form (space-in-path: fine, it's a quoted string)
+  docs:   "~/Documents"                   # string shorthand (just a path)
+  events: { path: "s3://…/events", formats: parquet, sorted: ts }  # Phase 2 (rejected for now)
 ```
 
-Design: a `-sources <file>` flag (and an `.open @<file>` form) parsed into `[]Source` (Phase 2 grows
-`Source` with per-source `Formats`/`Sorted`/`Namespace`), the file's own directory anchoring relative
-paths. This is the **declarative twin** of the imperative CLI list and of the Mode 3 catalog: a durable
-`"sources"` map in `.n1k1/catalog.json` (persisted like `.formats`) lets a workspace remember its
-sources across runs. All three (argv, `-sources` file, catalog) build the same `[]Source` → `Binding`
-(Phase 1) or composite datastore (Phase 2).
+Shipped: `-sources <file>` and `.open @<file>` load a `SourcesConfig` (`glue.LoadSources` /
+`OpenSessionSourcesFile`) → name-sorted `[]Source` → `OpenSessionSources`. Each map key is the keyspace
+name; the value is a path string or `{path: …}` object; a relative path anchors at the **config file's
+own directory** (portable regardless of CWD; `~`/absolute pass through); it is mutually exclusive with
+positional sources. Per-source options (`Formats`/`Namespace`/`Sorted`) are **parsed but rejected**
+today — the file format is stable, but they need the Phase 2 composite (no silent no-op). This is the
+**declarative twin** of the imperative CLI list and of the Mode 3 catalog: a durable `"sources"` map in
+`.n1k1/catalog.json` (persisted like `.formats`) would let a workspace remember its sources across runs.
+All three (argv, `-sources` file, catalog) build the same `[]Source` → `Binding` (Phase 1) or composite
+datastore (Phase 2).
 
 ### Query-defined VIEWs (proposal — expansion + pushdown remain)
 

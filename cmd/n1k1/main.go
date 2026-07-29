@@ -71,6 +71,7 @@ func main() {
 		echoFlag    = flag.Bool("echo", false, "echo each input line (SQL++ / dot-commands) as it's read; like .echo on (handy with -f)")
 		initFlag    = flag.String("init", "", "startup file of dot-commands/SQL++ (default ~/."+prog+"rc; use \"\", \"-\" or \"none\" to skip)")
 		formatsFlag = flag.String("formats", "", "restrict files scanned to a comma-separated set (all|json|jsonl|csv|tsv|yaml|toml|extract|doc|text|image|video|gzip|recurse); empty or 'all' = everything")
+		sourcesFlag = flag.String("sources", "", "load data sources from a JSON/YAML/TOML config file (name->path), each a keyspace; see .help keyspaces (mutually exclusive with positional sources)")
 		metaFlag    = flag.String("meta", "auto", "add a _meta sub-object (path/name/ext/size/mtime) to records: on|off|auto (auto = extracted docs only)")
 		verFlag     = flag.Bool("version", false, "print version + build info (incl. dependency SHAs) and exit")
 		cpuProfile  = flag.String("profile-cpu", "", "write a CPU profile to this file (go tool pprof)")
@@ -171,6 +172,18 @@ func main() {
 	}
 
 	sources, multiSource := parseSourceArgs(fargs)
+	if *sourcesFlag != "" { // a -sources config file (declarative twin; DESIGN-data.md §2)
+		if len(fargs) > 0 {
+			fmt.Fprintf(os.Stderr, "%s: use either -sources <file> or positional sources, not both\n", prog)
+			os.Exit(2)
+		}
+		fileSources, lerr := glue.LoadSources(*sourcesFlag)
+		if lerr != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", prog, lerr)
+			os.Exit(1)
+		}
+		sources, multiSource = fileSources, true
+	}
 	dir := "."
 	explicit := false
 	if !multiSource && len(fargs) > 0 {

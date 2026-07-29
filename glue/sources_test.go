@@ -141,6 +141,73 @@ func TestDeriveSourceName(t *testing.T) {
 	}
 }
 
+// TestLoadSources: a -sources config parses from JSON, YAML, and TOML (via n1k1's own
+// decoders), accepts both the string shorthand and the object form, anchors a relative
+// path at the config file's directory, and opens end-to-end.
+func TestLoadSources(t *testing.T) {
+	root := t.TempDir()
+	// A source tree beside the config, referenced by a RELATIVE path (config-dir anchored).
+	if err := os.MkdirAll(filepath.Join(root, "drive"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "drive", "a.json"), []byte(`{"id":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docsAbs := filepath.Join(root, "docs")
+	if err := os.MkdirAll(docsAbs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docsAbs, "b.json"), []byte(`{"id":2}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs := map[string]string{
+		"sources.json": `{"sources":{"drive":"drive/**","docs":{"path":"` + docsAbs + `"}}}`,
+		"sources.yaml": "sources:\n  drive: \"drive/**\"\n  docs: { path: \"" + docsAbs + "\" }\n",
+		"sources.toml": "[sources]\ndrive = \"drive/**\"\n[sources.docs]\npath = \"" + docsAbs + "\"\n",
+	}
+	for file, body := range configs {
+		path := filepath.Join(root, file)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		srcs, err := LoadSources(path)
+		if err != nil {
+			t.Fatalf("%s: LoadSources: %v", file, err)
+		}
+		if len(srcs) != 2 || srcs[0].Name != "docs" || srcs[1].Name != "drive" { // name-sorted
+			t.Fatalf("%s: sources = %+v, want name-sorted docs,drive", file, srcs)
+		}
+		// The relative "drive/**" anchored at the config's dir (not CWD).
+		if want := filepath.Join(root, "drive", "**"); srcs[1].Path != want {
+			t.Errorf("%s: drive path = %q, want config-dir-anchored %q", file, srcs[1].Path, want)
+		}
+		// Opens and queries end-to-end.
+		sess, err := OpenSessionSourcesFile(path, "default")
+		if err != nil {
+			t.Fatalf("%s: OpenSessionSourcesFile: %v", file, err)
+		}
+		if res, err := sess.Run(`SELECT COUNT(*) AS n FROM drive`); err != nil || string(res.Rows[0]) != `{"n":1}` {
+			t.Errorf("%s: query drive: rows=%v err=%v", file, stringsOf(res.Rows), err)
+		}
+		sess.Close()
+	}
+}
+
+// TestLoadSourcesRejectsPhase2: per-source options are parsed but rejected until the
+// Phase 2 composite datastore lands (so the file format is stable, not a silent no-op).
+func TestLoadSourcesRejectsPhase2(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "s.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"sources":{"t":{"path":"/x","formats":"parquet"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSources(path); err == nil {
+		t.Error("expected a per-source-options (formats) source to be rejected in Phase 1")
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -25,26 +25,39 @@ import (
 
 // cmdOpen switches the datastore. `.open <dir>` opens one root (classic); `.open
 // <src>...` (2+ whitespace-separated paths, or any name=path) opens MULTIPLE data
-// sources, each a keyspace (DESIGN-data.md §2 Phase 1, glue.OpenSessionSources).
+// sources, each a keyspace; `.open @<file>` loads sources from a JSON/YAML/TOML config
+// (DESIGN-data.md §2, glue.OpenSessionSources / LoadSources).
 // ⚠ REPL word-splitting is on whitespace, so a source PATH containing spaces can't be
-// given here -- that (and richer per-source options) is what the §2 Phase 2 config
-// file is for.
+// given inline -- that (and richer per-source options) is what the @<file> config is for.
 func (c *cli) cmdOpen(arg string) {
-	if strings.TrimSpace(arg) == "" {
-		fmt.Fprintln(c.stderr, "usage: .open <dir>   |   .open <src>... (name=path or bare; multiple sources)")
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		fmt.Fprintln(c.stderr, "usage: .open <dir>  |  .open <src>... (name=path/bare)  |  .open @<config.yaml>")
 		return
 	}
-	sources, multi := parseSourceArgs(strings.Fields(arg))
 
 	var sess *glue.Session
 	var err error
 	var label string
-	if multi {
-		sess, err = glue.OpenSessionSources(sources, defaultNamespace)
-		label = fmt.Sprintf("%d data sources: %s", len(sources), strings.Join(sourceNames(sources), ", "))
-	} else {
-		sess, err = glue.OpenSession(arg, defaultNamespace)
-		label = arg
+	multi := false
+	switch {
+	case strings.HasPrefix(arg, "@"): // config file of sources
+		file := strings.TrimSpace(arg[1:])
+		var sources []glue.Source
+		if sources, err = glue.LoadSources(file); err == nil {
+			sess, err = glue.OpenSessionSources(sources, defaultNamespace)
+		}
+		multi, label = true, fmt.Sprintf("%d data sources from %s: %s", len(sources), file, strings.Join(sourceNames(sources), ", "))
+	default:
+		sources, isMulti := parseSourceArgs(strings.Fields(arg))
+		if isMulti {
+			multi = true
+			sess, err = glue.OpenSessionSources(sources, defaultNamespace)
+			label = fmt.Sprintf("%d data sources: %s", len(sources), strings.Join(sourceNames(sources), ", "))
+		} else {
+			sess, err = glue.OpenSession(arg, defaultNamespace)
+			label = arg
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(c.stderr, "cannot open %s: %v\n", label, err)

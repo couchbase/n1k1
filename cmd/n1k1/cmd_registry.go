@@ -140,8 +140,10 @@ func builtinCmds() []Cmd {
 			}},
 
 		{names: []string{".open"},
-			run:  func(c *cli, _, arg string) bool { c.cmdOpen(arg); return false },
-			help: func(c *cli) string { return ".open <dir> | <src>...  open a datastore dir, or multiple sources (name=path/bare) as keyspaces" }},
+			run: func(c *cli, _, arg string) bool { c.cmdOpen(arg); return false },
+			help: func(c *cli) string {
+				return ".open <dir> | <src>... | @<cfg>  open a dir, multiple sources (name=path/bare), or a sources config file"
+			}},
 
 		{names: []string{".tables", ".keyspaces"},
 			run: func(c *cli, _, arg string) bool {
