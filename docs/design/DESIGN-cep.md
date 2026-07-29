@@ -111,12 +111,13 @@ whether they move the cursor — **`peek` never moves, `advance` always moves**:
 - **`.multi cursor advance --quiet NAME --to <pos>`** — same move, ack only (`from`/`to`/`count`, no
   labelResults): the lightweight commit for the safe two-step `peek` → act → `advance --quiet` where you
   already hold the delta (token economy). The flag trims *output*, never the mutation.
-- **`.multi cursor create NAME --pack <pack> [--bind <manifest>] [--from now|beginning]`** — the
+- **`.multi cursor create NAME --pack <pack> [--bind <manifest>] [--from now|start]`** — the
   one-time **bind**: register NAME → (pack, binding, start position). It **validates, not just
   registers** — compiles the pack (`.multi lint`: fuse/standalone/reject), resolves the binding
   **fail-loud** (the source must exist), and cheaply probes it — returning a structured ok/error
   report, *no result rows*. `--from now` (default) means the first `peek` returns only what arrives
-  after creation; `--from beginning` replays all history (Kafka `latest`/`earliest`). So binding is
+  after creation; `--from start` replays all history (Kafka `latest`/`earliest`; `beginning` is an
+  accepted alias for `start`). So binding is
   cleanly separate from getting rows: **`peek`/`advance` are the *only* result-getters, one shape** —
   the first peek looks exactly like every later one.
 
@@ -145,7 +146,7 @@ The pack verbs stay flat (`run`/`lint`/`explain`/`test`/`list`); ancillary state
 `git remote`/`git stash` grouped).
 
 ```
-.multi cursor create  <NAME> --pack <pack> [--from now|beginning]   # BIND + VALIDATE; ok/error report, no rows
+.multi cursor create  <NAME> --pack <pack> [--from now|start]   # BIND + VALIDATE; ok/error report, no rows
 .multi cursor peek    <NAME>            # look: pending delta; cursor NOT moved (safe, non-advancing)
 .multi cursor advance <NAME> [--to <pos>]   # move forward + RETURN the delta passed (fail-safe get+move); bare = fire-and-forget
 .multi cursor advance --quiet <NAME> --to <pos>   # move + ack only (no labelResults) — the two-step commit after a peek
@@ -564,19 +565,26 @@ recipes), `.multi lint`. *New:* treat a recipe dir as desired-state; `plan` (dif
 `apply --prune` (reconcile, preserve unchanged cursors); labels/annotations in front-matter.
 
 > **Status — SHIPPED** (`.multi cursor plan <dir>` / `apply <dir> [--prune]`). Each `*.sql++` file
-> in `<dir>` is one cursor: name = the file stem, pack = the file itself (new `glue.LoadPack` loads a
-> single file or a dir uniformly, so peek/advance reload either), policy from front-matter
-> (`mode`/`bind`/`from`/`id-field`/`labels` + `description`). Reconcile is driven by a `SpecHash`
-> (pack content + policy) stored on each cursor: declared-not-live → **create**; hash differs →
-> **update** (re-validate; position **preserved** when the mode is unchanged — the idempotency
-> guarantee — else re-baselined per `from`); equal → **noop**; live-managed-not-declared →
-> **destroy** (only `apply --prune`). Apply stamps `Managed` so an imperative `.multi cursor create`
-> is **never pruned** (adoptable if later declared). `plan` folds in `.multi lint` (compiles every
-> file, reports errors, makes no changes); `apply` refuses on any invalid file (no partial apply).
-> Core: `glue.{LoadPack,SpecHash,PlanReconcile,ReconcilePlan}`; CLI `buildDesired`/`provisionCursor`/
-> `cursorReconcile`. ⚠ A cursor whose pack spans **≥2 keyspaces** inherits a pre-existing cbq-fork
-> `expression.Copy` race in the fused UNION-ALL execution (fails `-race`; tracked with the other
-> fork-pool races — not cursor logic). Single-keyspace packs (the common monitor shape) are clean.
+> in `<dir>` is one cursor: **name = its front-matter `label:`, else the file stem**; pack = the file
+> itself (new `glue.LoadPack` loads a single file or a dir uniformly, so peek/advance reload either);
+> policy from front-matter (`mode`/`bind`/`from`/`id-field`/`labels`/`annotations` + `description`).
+> `labels` accepts `k=v, k2=v2` or a JSON object; `annotations` is stored/echoed verbatim (the
+> provenance home). Reconcile is driven by a `SpecHash` = the **delta identity** (pack content + mode
+> + bind + id-field) — deliberately NOT metadata, so a retag/reword never re-baselines a cursor:
+> declared-not-live → **create**; identity differs → **update** (re-validate; position **preserved**
+> when the mode is unchanged, else re-baselined per `from`); identity equal but metadata drifted →
+> **metadata** (labels/annotations/description refreshed in place, position untouched); fully equal →
+> **noop**; live-managed-not-declared → **destroy** (only `apply --prune`). `plan` **warns** on
+> unsupported front-matter keys (never silently drops). Apply stamps `Managed` so an imperative
+> `.multi cursor create` is **never pruned** (adoptable if later declared). `plan` folds in
+> `.multi lint`; `apply` refuses on any invalid file (no partial apply). Core:
+> `glue.{LoadPack,SpecHash,PlanReconcile,ReconcilePlan}`; CLI `buildDesired`/`provisionCursor`/
+> `cursorReconcile`. The default cursor-store is **CWD-relative `./.n1k1-state/cursors`** (never inside
+> the datastore bundle, which may be read-only or owned by another live process). ⚠ A hyphenated
+> label isn't a bare identifier, so a downstream `FROM` must backtick the materialized name
+> (`` FROM `pack_CC-SPEND` ``). ⚠ A cursor whose pack spans **≥2 keyspaces** inherits a pre-existing
+> cbq-fork `expression.Copy` race in the fused UNION-ALL execution (fails `-race`; tracked with the
+> other fork-pool races — not cursor logic). Single-keyspace packs (the common monitor shape) are clean.
 
 **Phase 4 — Composition (pack DAG).** *Build on:* temp-tables / CTEs / sequence op (exist), and the
 Phase-1 labelResults journal as the materialized intermediate. *New:* a `pack:<name>` labelResults keyspace a
@@ -584,9 +592,12 @@ downstream pack can `FROM`; topological ordering (reject cycles); per-pack curso
 poll composes; lineage on labelResults. MVP re-polls A's materialized labelResults from B (not true
 cross-layer delta). → correlation/incident packs over primitive detections.
 
-> **Status — SHIPPED** (`.multi compose <dir>`). Each `*.sql++` in `<dir>` is one DAG node (name =
-> stem); a node declares upstream deps via `-- needs: a, b` front-matter and reads them as
-> `FROM pack_a`. Nodes run in **topological order** (cycles + unknown deps rejected) on ONE session;
+> **Status — SHIPPED** (`.multi compose <dir>`). Each `*.sql++` in `<dir>` is one DAG node (**name =
+> its front-matter `label:`, else the file stem**); a node declares upstream deps via `-- needs: a, b`
+> front-matter (an unknown dep is a hard error) and reads them as `FROM pack_a` (backtick the name if
+> the label has hyphens). `--only <node,…>` / `--terminal` limit which nodes emit their labelResults
+> (each still reports a count), so an upstream 75k-row detector isn't a firehose.
+> Nodes run in **topological order** (cycles + unknown deps rejected) on ONE session;
 > each node's labelResults materialize into a `pack_<name>` **temp keyspace** (`temp_keyspace.go` — the
 > same heap that backs fixtures), so a downstream `FROM pack_<up>` resolves through the session's temp
 > overlay. Materialized rows are `{label, result, fingerprint}` — `result` stays nested (navigate

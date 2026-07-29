@@ -128,12 +128,20 @@ TIPS (get the best out of a collection)
   - Lead a predicate with a DISCRIMINATING LITERAL as a top-level AND conjunct so the predicate
     index prunes wake-ups, e.g. "... AND msg LIKE '%panic%'" -- otherwise the query wakes on every row.
   - Keep a query SINGLE-SOURCE filter+project (SELECT ... FROM one WHERE ...) so it FUSES into
-    the shared scan. A GROUP BY / window / join / DISTINCT / ORDER-LIMIT / index-scan runs standalone.
+    the shared scan. A GROUP BY / window / join / DISTINCT / ORDER-LIMIT / index-scan / UNNEST / NEST
+    runs standalone (its own scan). To keep an array query fused, project the array and unnest it in
+    a downstream node: use "WHERE ANY c IN s.items SATISFIES c.type='x' END" (fused), not
+    "UNNEST s.items AS c WHERE c.type='x'" (standalone).
+  - A JS UDF call ANYWHERE in a query (even in the SELECT list) BOXES the whole query -- it forfeits
+    index pruning and caps the compile level. Keep UDFs OUT of the wide-scan tier: apply them in a
+    downstream ".multi compose" rollup over an already-materialized pack_<node> temp keyspace.
   - For grep -A/-B/-C style CONTEXT (the matching line + surrounding lines), use a sliding-window
     match flag (see CONTEXT below) -- and PARTITION BY _meta.` + "`path`" + ` on a multi-file keyspace, or
     context LEAKS across rotated files.
   - Prefer NATIVE expressions over boxed ones: "msg LIKE '%x%'", CONTAINS or "regexp_contains(msg,'x')" instead of
     a multi-wildcard "msg LIKE '%a%b%'". A boxed expression falls back to cbq and caps the compile level.
+    NATIVE (don't rewrite around these): IS [NOT] MISSING, IS [NOT] NULL, IS [NOT] VALUED, =/</>, AND/OR,
+    single-wildcard LIKE, CONTAINS, regexp_contains, ANY ... SATISFIES.
   - Give EVERY query *.sql a golden fixture (-- @fixture / -- @expect) so CI (.multi test) protects it
     against a regression. Capture the first golden with ".multi test --update".
   - Author against LOGICAL keyspaces + a --bind manifest, so ONE collection of *.sql++ queries can run
