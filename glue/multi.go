@@ -25,7 +25,7 @@ package glue
 // cbq accepts a FROM function-call term (e.g. `FROM split("a,b,c", ",") AS t`), and
 // because multiMatchesFunc implements StreamSource, conv.go's VisitExpressionScan
 // routes `FROM multi_matches(...)` to the generic STREAMING stream-fn op
-// (op_stream_fn.go): each finding flows straight into the pipeline as the pack
+// (op_stream_fn.go): each result flows straight into the pipeline as the pack
 // produces it, so memory stays BOUNDED and the source composes with WHERE / GROUP BY
 // / ORDER BY / JOIN and is PREPARE/EXECUTE-able for free. Each row carries a `label`
 // naming which entry produced it, so the stream is a sliceable, discriminated
@@ -209,7 +209,7 @@ func (this *multiMatchesFunc) Evaluate(item value.Value, context expression.Cont
 }
 
 // StreamRows is multiMatchesFunc's StreamSource implementation: the STREAMING FROM
-// producer. It loads + compiles the pack and emits each finding row as the pack
+// producer. It loads + compiles the pack and emits each result row as the pack
 // produces it (bounded memory), instead of materializing the whole result set the
 // way the scalar Evaluate fallback does. Each row is a {"label":..,"result":..}
 // object matching the materialized array's element shape, so f.label / f.result
@@ -233,10 +233,10 @@ func (this *multiMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 	}
 
 	stopped := false
-	rerr := cc.RunStream(func(f Finding) error {
+	rerr := cc.RunStream(func(f LabelResult) error {
 		jv, e := json.Marshal(ruleMatchRow{Label: f.Label, Result: f.Result})
 		if e != nil {
-			return fmt.Errorf("MULTI_MATCHES: marshaling finding: %w", e)
+			return fmt.Errorf("MULTI_MATCHES: marshaling result: %w", e)
 		}
 		if !emit(base.Val(jv)) {
 			stopped = true
@@ -250,7 +250,7 @@ func (this *multiMatchesFunc) StreamRows(vars *base.Vars, gc *GlueContext,
 	return rerr
 }
 
-// ruleMatchRow is the per-row shape MULTI_MATCHES yields: the finding's label plus its
+// ruleMatchRow is the per-row shape MULTI_MATCHES yields: the result's label plus its
 // result JSON, so `FROM multi_matches(...) AS f` exposes f.label and f.result. It
 // marshals to the same {"label":..,"result":..} object the materialized array uses.
 type ruleMatchRow struct {
@@ -391,15 +391,15 @@ func runMultiMatches(dirs []string, opts multiMatchesOpts, warn func(string)) (v
 	if err != nil {
 		return nil, err
 	}
-	findings, err := cc.Run()
+	results, err := cc.Run()
 	if err != nil {
 		return nil, fmt.Errorf("MULTI_MATCHES: running pack %q: %w", strings.Join(dirs, ", "), err)
 	}
 
 	// One materialized array of {label, result} objects. Result is the match's
 	// raw JSON, re-parsed to a value so f.result navigates into it.
-	arr := make([]interface{}, 0, len(findings))
-	for _, f := range findings {
+	arr := make([]interface{}, 0, len(results))
+	for _, f := range results {
 		arr = append(arr, map[string]interface{}{
 			"label":  f.Label,
 			"result": value.NewValue([]byte(f.Result)),

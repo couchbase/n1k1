@@ -20,7 +20,7 @@ Concrete capabilities, from the user/agent point of view — in the order they'd
   $ n1k1 .multi cursor peek new-github-issues   # a safe look; or the MCP tool call
   → { "cursor":"new-github-issues", "status":"pending", "count":3,
       "from":"gh:issues@321", "to":"gh:issues@324",
-      "findings":[ {"op":"insert","id":"#322","fingerprint":"f5e1a2", "…":"…"}, "…" ] }
+      "results":[ {"op":"insert","id":"#322","fingerprint":"f5e1a2", "…":"…"}, "…" ] }
   # peek does NOT move the cursor (safe). Agent acts, then
   # `.multi cursor advance new-github-issues --to gh:issues@324` commits. Crash before that?
   # re-peek still returns everything pending (a superset if more arrived) — never misses.
@@ -55,7 +55,9 @@ am I watching and where did I leave off?" from nothing.
   taxonomy). The *only* thing that persists in poll mode (nothing is "monitoring"): `.multi run
   <pack> --cursor=NAME` binds it, then `.multi cursor peek`/`advance` drive it. **The poll-mode
   primitive.**
-- **detector** — the SQL++ rule; **finding** — an emitted result row (both existing n1k1 terms).
+- **detector** — the SQL++ rule (existing n1k1 term). **result** — an emitted output row: the
+  struct `glue.LabelResult` pairs a `label` (which detector fired) with its `result` value (the
+  row's `SELECT` projection).
 - **monitor** — the **serve-mode** live entity: *a cursor that also carries its query + schedule and
   runs itself* — a cursor with a heartbeat. Only exists inside `n1k1 serve`.
 - **Graduation:** named cursors (CLI, run-and-done) **→** monitors (server, self-running) — same
@@ -107,7 +109,7 @@ whether they move the cursor — **`peek` never moves, `advance` always moves**:
   pins the target from a prior `peek` (errors if the committed position moved under you); bare
   `advance` goes to the current head. This is Kafka's *commit-offset*, said plainly.
 - **`.multi cursor advance --quiet NAME --to <pos>`** — same move, ack only (`from`/`to`/`count`, no
-  findings): the lightweight commit for the safe two-step `peek` → act → `advance --quiet` where you
+  results): the lightweight commit for the safe two-step `peek` → act → `advance --quiet` where you
   already hold the delta (token economy). The flag trims *output*, never the mutation.
 - **`--cursor=NAME`** on `.multi run <pack>` is the **first-run bind** (establishes the cursor + does
   the first peek); thereafter you name the cursor, not the pack.
@@ -140,7 +142,7 @@ The pack verbs stay flat (`run`/`lint`/`explain`/`test`/`list`); ancillary state
 .multi run <pack> --cursor=NAME         # first-run BIND: NAME→(pack,binding)+position, then a peek
 .multi cursor peek    <NAME>            # look: pending delta; cursor NOT moved (safe, non-advancing)
 .multi cursor advance <NAME> [--to <pos>]   # move forward + RETURN the delta passed (fail-safe get+move); bare = fire-and-forget
-.multi cursor advance --quiet <NAME> --to <pos>   # move + ack only (no findings) — the two-step commit after a peek
+.multi cursor advance --quiet <NAME> --to <pos>   # move + ack only (no results) — the two-step commit after a peek
 .multi cursor list                      # NAME, bound pack, sources, committed position, last-run, count, lag
 .multi cursor show    <NAME>            # committed position + bound pack/binding + pending? + last-run summary
 .multi cursor log     <NAME>            # advance history (reflog)
@@ -180,7 +182,7 @@ requires an agent to persist a cursor across wakes:
   across wakes. Because agents crash, the safe pattern is **`peek` (look, don't move) → act →
   `advance --quiet`**; bare `advance` (get + move in one) is the fire-and-forget opt-in.
 - **Action idempotency is separate:** the cursor stops n1k1 *re-emitting*; it doesn't stop the agent
-  *acting twice*. Each finding carries a **fingerprint** = hash of `(detector-sha, source-id,
+  *acting twice*. Each result carries a **fingerprint** = hash of `(detector-sha, source-id,
   matched-key)` (the Alertmanager/PagerDuty `dedup_key`) so the agent dedupes side effects
   independently of cursor advance.
 
@@ -196,7 +198,7 @@ cursor.**
   grew) = at-least-once. (Byte-identical replay is what the optional journal adds.)
 - **`advance --to <pos> --quiet`** commits once you've durably acted (the two-step); bare **`advance`**
   (get + move, echoing the delta) is the one-call fire-and-forget (at-most-once).
-- **Finding fingerprints** (the `dedup_key`) make redelivery safe: since re-`peek` can hand back
+- **Result fingerprints** (the `dedup_key`) make redelivery safe: since re-`peek` can hand back
   rows already acted on, the agent dedupes by fingerprint → at-least-once + idempotent consumer =
   exactly-once *effect*.
 
@@ -219,7 +221,7 @@ human-legible form: `gh:issues@324`, `file:app.log#20480`, `snap:9`) — the age
 $ n1k1 .multi cursor peek new-github-issues
 { "cursor":"new-github-issues", "pack":"triage@a1b2c3", "status":"pending",
   "from":"gh:issues@321", "to":"gh:issues@324", "advanced":false, "count":3,
-  "findings":[
+  "results":[
     {"op":"insert","id":"#322","fingerprint":"f5e1a2","detector":"triage@a1b2c3",
      "doc":{"number":322,"title":"crash on startup","labels":["bug"]}},
     {"op":"insert","id":"#323","fingerprint":"9c0b7d","detector":"triage@a1b2c3","doc":{"…":"…"}},
@@ -227,7 +229,7 @@ $ n1k1 .multi cursor peek new-github-issues
 ```
 
 **2 — `advance --quiet` (two-step commit).** Agent already peeked + acted, so it commits to that
-`to` and asks for the ack only (no findings echoed back):
+`to` and asks for the ack only (no results echoed back):
 
 ```jsonc
 $ n1k1 .multi cursor advance --quiet new-github-issues --to gh:issues@324
@@ -241,7 +243,7 @@ $ n1k1 .multi cursor advance --quiet new-github-issues --to gh:issues@324
 ```jsonc
 $ n1k1 .multi cursor peek new-github-issues
 { "cursor":"new-github-issues", "pack":"triage@a1b2c3", "status":"empty",
-  "from":"gh:issues@324", "to":"gh:issues@324", "advanced":false, "count":0, "findings":[] }
+  "from":"gh:issues@324", "to":"gh:issues@324", "advanced":false, "count":0, "results":[] }
 ```
 
 **4 — crash before `advance` → just re-`peek`.** No special path: `peek` is non-advancing, so it
@@ -252,7 +254,7 @@ moved 324→326, `count` 3→5). Nothing is missed; the agent dedupes #322–#32
 $ n1k1 .multi cursor peek new-github-issues        # never advanced last time
 { "cursor":"new-github-issues", "pack":"triage@a1b2c3", "status":"pending",
   "from":"gh:issues@321", "to":"gh:issues@326", "advanced":false, "count":5,
-  "findings":[ "… #322,#323,#324 (as before) + #325,#326 (arrived since) …" ] }
+  "results":[ "… #322,#323,#324 (as before) + #325,#326 (arrived since) …" ] }
 ```
 
 **5 — bare `advance` (get + move, fire-and-forget).** Moves to the current head *and echoes the
@@ -261,7 +263,7 @@ delta it passed* (fail-safe) — `advanced:true`, at-most-once, fine for "I don'
 ```jsonc
 $ n1k1 .multi cursor advance log-errors
 { "cursor":"log-errors", "pack":"errsev@99", "status":"advanced",
-  "from":"file:app.log#10240", "to":"file:app.log#20480", "advanced":true, "count":2, "findings":[ "…" ] }
+  "from":"file:app.log#10240", "to":"file:app.log#20480", "advanced":true, "count":2, "results":[ "…" ] }
 ```
 
 **6 — `diff`-mode `peek` (mutable source).** Change events in the Debezium envelope:
@@ -270,7 +272,7 @@ $ n1k1 .multi cursor advance log-errors
 $ n1k1 .multi cursor peek open-incidents
 { "cursor":"open-incidents", "pack":"incidents@7f", "status":"pending",
   "from":"snap:8", "to":"snap:9", "advanced":false, "count":3,
-  "findings":[
+  "results":[
     {"op":"update","id":"#42","before":{"status":"open"},"after":{"status":"closed"},"fingerprint":"…"},
     {"op":"insert","id":"#57","after":{"status":"open","sev":"high"},"fingerprint":"…"},
     {"op":"delete","id":"#12","before":{"status":"open"},"fingerprint":"…"} ] }
@@ -304,25 +306,25 @@ The `status` enum an agent switches on: **`pending`** (a delta exists — from `
 `advanced:true`; re-`peek` after a crash is `pending` again (non-advancing — may include newer rows,
 never misses).
 
-### Composition — a DAG of packs (one pack's findings feed the next)
+### Composition — a DAG of packs (one pack's results feed the next)
 
-Findings are just rows, so a pack's findings are themselves a keyspace another pack can `FROM` —
+Results are just rows, so a pack's results are themselves a keyspace another pack can `FROM` —
 which makes a **hierarchy of `.multi` packs a DAG**: primitive detections feeding
 correlation/aggregation packs. Prior art: **Prometheus recording rules → alerting rules**, SIEM
 base-detections → correlation-rules, **dbt** models `ref()`-ing models into a topologically-ordered
 DAG, cascading materialized views.
 
-- Pack A `FROM indexer_log` → findings `pack:A`. Pack B `FROM pack:A GROUP BY … HAVING count>N` →
-  higher-level "incident" findings. n1k1 topologically orders the DAG (reject cycles, like dbt).
-- **Synergy with the journal:** A's materialized findings (the same durable outbox that makes
+- Pack A `FROM indexer_log` → results `pack:A`. Pack B `FROM pack:A GROUP BY … HAVING count>N` →
+  higher-level "incident" results. n1k1 topologically orders the DAG (reject cycles, like dbt).
+- **Synergy with the journal:** A's materialized results (the same durable outbox that makes
   replay exact) *are* the intermediate B reads — one mechanism serves both crash-safety *and*
   inter-pack dataflow. Each pack keeps its **own cursor** over its (derived) source, so incremental
-  polling composes down the DAG: A's fresh findings this step are B's new input rows.
-- **Lineage composes:** a B-finding carries the `detector@sha` chain + the fingerprints of the
-  A-findings (and their source rows) that produced it, so an agent can answer *"why did this
+  polling composes down the DAG: A's fresh results this step are B's new input rows.
+- **Lineage composes:** a B-result carries the `detector@sha` chain + the fingerprints of the
+  A-results (and their source rows) that produced it, so an agent can answer *"why did this
   incident fire?"* by walking the lineage.
 - ⚠ **Fully-incremental-across-layers is the hard part** (the Materialize/DBSP problem). MVP keeps
-  it simple: materialize A's findings as a keyspace and let B re-poll it with its own cursor, rather
+  it simple: materialize A's results as a keyspace and let B re-poll it with its own cursor, rather
   than true cross-layer delta propagation.
 
 ### GitOps — declarative reconcile (the preferred agent workflow)
@@ -390,9 +392,9 @@ recipes), `.multi lint`. *New:* treat a recipe dir as desired-state; `plan` (dif
 `apply --prune` (reconcile, preserve unchanged cursors); labels/annotations in front-matter.
 
 **Phase 4 — Composition (pack DAG).** *Build on:* temp-tables / CTEs / sequence op (exist), and the
-Phase-1 findings journal as the materialized intermediate. *New:* a `pack:<name>` findings keyspace a
+Phase-1 results journal as the materialized intermediate. *New:* a `pack:<name>` results keyspace a
 downstream pack can `FROM`; topological ordering (reject cycles); per-pack cursors so incremental
-poll composes; lineage on findings. MVP re-polls A's materialized findings from B (not true
+poll composes; lineage on results. MVP re-polls A's materialized results from B (not true
 cross-layer delta). → correlation/incident packs over primitive detections.
 
 **Phase 5 — `n1k1 serve` + MCP (scheduled monitors).** *New:* a long-running process holding the
@@ -447,10 +449,10 @@ The predicate index is the crown jewel: "N rules × M events/sec" is exactly wha
 flat in N — and *making N large cheaply* is most of a CEP engine's value.
 
 **The agentic angle:** an LLM turns "tell me when a gold customer churn-signals within 24h of a
-payment failure" → a SQL++ detector → n1k1 runs it continuously → a finding → an action. The
+payment failure" → a SQL++ detector → n1k1 runs it continuously → a result → an action. The
 `.multi lint` oracle (does it fuse/index-prune/box? match its fixture?) is the feedback loop that
 makes an LLM-authored corpus trustworthy — a moat competitors would have to build, not just accept
-the rules. First beachheads: **CDC monitoring** (Debezium → corpus → findings) and **dataset
+the rules. First beachheads: **CDC monitoring** (Debezium → corpus → results) and **dataset
 monitoring** (freshness/volume/schema-drift monitors *are* detectors — the corpus is the
 Monte-Carlo/Anomalo job, embeddable and in SQL).
 

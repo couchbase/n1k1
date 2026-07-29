@@ -34,20 +34,20 @@ var (
 	StatFilterRowsOut = base.DefStat("RowsOut", "rows emitted to the parent", "filter")
 
 	// broadcast (shared-scan fan-out): RowsIn counts the SHARED rows fanned in
-	// (scanned + decoded ONCE); FindingsOut counts tagged findings emitted across
+	// (scanned + decoded ONCE); ResultsOut counts tagged results emitted across
 	// all K detectors. RowsIn stays at N no matter how many detectors run -- that
 	// flat decode cost is the whole point of the op.
 	StatBroadcastRowsIn      = base.DefStat("RowsIn", "shared rows fanned in (scanned+decoded once)", "broadcast")
-	StatBroadcastFindingsOut = base.DefStat("FindingsOut", "tagged findings emitted across all detectors", "broadcast")
+	StatBroadcastResultsOut = base.DefStat("ResultsOut", "tagged results emitted across all detectors", "broadcast")
 
 	// broadcast-indexed (the predicate-index sparse fan-out, DESIGN-prepare.md
-	// "Predicate index"): RowsIn counts the shared rows fanned in; FindingsOut the
-	// tagged findings; PredEvals the FULL detector predicates actually evaluated
+	// "Predicate index"): RowsIn counts the shared rows fanned in; ResultsOut the
+	// tagged results; PredEvals the FULL detector predicates actually evaluated
 	// (woken-by-a-present-literal + always-wake). PredEvals is the sparsity signal
 	// -- it stays ~O(hits + always-wake) per row instead of the K-per-row a plain
 	// broadcast pays (see TestOpBroadcastIndexedSparsity).
 	StatBroadcastIndexedRowsIn      = base.DefStat("RowsIn", "shared rows fanned in (scanned+decoded once)", "broadcast-indexed")
-	StatBroadcastIndexedFindingsOut = base.DefStat("FindingsOut", "tagged findings emitted across all detectors", "broadcast-indexed")
+	StatBroadcastIndexedResultsOut = base.DefStat("ResultsOut", "tagged results emitted across all detectors", "broadcast-indexed")
 	StatBroadcastIndexedPredEvals   = base.DefStat("PredEvals", "full detector predicates evaluated (woken + always-wake)", "broadcast-indexed")
 
 	StatGroupRowsIn    = base.DefStat("RowsIn", "input rows the operator consumed", "group", "distinct")

@@ -30,7 +30,7 @@ package glue
 //      SQL comments (`-- {...}`), so the whole file stays valid SQL++ -- a plain SQL
 //      reader/highlighter sees only comments plus the one SELECT:
 //        -- @fixture   -> JSONL input rows for the query's `source` keyspace
-//        -- @expect    -> the golden findings, one {"label":...,"result":...} per line
+//        -- @expect    -> the golden results, one {"label":...,"result":...} per line
 //
 // Example (round-trips through ParseMultiQueryEntry / RewriteExpect):
 //
@@ -82,10 +82,10 @@ type MultiQueryEntry struct {
 	// expression over the Source keyspace). A STANDALONE entry (window / GROUP BY / join --
 	// one that gets its own scan, not the fused shared scan) is SKIPPED when its Source has no
 	// row satisfying Gate, so an expensive sort/window never runs over a keyspace that cannot
-	// possibly match. The author asserts necessity (no finding is possible unless some row
+	// possibly match. The author asserts necessity (no result is possible unless some row
 	// satisfies Gate) -- it is the standalone analog of the fused predicate index. Needs Source.
 
-	Fixture    Fixture // the golden fixture: input rows + expected findings (empty if none).
+	Fixture    Fixture // the golden fixture: input rows + expected results (empty if none).
 	HasFixture bool    // the `-- @fixture` marker was present.
 	HasExpect  bool    // the `-- @expect` marker was present.
 
@@ -94,11 +94,11 @@ type MultiQueryEntry struct {
 }
 
 // Fixture is an entry's golden test data: JSONL input Rows fed into the entry's
-// `source` keyspace, and the Expect golden findings that running the entry over
-// those rows must reproduce (compared as a set -- see DiffFindings).
+// `source` keyspace, and the Expect golden results that running the entry over
+// those rows must reproduce (compared as a set -- see DiffResults).
 type Fixture struct {
 	Rows   [][]byte  // input rows (one raw-JSON document per fixture line).
-	Expect []Finding // golden findings ({label, result}); empty when @expect is absent.
+	Expect []LabelResult // golden results ({label, result}); empty when @expect is absent.
 }
 
 // LoadMultiQueryEntries reads every *.sql++ file in dir as one MultiQueryEntry (see ParseMultiQueryEntry for the
@@ -159,7 +159,7 @@ const (
 // ParseMultiQueryEntry parses one entry file's text (see the file header for the format). path
 // supplies the fallback Label (filename stem) and the recorded provenance. It never fails
 // on a plain `.sql++` (no front-matter / no fixture); a parse error is returned only for
-// a malformed @expect finding (bad JSON) so a broken golden is loud, not silently empty.
+// a malformed @expect result (bad JSON) so a broken golden is loud, not silently empty.
 func ParseMultiQueryEntry(path, text string) (MultiQueryEntry, error) {
 	r := MultiQueryEntry{
 		Path:  path,
@@ -225,18 +225,18 @@ func ParseMultiQueryEntry(path, text string) (MultiQueryEntry, error) {
 		}
 	}
 
-	// Expected findings: each is one {"label","result"} JSON object, likewise written
+	// Expected results: each is one {"label","result"} JSON object, likewise written
 	// as an SQL comment line.
 	for _, ln := range expectRaw {
 		j, ok := uncommentFixtureJSON(ln)
 		if !ok {
 			continue
 		}
-		var f findingJSON
+		var f resultJSON
 		if err := json.Unmarshal([]byte(j), &f); err != nil {
-			return r, fmt.Errorf("@expect: bad finding %q: %v", j, err)
+			return r, fmt.Errorf("@expect: bad result %q: %v", j, err)
 		}
-		r.Fixture.Expect = append(r.Fixture.Expect, Finding{Label: f.Label, Result: f.Result})
+		r.Fixture.Expect = append(r.Fixture.Expect, LabelResult{Label: f.Label, Result: f.Result})
 	}
 
 	return r, nil
@@ -259,8 +259,8 @@ func uncommentFixtureJSON(ln string) (string, bool) {
 	return "", false
 }
 
-// findingJSON is the on-disk shape of an @expect / .multi run finding row.
-type findingJSON struct {
+// resultJSON is the on-disk shape of an @expect / .multi run result row.
+type resultJSON struct {
 	Label  string          `json:"label"`
 	Result json.RawMessage `json:"result"`
 }
@@ -349,13 +349,13 @@ func parseListValue(val string) []string {
 }
 
 // RewriteExpect returns raw (an entry file's full text) with its `-- @expect` section
-// replaced by the given findings, serialized one canonical {"label","result"} per line
+// replaced by the given results, serialized one canonical {"label","result"} per line
 // (sorted for a stable, review-friendly diff). Everything before the expect block is
 // left BYTE-IDENTICAL. If the file has a `-- @fixture` but no `-- @expect`, the expect
 // block is appended after the fixture (the golden-master capture case). This is the
 // --update writer; it is a pure string transform so it is trivially testable.
-func RewriteExpect(raw string, findings []Finding) string {
-	block := markerExpect + "\n" + serializeFindings(findings)
+func RewriteExpect(raw string, results []LabelResult) string {
+	block := markerExpect + "\n" + serializeResults(results)
 
 	lines := strings.Split(raw, "\n")
 	for i, ln := range lines {
@@ -377,13 +377,13 @@ func RewriteExpect(raw string, findings []Finding) string {
 	return out + block
 }
 
-// serializeFindings renders findings as one canonical {"label","result"} JSON object
-// per line, sorted by (label, result) so the recorded golden is deterministic (findings
+// serializeResults renders results as one canonical {"label","result"} JSON object
+// per line, sorted by (label, result) so the recorded golden is deterministic (results
 // order is not guaranteed at run time -- see CompiledMultiQueryEntries.Run).
-func serializeFindings(findings []Finding) string {
-	sorted := make([]Finding, len(findings))
-	copy(sorted, findings)
-	sort.Slice(sorted, func(a, b int) bool { return findingKey(sorted[a]) < findingKey(sorted[b]) })
+func serializeResults(results []LabelResult) string {
+	sorted := make([]LabelResult, len(results))
+	copy(sorted, results)
+	sort.Slice(sorted, func(a, b int) bool { return resultKey(sorted[a]) < resultKey(sorted[b]) })
 
 	var b strings.Builder
 	for _, f := range sorted {
@@ -397,22 +397,22 @@ func serializeFindings(findings []Finding) string {
 	return b.String()
 }
 
-// DiffFindings compares expected vs actual findings as SORTED SETS (findings order is
+// DiffResults compares expected vs actual results as SORTED SETS (results order is
 // not guaranteed -- see CompiledMultiQueryEntries.Run), returning the missing (expected but not
-// produced) and unexpected (produced but not expected) findings. Result is compared
+// produced) and unexpected (produced but not expected) results. Result is compared
 // canonically (JSON re-serialized with sorted keys), so object key order / whitespace
 // differences never cause a spurious diff. A entry PASSES iff both slices are empty.
-func DiffFindings(expected, actual []Finding) (missing, unexpected []Finding) {
+func DiffResults(expected, actual []LabelResult) (missing, unexpected []LabelResult) {
 	exp := map[string]int{}
 	for _, f := range expected {
-		exp[findingKey(f)]++
+		exp[resultKey(f)]++
 	}
 	act := map[string]int{}
 	for _, f := range actual {
-		act[findingKey(f)]++
+		act[resultKey(f)]++
 	}
 	for _, f := range actual {
-		k := findingKey(f)
+		k := resultKey(f)
 		if exp[k] > 0 {
 			exp[k]--
 		} else {
@@ -420,21 +420,21 @@ func DiffFindings(expected, actual []Finding) (missing, unexpected []Finding) {
 		}
 	}
 	for _, f := range expected {
-		k := findingKey(f)
+		k := resultKey(f)
 		if act[k] > 0 {
 			act[k]--
 		} else {
 			missing = append(missing, f)
 		}
 	}
-	sort.Slice(missing, func(a, b int) bool { return findingKey(missing[a]) < findingKey(missing[b]) })
-	sort.Slice(unexpected, func(a, b int) bool { return findingKey(unexpected[a]) < findingKey(unexpected[b]) })
+	sort.Slice(missing, func(a, b int) bool { return resultKey(missing[a]) < resultKey(missing[b]) })
+	sort.Slice(unexpected, func(a, b int) bool { return resultKey(unexpected[a]) < resultKey(unexpected[b]) })
 	return missing, unexpected
 }
 
-// findingKey is a finding's canonical set-membership key: its label joined to its
-// canonicalized result (sorted JSON keys), so semantically-equal findings collapse.
-func findingKey(f Finding) string {
+// resultKey is a result's canonical set-membership key: its label joined to its
+// canonicalized result (sorted JSON keys), so semantically-equal results collapse.
+func resultKey(f LabelResult) string {
 	return f.Label + "\x00" + canonicalJSON(f.Result)
 }
 

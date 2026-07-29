@@ -111,7 +111,7 @@ func collectRows(t *testing.T, root *base.Op, vars *base.Vars) [][]string {
 }
 
 // broadcastTestDetector describes one detector for the test: a tag, a predicate
-// expr-tree, and a single projection expr-tree (uniform findings schema).
+// expr-tree, and a single projection expr-tree (uniform results schema).
 type broadcastTestDetector struct {
 	tag  string
 	pred []interface{}
@@ -158,12 +158,12 @@ func TestOpBroadcastEquivalence(t *testing.T) {
 		Children: []*base.Op{scanOp(n)},
 	}
 
-	// Run the broadcast once; group the interleaved tagged findings by tag. Slot 0
+	// Run the broadcast once; group the interleaved tagged results by tag. Slot 0
 	// is the tag (a JSON string, e.g. "all"); slot 1 is the projected evidence.
 	got := map[string][]string{}
 	for _, row := range collectRows(t, broadcast, broadcastVars()) {
 		if len(row) != 2 {
-			t.Fatalf("broadcast finding has %d slots, want 2: %v", len(row), row)
+			t.Fatalf("broadcast result has %d slots, want 2: %v", len(row), row)
 		}
 		tag, err := strconv.Unquote(row[0])
 		if err != nil {
@@ -192,23 +192,23 @@ func TestOpBroadcastEquivalence(t *testing.T) {
 		}
 
 		if !reflect.DeepEqual(got[d.tag], want) {
-			t.Fatalf("detector %q: broadcast findings %v != separate-pipeline %v",
+			t.Fatalf("detector %q: broadcast results %v != separate-pipeline %v",
 				d.tag, got[d.tag], want)
 		}
 	}
 
 	// Spot-check the coverage the cases are meant to exercise.
 	if len(got["all"]) != n {
-		t.Fatalf("tag all: got %d findings, want %d", len(got["all"]), n)
+		t.Fatalf("tag all: got %d results, want %d", len(got["all"]), n)
 	}
 	if len(got["none"]) != 0 {
-		t.Fatalf("tag none: got %d findings, want 0", len(got["none"]))
+		t.Fatalf("tag none: got %d results, want 0", len(got["none"]))
 	}
 	if len(got["some"]) != n-13 { // a in 13..19
-		t.Fatalf("tag some: got %d findings, want %d", len(got["some"]), n-13)
+		t.Fatalf("tag some: got %d results, want %d", len(got["some"]), n-13)
 	}
 	if len(got["missing"]) != 0 {
-		t.Fatalf("tag missing: got %d findings, want 0 (MISSING is non-truthy)", len(got["missing"]))
+		t.Fatalf("tag missing: got %d results, want 0 (MISSING is non-truthy)", len(got["missing"]))
 	}
 }
 

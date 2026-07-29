@@ -357,7 +357,7 @@ func (c *cli) helpMeta() {
 	c.hline("  byte_offset byte_len       — the record's byte span in the ORIGINAL source")
 	c.hline("  line_start line_end        — its raw 1-based line range")
 	c.hline("")
-	c.hline("So a finding is externally chase-able: dd/tail -c+<byte_offset>, sed -n <line_start>p,")
+	c.hline("So a result is externally chase-able: dd/tail -c+<byte_offset>, sed -n <line_start>p,")
 	c.hline("or rg -n land on the exact raw record (offsets are the original stream, pre-framing).")
 	c.hline("  SELECT META(x).id, x._meta.byte_offset, x._meta.line_start FROM <ks> x WHERE ...")
 }
@@ -371,6 +371,6 @@ func (c *cli) helpTempKeyspaces() {
 	c.hline("")
 	c.hline("Later statements SELECT ... FROM <name> — JOINable, aggregable, and chainable (a")
 	c.hline("temp keyspace built FROM other temp keyspaces). The staged-analysis pattern: scan")
-	c.hline("big files once into small finding keyspaces, then correlate them, all in one")
+	c.hline("big files once into small result keyspaces, then correlate them, all in one")
 	c.hline("session. (File-backed sibling: INSERT INTO `<name>/data.jsonl` ... SELECT.)")
 }

@@ -43,7 +43,7 @@ import (
 // Per extractor per matching row m, the emitted rows are m's `beforeMatch` predecessors,
 // m itself, and its `afterMatch` successors within the same partition (grep -B/-A/-C),
 // each emitted AT MOST ONCE across overlapping match windows and tagged with the
-// extractor's id in output slot 0 -- so the interleaved findings demultiplex by tag,
+// extractor's id in output slot 0 -- so the interleaved results demultiplex by tag,
 // exactly like OpBroadcast.
 //
 // Interpreter-oriented like OpBroadcast / OpMergeJoin: OpBroadcastContext delegates via a
@@ -167,7 +167,7 @@ func BroadcastContextExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	havePart := false
 
 	// emit projects one row for an extractor (tag first) into its reused buffer and
-	// yields the tagged finding.
+	// yields the tagged result.
 	emit := func(e *contextExtractor, row base.Vals) {
 		out := e.outReuse[:0]
 		out = append(out, e.tagVal)

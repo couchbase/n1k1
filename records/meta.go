@@ -137,7 +137,7 @@ func (m *metaSource) Next(rec *Record) (bool, error) {
 	}
 	if l := rec.Loc; l.Has {
 		// Original-source location (IDEA-0026): byte span + raw line range, so a
-		// finding is externally locatable (sed/dd/rg) despite framing.
+		// result is externally locatable (sed/dd/rg) despite framing.
 		m.frag = append(m.frag, `,"byte_offset":`...)
 		m.frag = strconv.AppendInt(m.frag, l.ByteStart, 10)
 		m.frag = append(m.frag, `,"byte_len":`...)

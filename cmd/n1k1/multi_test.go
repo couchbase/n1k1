@@ -207,7 +207,7 @@ func TestExtractList(t *testing.T) {
 // lint advice column and (rejected) in the run health block; a fixture with no @expect
 // surfaces the "capture the golden" snippet in test output.
 // TestMultiRunHitStats: .multi run prints per-entry hit stats (IDEA-0015) so a
-// 0-findings entry is debuggable -- a matched=0 over a scanned-many keyspace is a
+// 0-results entry is debuggable -- a matched=0 over a scanned-many keyspace is a
 // predicate miss, while matched=0 over a scanned=1 whole-file blob is an upstream
 // framing problem, and the two carry different hints.
 func TestMultiRunHitStats(t *testing.T) {
@@ -293,7 +293,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	var tout, terr bytes.Buffer
 	c3 := &cli{prog: "n1k1", mode: "jsonlines", out: &tout, stderr: &terr}
 	c3.cmdMulti("test --queries " + tc)
-	if !strings.Contains(terr.String(), "fixture has no expected findings recorded") {
+	if !strings.Contains(terr.String(), "fixture has no expected results recorded") {
 		t.Errorf("test missing the no-golden fix snippet; stderr:\n%s", terr.String())
 	}
 	if !strings.Contains(terr.String(), ".multi test --update") {
@@ -302,7 +302,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 }
 
 // TestMultiRun: a pack of one fusable filter, one correlated (standalone), and one
-// broken (rejected) entry. The fusable + standalone produce tagged findings; the
+// broken (rejected) entry. The fusable + standalone produce tagged results; the
 // coverage summary reports 1 fused / 1 standalone / 1 rejected (with the reason); the
 // broken entry does not abort the run.
 func TestMultiRun(t *testing.T) {
@@ -325,14 +325,14 @@ func TestMultiRun(t *testing.T) {
 	if !strings.Contains(stderr, "broken_x") {
 		t.Errorf("rejected entry broken_x not surfaced; stderr:\n%s", stderr)
 	}
-	// Findings for the fusable (errors) and standalone (prev_ts) entries appear,
+	// Results for the fusable (errors) and standalone (prev_ts) entries appear,
 	// tagged. (2 ERROR rows fused + 4 standalone projection rows.)
 	stdout := out.String()
 	if !strings.Contains(stdout, `"label":"errors"`) {
-		t.Errorf("no fusable findings tagged errors; stdout:\n%s", stdout)
+		t.Errorf("no fusable results tagged errors; stdout:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, `"label":"prev_ts"`) {
-		t.Errorf("no standalone findings tagged prev_ts; stdout:\n%s", stdout)
+		t.Errorf("no standalone results tagged prev_ts; stdout:\n%s", stdout)
 	}
 	if c.failed {
 		t.Errorf("a broken entry must not abort the run (c.failed=true); stderr:\n%s", stderr)
@@ -378,7 +378,7 @@ func TestMultiLint(t *testing.T) {
 // TestMultiExplain: `.multi explain` surfaces the fused shared-scan PLAN (the op tree
 // MULTI_MATCHES's stream-fn node hides) plus the fusion map -- which queries share the
 // scan and the index literal each is keyed on -- and lists the standalone/rejected ones
-// (IDEA-0036). It compiles but does NOT run (no findings printed).
+// (IDEA-0036). It compiles but does NOT run (no results printed).
 func TestMultiExplain(t *testing.T) {
 	root := newLogsBundle(t)
 	// A second keyspace, so the fused plan is a union-all over TWO shared scans.
@@ -421,10 +421,10 @@ func TestMultiExplain(t *testing.T) {
 			t.Errorf(".multi explain missing %q; stdout:\n%s", want, got)
 		}
 	}
-	// explain compiles, it does NOT run -- no findings rows (a finding row is
+	// explain compiles, it does NOT run -- no results rows (a result row is
 	// `{"label":"errors",...}`; the bare label token appears in the plan's schema).
 	if strings.Contains(got, `"label":"`) {
-		t.Errorf(".multi explain must not run the pack (no findings); stdout:\n%s", got)
+		t.Errorf(".multi explain must not run the pack (no results); stdout:\n%s", got)
 	}
 	if c.failed {
 		t.Errorf("a rejected entry must not fail explain (c.failed=true); stderr:\n%s", errb.String())
@@ -521,7 +521,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	if !strings.Contains(stderr, "F: FAIL") || !strings.Contains(stderr, "missing:") {
 		t.Errorf("failing entry not reported FAIL with a diff; stderr:\n%s", stderr)
 	}
-	if !strings.Contains(stderr, "no expected findings recorded") {
+	if !strings.Contains(stderr, "no expected results recorded") {
 		t.Errorf("fixture-without-expect not reported as no-golden FAIL; stderr:\n%s", stderr)
 	}
 	if !c.failed {
@@ -593,7 +593,7 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	if c.failed {
 		t.Fatalf("--update must not fail on a runnable fixture; stderr:\n%s", errb.String())
 	}
-	if !strings.Contains(errb.String(), "U: recorded 1 finding") {
+	if !strings.Contains(errb.String(), "U: recorded 1 result") {
 		t.Errorf("--update did not record the golden; stderr:\n%s", errb.String())
 	}
 
@@ -648,7 +648,7 @@ func TestMultiRunBind(t *testing.T) {
 	c := &cli{prog: "n1k1", dir: root, mode: "jsonlines", out: &out, stderr: &errb}
 	c.cmdMulti("run --queries " + entries + " --bind " + good)
 	if !strings.Contains(out.String(), `"label":"oom"`) {
-		t.Errorf("bound run produced no findings; stdout:\n%s\nstderr:\n%s", out.String(), errb.String())
+		t.Errorf("bound run produced no results; stdout:\n%s\nstderr:\n%s", out.String(), errb.String())
 	}
 	if !strings.Contains(errb.String(), "resolved") {
 		t.Errorf("binding coverage should report the resolved keyspace; stderr:\n%s", errb.String())
@@ -672,6 +672,6 @@ func TestMultiRunBind(t *testing.T) {
 		t.Errorf("an unresolved binding must set c.failed (fail-loud), stderr:\n%s", errb2.String())
 	}
 	if strings.TrimSpace(out2.String()) != "" {
-		t.Errorf("must NOT render a (falsely clean) findings table on a gap; stdout:\n%s", out2.String())
+		t.Errorf("must NOT render a (falsely clean) results table on a gap; stdout:\n%s", out2.String())
 	}
 }

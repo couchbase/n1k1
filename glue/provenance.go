@@ -27,7 +27,7 @@ import (
 // Provenance identifies the n1k1 source a build/codegen was made against, for
 // reproducibility and for stamping generated code. It matters once compiled
 // PREPARE bundles subsets of n1k1's own source (engine/base, and eventually the
-// datastore runtime) to `go build` a self-contained program: a finding or an
+// datastore runtime) to `go build` a self-contained program: a result or an
 // artifact can then be traced back to the exact source it was produced from --
 // including UNCOMMITTED dev edits, so codegen reflects work-in-progress without a
 // commit.

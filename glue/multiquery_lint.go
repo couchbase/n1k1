@@ -64,7 +64,7 @@ type EntryLint struct {
 // CorpusScore is the pack-level roll-up printed under a lint report: the fraction
 // of entries that fuse, evaluate natively, and are index-pruned, plus the raw
 // counts behind each fraction. It is the guardrail that stops an AI-authored pack
-// from silently bloating (all always-wake) or lying (rejected -> no findings).
+// from silently bloating (all always-wake) or lying (rejected -> no results).
 type MultiQueryScore struct {
 	Total         int // all entries linted.
 	Fused         int // classified fused.

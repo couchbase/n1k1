@@ -24,7 +24,7 @@ import (
 
 // scanOfAs builds a scan op over one-per-line JSON docs {"a":v} for the given
 // values, so a test can give each source a DISTINCT, recognizable row set (used
-// to make a mis-route produce a visibly wrong finding value).
+// to make a mis-route produce a visibly wrong result value).
 func scanOfAs(vals ...int) *base.Op {
 	var sb strings.Builder
 	for _, v := range vals {
@@ -39,17 +39,17 @@ func scanOfAs(vals ...int) *base.Op {
 	}
 }
 
-// collectFindingsByTag runs a routed plan and returns, per tag, the SORTED
-// evidence values (slot 1, a JSON number) of its findings. Sorting makes the
+// collectResultsByTag runs a routed plan and returns, per tag, the SORTED
+// evidence values (slot 1, a JSON number) of its results. Sorting makes the
 // comparison a multiset compare, robust to union-all's concurrent (order-
 // nondeterministic across sources) yield.
-func collectFindingsByTag(t *testing.T, routed *base.Op) map[string][]int {
+func collectResultsByTag(t *testing.T, routed *base.Op) map[string][]int {
 	t.Helper()
 
 	byTag := map[string][]int{}
 	for _, row := range collectRows(t, routed, broadcastVars()) {
 		if len(row) != 2 {
-			t.Fatalf("finding has %d slots, want 2: %v", len(row), row)
+			t.Fatalf("result has %d slots, want 2: %v", len(row), row)
 		}
 		tag, err := strconv.Unquote(row[0])
 		if err != nil {
@@ -72,7 +72,7 @@ func collectFindingsByTag(t *testing.T, routed *base.Op) map[string][]int {
 // ABSENT source. Data is chosen so a mis-route would be visible (a detector
 // bound to source A, with a predicate that would ALSO match B's larger values,
 // must never see B's rows). Absent-source detectors must come back as orphans,
-// never in the findings.
+// never in the results.
 func TestBroadcastRouteCorrectness(t *testing.T) {
 	// Disjoint value ranges per source: A small, B large, C huge.
 	srcVals := map[string][]int{
@@ -118,16 +118,16 @@ func TestBroadcastRouteCorrectness(t *testing.T) {
 		t.Fatalf("orphans=%v, want [orphanX orphanY]", orphanTags)
 	}
 
-	got := collectFindingsByTag(t, routed)
+	got := collectResultsByTag(t, routed)
 
-	// Absent-source detectors contribute NOTHING to the findings.
+	// Absent-source detectors contribute NOTHING to the results.
 	for _, tag := range []string{"orphanX", "orphanY"} {
 		if len(got[tag]) != 0 {
-			t.Fatalf("orphan detector %q leaked %d findings: %v", tag, len(got[tag]), got[tag])
+			t.Fatalf("orphan detector %q leaked %d results: %v", tag, len(got[tag]), got[tag])
 		}
 	}
 
-	// Each present detector's findings == running it against ONLY its source.
+	// Each present detector's results == running it against ONLY its source.
 	want := map[string][]int{
 		"aAll": {1, 2, 3},
 		"aBig": {3},
@@ -137,7 +137,7 @@ func TestBroadcastRouteCorrectness(t *testing.T) {
 	}
 	for tag, w := range want {
 		if !reflect.DeepEqual(got[tag], w) {
-			t.Fatalf("detector %q: findings %v, want %v (a mis-route would show foreign values)", tag, got[tag], w)
+			t.Fatalf("detector %q: results %v, want %v (a mis-route would show foreign values)", tag, got[tag], w)
 		}
 	}
 
@@ -146,7 +146,7 @@ func TestBroadcastRouteCorrectness(t *testing.T) {
 	for _, d := range detectors {
 		vs, present := srcVals[d.TargetSource]
 		if !present {
-			continue // orphan; already checked absent from findings
+			continue // orphan; already checked absent from results
 		}
 		oracle := &base.Op{
 			Kind:   "project",
@@ -198,9 +198,9 @@ func TestBroadcastRouteEdgeCases(t *testing.T) {
 	if len(routed.Children) != 1 || routed.Children[0] != aScan {
 		t.Fatalf("broadcast child is not A's scan; D (zero detectors) must not contribute")
 	}
-	got := collectFindingsByTag(t, routed)
+	got := collectResultsByTag(t, routed)
 	if !reflect.DeepEqual(got["onlyA"], []int{1, 2}) {
-		t.Fatalf("onlyA findings=%v, want [1 2] (D's 9s must not appear)", got["onlyA"])
+		t.Fatalf("onlyA results=%v, want [1 2] (D's 9s must not appear)", got["onlyA"])
 	}
 
 	// (2) Empty corpus: nil plan, no orphans.
@@ -236,7 +236,7 @@ func TestBroadcastRouteEdgeCases(t *testing.T) {
 // With K detectors spread across M sources, routing does ~1/M the per-row
 // predicate work: routed evaluates n*K predicates total (n rows/source x K/M
 // detectors x M sources), unrouted evaluates M*n*K. Expect routed to be ~M-fold
-// cheaper in time + findings-eval allocations.
+// cheaper in time + results-eval allocations.
 func BenchmarkBroadcastRouting(b *testing.B) {
 	const m = 4
 	const k = 64

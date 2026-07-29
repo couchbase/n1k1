@@ -170,7 +170,7 @@ Both sides share, keyed by `(QN + pushdown-spec)` (`scanCacheKey`): a FULL scan 
 side too. An unrecognized pushdown isn't cached (correctness over sharing). Each capture is
 byte-BUDGETED (`CorpusScanCacheBudgetBytes`, default 256 MiB): ⚠ a keyspace larger than the budget
 is **ABANDONED mid-capture** (partial heap freed, re-scanned thereafter) rather than mirrored to
-disk in full, so a multi-GB keyspace degrades to the no-sharing baseline, findings unchanged.
+disk in full, so a multi-GB keyspace degrades to the no-sharing baseline, results unchanged.
 
 ⚠ **Scope caveats:** an UN-lowered correlated subquery evaluates its inner scan via **BOXED cbq**
 (not an n1k1 `datastore-scan-records`), which neither the pipe NOR `temp-capture` can intercept — so

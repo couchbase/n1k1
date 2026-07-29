@@ -42,7 +42,7 @@ func gateSession(t *testing.T, logsJSONL string) *Session {
 // its expensive sort/window never runs -- and runs normally when the gate is present.
 // A entry with no gate is never skipped (opt-in), proving the skip is the gate's.
 func TestMultiQueryGateStandalone(t *testing.T) {
-	// grep -C1 style window flag: standalone (has OVER), findings only near an ERROR.
+	// grep -C1 style window flag: standalone (has OVER), results only near an ERROR.
 	stmt := `SELECT line FROM (SELECT line, MAX(CASE WHEN sev = "ERROR" THEN 1 ELSE 0 END) OVER (ORDER BY code ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS near FROM logs) sub WHERE sub.near = 1`
 	gated := MultiQueryEntry{Label: "CTX", Stmt: stmt, Source: "logs", Gate: `sev = "ERROR"`}
 	ungated := MultiQueryEntry{Label: "CTX", Stmt: stmt}
@@ -72,18 +72,18 @@ func TestMultiQueryGateStandalone(t *testing.T) {
 		t.Errorf("gate present: expected no skip, got GatedSkipped=%v", cc.GatedSkipped)
 	}
 	if len(f) != 2 { // both rows are within 1 line of the ERROR at code=1
-		t.Errorf("gate present: expected 2 context findings, got %d (%+v)", len(f), f)
+		t.Errorf("gate present: expected 2 context results, got %d (%+v)", len(f), f)
 	}
 
 	// (2) gate ABSENT from the keyspace -> the entry is skipped (its sort/window is
-	// never run), producing zero findings, and the skip is recorded (not silent).
+	// never run), producing zero results, and the skip is recorded (not silent).
 	cc = run(t, noErr, gated)
 	f, err = cc.Run()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(f) != 0 {
-		t.Errorf("gate absent: expected 0 findings, got %+v", f)
+		t.Errorf("gate absent: expected 0 results, got %+v", f)
 	}
 	if len(cc.GatedSkipped) != 1 || cc.GatedSkipped[0] != "CTX" {
 		t.Errorf("gate absent: expected GatedSkipped=[CTX], got %v", cc.GatedSkipped)

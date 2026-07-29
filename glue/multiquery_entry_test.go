@@ -24,7 +24,7 @@ import (
 
 // TestParseMultiQueryEntryFull: an entry with front-matter + fixture + expect parses into all
 // the expected fields; the label becomes the Label, the SQL body is stripped of front-
-// matter and both sections, and the fixture rows + golden findings round-trip.
+// matter and both sections, and the fixture rows + golden results round-trip.
 func TestParseMultiQueryEntryFull(t *testing.T) {
 	text := `-- label: ET-12345
 -- description: disk-full errors
@@ -66,7 +66,7 @@ SELECT l.msg, l.ts FROM logs l WHERE l.sev = "ERROR"
 		t.Errorf("fixture rows = %d, want 3", len(r.Fixture.Rows))
 	}
 	if len(r.Fixture.Expect) != 2 || r.Fixture.Expect[0].Label != "ET-12345" {
-		t.Errorf("expect findings = %+v, want 2 tagged ET-12345", r.Fixture.Expect)
+		t.Errorf("expect results = %+v, want 2 tagged ET-12345", r.Fixture.Expect)
 	}
 	if canonicalJSON(r.Fixture.Expect[0].Result) != `{"msg":"disk full","sev":"ERROR","ts":3}` {
 		t.Errorf("expect[0].Result = %s", r.Fixture.Expect[0].Result)
@@ -178,14 +178,14 @@ func TestLoadMultiQueryEntriesDirs(t *testing.T) {
 
 // TestRewriteExpectRoundTrip: RewriteExpect records a golden into a fixture-only entry
 // (leaving everything before @expect byte-identical), and re-parsing yields exactly
-// those findings. A second RewriteExpect over an existing @expect replaces it in place.
+// those results. A second RewriteExpect over an existing @expect replaces it in place.
 func TestRewriteExpectRoundTrip(t *testing.T) {
 	head := "-- label: ET-9\n-- source: logs\nSELECT * FROM logs l WHERE l.sev = \"ERROR\"\n-- @fixture\n{\"sev\":\"ERROR\"}\n"
 
-	findings := []Finding{
+	results := []LabelResult{
 		{Label: "ET-9", Result: json.RawMessage(`{"sev":"ERROR","n":1}`)},
 	}
-	out := RewriteExpect(head, findings)
+	out := RewriteExpect(head, results)
 
 	// Everything before the appended @expect block is byte-identical.
 	if !strings.HasPrefix(out, head) {
@@ -204,7 +204,7 @@ func TestRewriteExpectRoundTrip(t *testing.T) {
 	}
 
 	// Replacing an existing @expect keeps the head and swaps the block.
-	out2 := RewriteExpect(out, []Finding{{Label: "ET-9", Result: json.RawMessage(`{"sev":"ERROR","n":2}`)}})
+	out2 := RewriteExpect(out, []LabelResult{{Label: "ET-9", Result: json.RawMessage(`{"sev":"ERROR","n":2}`)}})
 	if !strings.HasPrefix(out2, head) {
 		t.Fatalf("second RewriteExpect changed the head:\n%q", out2)
 	}
@@ -214,40 +214,40 @@ func TestRewriteExpectRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDiffFindings: equal sets diff clean regardless of order and result key order;
-// a missing and an unexpected finding are reported on their respective sides.
-func TestDiffFindings(t *testing.T) {
-	expected := []Finding{
+// TestDiffResults: equal sets diff clean regardless of order and result key order;
+// a missing and an unexpected result are reported on their respective sides.
+func TestDiffResults(t *testing.T) {
+	expected := []LabelResult{
 		{Label: "T", Result: json.RawMessage(`{"a":1,"b":2}`)},
 		{Label: "T", Result: json.RawMessage(`{"a":3}`)},
 	}
 	// Same set, reordered + different key order in result -> no diff.
-	actual := []Finding{
+	actual := []LabelResult{
 		{Label: "T", Result: json.RawMessage(`{"a":3}`)},
 		{Label: "T", Result: json.RawMessage(`{"b":2,"a":1}`)},
 	}
-	if m, u := DiffFindings(expected, actual); len(m) != 0 || len(u) != 0 {
+	if m, u := DiffResults(expected, actual); len(m) != 0 || len(u) != 0 {
 		t.Fatalf("equal sets diffed: missing=%v unexpected=%v", m, u)
 	}
 
 	// Drop one expected, add one unexpected.
-	actual2 := []Finding{
+	actual2 := []LabelResult{
 		{Label: "T", Result: json.RawMessage(`{"a":1,"b":2}`)},
 		{Label: "T", Result: json.RawMessage(`{"a":99}`)},
 	}
-	m, u := DiffFindings(expected, actual2)
+	m, u := DiffResults(expected, actual2)
 	if len(m) != 1 || canonicalJSON(m[0].Result) != `{"a":3}` {
-		t.Fatalf("missing = %v, want the {a:3} finding", m)
+		t.Fatalf("missing = %v, want the {a:3} result", m)
 	}
 	if len(u) != 1 || canonicalJSON(u[0].Result) != `{"a":99}` {
-		t.Fatalf("unexpected = %v, want the {a:99} finding", u)
+		t.Fatalf("unexpected = %v, want the {a:99} result", u)
 	}
 }
 
 // TestRunFixture: an entry's fixture runs end-to-end -- RunFixture builds a temp
-// keyspace named after `source`, runs the entry, and returns whole-row findings for
+// keyspace named after `source`, runs the entry, and returns whole-row results for
 // the matching rows. A rejected (broken-SQL) entry surfaces as an error (not a silent
-// zero-findings pass). A fixture without `source` errors.
+// zero-results pass). A fixture without `source` errors.
 func TestRunFixture(t *testing.T) {
 	r, err := ParseMultiQueryEntry("d.sql++", `-- label: ET-1
 -- source: logs
@@ -260,23 +260,23 @@ SELECT * FROM logs l WHERE l.sev = "ERROR"
 	if err != nil {
 		t.Fatal(err)
 	}
-	findings, err := r.RunFixture()
+	results, err := r.RunFixture()
 	if err != nil {
 		t.Fatalf("RunFixture: %v", err)
 	}
-	if len(findings) != 2 {
-		t.Fatalf("findings = %d, want 2 (the ERROR rows)", len(findings))
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2 (the ERROR rows)", len(results))
 	}
-	for _, f := range findings {
+	for _, f := range results {
 		if f.Label != "ET-1" {
-			t.Errorf("finding label = %q, want ET-1", f.Label)
+			t.Errorf("result label = %q, want ET-1", f.Label)
 		}
 	}
 
-	// A broken entry must FAIL loudly, not run to a false clean 0 findings.
+	// A broken entry must FAIL loudly, not run to a false clean 0 results.
 	broken, _ := ParseMultiQueryEntry("b.sql++", "-- source: logs\nSELECT FROM WHERE (((\n-- @fixture\n{\"x\":1}\n")
 	if _, err := broken.RunFixture(); err == nil {
-		t.Error("a rejected entry's fixture must error, not pass with 0 findings")
+		t.Error("a rejected entry's fixture must error, not pass with 0 results")
 	}
 
 	// A fixture with no source can't be placed into a keyspace.

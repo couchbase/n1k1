@@ -67,7 +67,7 @@ func multiFix(situation, detail string) string {
 	case fixFixtureFail:
 		return "if this change is intended, re-record the golden: `.multi test --update`."
 	case fixNoGolden:
-		return "fixture has no expected findings recorded. Capture them: `.multi test --update`, then review + commit."
+		return "fixture has no expected results recorded. Capture them: `.multi test --update`, then review + commit."
 	}
 	return ""
 }
