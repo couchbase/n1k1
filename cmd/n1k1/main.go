@@ -162,6 +162,17 @@ func main() {
 	if !multiSource && len(flag.Args()) > 0 {
 		dir = flag.Args()[0]
 		explicit = true
+		// Go's flag package stops parsing at the first non-flag arg, so a flag placed
+		// AFTER the datastore dir (`n1k1 <dir> -c '...'`) is silently dropped -- and
+		// with -c dropped the process falls into the REPL and exits 0, a silent no-op.
+		// Detect it and fail loudly rather than misbehave. (See ISSUE-02.)
+		for _, extra := range args[1:] {
+			if strings.HasPrefix(extra, "-") && extra != "-" {
+				fmt.Fprintf(os.Stderr, "%s: flags must precede the datastore dir; got %q after %q\n"+
+					"      try: %s %s ... %q\n", prog, extra, dir, prog, extra, dir)
+				os.Exit(2)
+			}
+		}
 	}
 
 	// -formats locks down which file formats/compression/recursion n1k1 will scan.
