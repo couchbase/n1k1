@@ -14,6 +14,7 @@
 package glue
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -314,5 +315,50 @@ func TestReconcilePlanAndLoadPack(t *testing.T) {
 	}
 	if p2 := PlanReconcile(desired, live, false); len(p2.Destroy) != 0 {
 		t.Fatalf("plan(no prune): destroy should be empty, got %v", p2.Destroy)
+	}
+}
+
+// TestFixtureParsing covers ISSUE-05: a malformed / unterminated @fixture is a hard
+// error (not a silent drop that yields an empty golden reporting PASS), a multi-line
+// pretty-printed fixture loads, and PackID ignores cosmetic blank-line/whitespace.
+func TestFixtureParsing(t *testing.T) {
+	// A pretty-printed (multi-line) fixture row loads as one document.
+	pretty := "-- label: P\n" +
+		"SELECT s.id FROM sessions s\n" +
+		"-- @fixture\n" +
+		"-- {\n" +
+		`--   "id": "s1",` + "\n" +
+		`--   "n": {"a": 1}` + "\n" +
+		"-- }\n"
+	e, err := ParseMultiQueryEntry("p.sql++", pretty)
+	if err != nil {
+		t.Fatalf("pretty fixture: unexpected error: %v", err)
+	}
+	if len(e.Fixture.Rows) != 1 {
+		t.Fatalf("pretty fixture: want 1 row, got %d: %q", len(e.Fixture.Rows), e.Fixture.Rows)
+	}
+	if !json.Valid(e.Fixture.Rows[0]) {
+		t.Fatalf("pretty fixture row is not valid JSON: %q", e.Fixture.Rows[0])
+	}
+
+	// A malformed / unterminated fixture row is a HARD ERROR (the ISSUE-05 bug).
+	bad := "-- label: B\nSELECT s.id FROM sessions s\n-- @fixture\n-- {\n--   \"id\": \"s1\"\n"
+	if _, err := ParseMultiQueryEntry("b.sql++", bad); err == nil {
+		t.Fatal("unterminated @fixture: expected a hard error, got nil")
+	}
+
+	// Compact one-doc-per-line still works exactly as before.
+	compact := "-- label: C\nSELECT s.id FROM sessions s\n-- @fixture\n" +
+		`-- {"id":"a"}` + "\n" + `-- {"id":"b"}` + "\n"
+	e2, err := ParseMultiQueryEntry("c.sql++", compact)
+	if err != nil || len(e2.Fixture.Rows) != 2 {
+		t.Fatalf("compact fixture: err=%v rows=%d", err, len(e2.Fixture.Rows))
+	}
+
+	// PackID is invariant to interior blank lines + trailing whitespace (ISSUE-05 #4).
+	a := MultiQueryEntry{Label: "X", Stmt: "SELECT 1\nFROM t"}
+	b := MultiQueryEntry{Label: "X", Stmt: "SELECT 1   \n\n\nFROM t\n"}
+	if PackID("x", []MultiQueryEntry{a}) != PackID("x", []MultiQueryEntry{b}) {
+		t.Fatal("PackID changed under a cosmetic blank-line/whitespace reformat")
 	}
 }

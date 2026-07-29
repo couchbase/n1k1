@@ -490,11 +490,27 @@ func PlanReconcile(desired map[string]string, live map[string]*CursorState, prun
 func PackID(name string, dets []MultiQueryEntry) string {
 	lines := make([]string, 0, len(dets))
 	for _, d := range dets {
-		lines = append(lines, d.Label+"\x00"+strings.TrimSpace(d.Stmt))
+		lines = append(lines, d.Label+"\x00"+normalizePackSQL(d.Stmt))
 	}
 	sort.Strings(lines)
 	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	return name + "@" + hex.EncodeToString(h[:])[:8]
+}
+
+// normalizePackSQL canonicalizes a statement for identity hashing (PackID/SpecHash):
+// trailing per-line whitespace is stripped and blank lines dropped, so a cosmetic
+// reformat — blank lines between a comment preamble and the SELECT, trailing spaces —
+// doesn't change the pack id and churn spec_hash in a GitOps diff (ISSUE-05 #4). A
+// full SQL re-parse would be overkill; the blank-line/trailing-space collapse covers
+// the realistic reformat the doc comment ("normalized SQL") already promises.
+func normalizePackSQL(s string) string {
+	var out []string
+	for _, ln := range strings.Split(s, "\n") {
+		if ln = strings.TrimRight(ln, " \t"); strings.TrimSpace(ln) != "" {
+			out = append(out, ln)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // -------------------------------------------------------------- diff / snapshot

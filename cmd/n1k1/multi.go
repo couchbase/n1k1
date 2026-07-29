@@ -1017,6 +1017,14 @@ func (c *cli) cmdMultiTest(arg string) {
 			}
 			updated++
 			fmt.Fprintf(c.stderr, "  %s %s: recorded %d labelResult(s)\n", c.icon("📝 "), r.Label, len(actual))
+			// A fixture WITH input rows that produces zero labelResults records an empty
+			// golden that will then always PASS -- either a broken fixture or a detector
+			// that matches nothing. Warn rather than record a clean-looking empty (ISSUE-05).
+			if len(actual) == 0 && len(r.Fixture.Rows) > 0 {
+				fmt.Fprintf(c.stderr, "    %s\n", c.style.Yellow(fmt.Sprintf(
+					"warning: recorded an EMPTY golden from %d fixture row(s) -- the detector matched nothing; "+
+						"a later `.multi test` will PASS vacuously", len(r.Fixture.Rows))))
+			}
 			continue
 		}
 

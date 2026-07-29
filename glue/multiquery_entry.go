@@ -97,7 +97,7 @@ type MultiQueryEntry struct {
 // `source` keyspace, and the Expect golden labelResults that running the entry over
 // those rows must reproduce (compared as a set -- see DiffLabelResults).
 type Fixture struct {
-	Rows   [][]byte  // input rows (one raw-JSON document per fixture line).
+	Rows   [][]byte      // input rows (one raw-JSON document per fixture line).
 	Expect []LabelResult // golden labelResults ({label, result}); empty when @expect is absent.
 }
 
@@ -216,24 +216,24 @@ func ParseMultiQueryEntry(path, text string) (MultiQueryEntry, error) {
 	r.HasFixture = sawFixture
 	r.HasExpect = sawExpect
 
-	// Fixture rows: each data line is a JSON document written as an SQL comment
-	// (`-- {...}`), so the whole entry file stays valid SQL++. uncommentFixtureJSON
-	// strips the comment prefix; blank lines and prose (non-JSON) comments are skipped.
-	for _, ln := range fixtureRaw {
-		if j, ok := uncommentFixtureJSON(ln); ok {
-			r.Fixture.Rows = append(r.Fixture.Rows, []byte(j))
-		}
+	// Fixture rows + expected labelResults: each is a JSON document written as an SQL
+	// comment (`-- {...}`), so the whole entry file stays valid SQL++. A document may
+	// span multiple comment lines (pretty-printed); a malformed / unterminated one is
+	// a HARD ERROR, never silently dropped (ISSUE-05 -- a dropped row used to load 0
+	// fixture rows yet still report PASS).
+	fixtureDocs, err := parseFixtureSection(fixtureRaw, "@fixture")
+	if err != nil {
+		return r, fmt.Errorf("%s: %v", r.Label, err)
 	}
+	r.Fixture.Rows = fixtureDocs
 
-	// Expected labelResults: each is one {"label","result"} JSON object, likewise written
-	// as an SQL comment line.
-	for _, ln := range expectRaw {
-		j, ok := uncommentFixtureJSON(ln)
-		if !ok {
-			continue
-		}
+	expectDocs, err := parseFixtureSection(expectRaw, "@expect")
+	if err != nil {
+		return r, fmt.Errorf("%s: %v", r.Label, err)
+	}
+	for _, j := range expectDocs {
 		var f labelResultJSON
-		if err := json.Unmarshal([]byte(j), &f); err != nil {
+		if err := json.Unmarshal(j, &f); err != nil {
 			return r, fmt.Errorf("@expect: bad labelResult %q: %v", j, err)
 		}
 		r.Fixture.Expect = append(r.Fixture.Expect, LabelResult{Label: f.Label, Result: f.Result})
@@ -242,21 +242,36 @@ func ParseMultiQueryEntry(path, text string) (MultiQueryEntry, error) {
 	return r, nil
 }
 
-// uncommentFixtureJSON reads one @fixture / @expect line: it strips an optional leading
-// SQL comment prefix (`--`) plus surrounding space, and returns the remainder if it looks
-// like a JSON value (starts with `{` or `[`). This lets the fixture/expect DATA live in
-// SQL comments so the whole *.sql++ file is valid SQL++, while blank lines and prose
-// comments (`-- a note`) are skipped. A bare (un-commented) JSON line is still accepted.
-func uncommentFixtureJSON(ln string) (string, bool) {
-	s := strings.TrimSpace(ln)
-	s = strings.TrimSpace(strings.TrimPrefix(s, "--"))
-	if s == "" {
-		return "", false
+// parseFixtureSection reads a `@fixture` / `@expect` section's comment lines into a
+// list of complete JSON documents. A document may span MULTIPLE lines (pretty-
+// printed): once a line begins a document (`{`/`[`), continuation lines accumulate
+// until the buffer is a complete JSON value, then it's emitted. Blank / prose
+// comment lines BEFORE a document begins are skipped (notes stay legal). A leftover
+// unterminated (or malformed) document at end of section is a HARD ERROR rather
+// than a silent drop -- the ISSUE-05 bug, where a pretty-printed `@fixture` loaded
+// zero rows and the golden still reported PASS.
+func parseFixtureSection(lines []string, kind string) ([][]byte, error) {
+	var docs [][]byte
+	var buf strings.Builder
+	for _, ln := range lines {
+		inner := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ln), "--"))
+		if buf.Len() == 0 {
+			if inner == "" || (inner[0] != '{' && inner[0] != '[') {
+				continue // prose / blank before a document -- skip (unchanged behavior)
+			}
+		} else {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(inner)
+		if json.Valid([]byte(buf.String())) { // a complete document has arrived
+			docs = append(docs, []byte(buf.String()))
+			buf.Reset()
+		}
 	}
-	if s[0] == '{' || s[0] == '[' {
-		return s, true
+	if rest := strings.TrimSpace(buf.String()); rest != "" {
+		return nil, fmt.Errorf("%s: unterminated or invalid JSON document: %q", kind, rest)
 	}
-	return "", false
+	return docs, nil
 }
 
 // labelResultJSON is the on-disk shape of an @expect / .multi run labelResult row.
