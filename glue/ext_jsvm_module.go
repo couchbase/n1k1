@@ -83,7 +83,7 @@ const jsModulePreamble = "var exports={},module={exports:exports};\n"
 const jsModuleHoist = "\n;(function(){var fs=(exports&&exports.functions)||[];" +
 	"for(var i=0;i<fs.length;i++){var f=fs[i],n=String(f.name).toLowerCase()," +
 	"k=String(f.kind||'').toLowerCase();" +
-	"if(k==='aggregate'||k==='agg'){globalThis[n+'_init']=f.init;globalThis[n+'_update']=f.update;globalThis[n+'_final']=f.final;}" +
+	"if(k==='aggregate'||k==='agg'){globalThis[n+'_init']=f.init;globalThis[n+'_update']=f.update;globalThis[n+'_final']=f.final;if(f.merge){globalThis[n+'_merge']=f.merge;}}" +
 	"else{globalThis[n]=f.fn;}}})();\n"
 
 // looksLikeJSModule reports whether source is a multi-export module (it sets
@@ -264,6 +264,10 @@ func registerJSModule(bundle, source, sourcePath string) (names []string, err er
 					return nil, fmt.Errorf("JS module %q: aggregate %q must define callable %q", bundle, name, "init/update/final")
 				}
 			}
+			// Optional `merge` export → mergeable (a commutative monoid), same as the
+			// single-file *.agg.js path (ext_jsvm_agg.go).
+			_, hasMerge := goja.AssertFunction(check.Get(name + "_merge"))
+			jsAggHasMerge[name] = hasMerge
 		} else if _, ok := goja.AssertFunction(check.Get(name)); !ok {
 			return nil, fmt.Errorf("JS module %q: function %q has no callable \"fn\"", bundle, name)
 		}

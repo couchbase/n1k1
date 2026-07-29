@@ -305,3 +305,52 @@ func TestAggCountAvgVectorizedMatchesScalar(t *testing.T) {
 		}
 	}
 }
+
+// TestAggMergeMonoid guards the base.Agg.Merge contract with a purely native
+// aggregate (no glue/JS): a COUNT-like agg whose accumulator is an 8-byte
+// little-endian counter, made mergeable by adding two counters. It proves that
+// merging independent partials equals folding every value into one accumulator --
+// combine(part(A), part(B)) == aggregate(A ∪ B) -- so a caller can split, fold each
+// shard, then Merge (windows/parallel) instead of rescanning.
+func TestAggMergeMonoid(t *testing.T) {
+	load := func(b []byte) uint64 { return binary.LittleEndian.Uint64(b) }
+	agg := &Agg{
+		Init: func(_ *Vars, a []byte) []byte { return BinaryAppendUint64(a, 0) },
+		Update: func(_ *Vars, _ Val, aggNew, a []byte, _ *ValComparer) ([]byte, []byte, bool) {
+			return BinaryAppendUint64(aggNew, load(a)+1), a[8:], true
+		},
+		Result: func(_ *Vars, a, buf []byte) (Val, []byte, []byte) {
+			return Val(strconv.FormatUint(load(a), 10)), a[8:], buf
+		},
+		Merge: func(_ *Vars, x, y, out []byte) []byte {
+			return BinaryAppendUint64(out, load(x)+load(y))
+		},
+	}
+	if agg.Merge == nil {
+		t.Fatal("Merge must be set")
+	}
+
+	part := func(n int) []byte {
+		st := agg.Init(nil, nil)
+		var buf []byte
+		for i := 0; i < n; i++ {
+			buf, _, _ = agg.Update(nil, Val("1"), buf[:0], st, nil)
+			st, buf = buf, st
+		}
+		return st
+	}
+
+	merged := agg.Merge(nil, part(3), part(5), nil)
+	if v, _, _ := agg.Result(nil, merged, nil); string(v) != "8" {
+		t.Fatalf("merge(part(3), part(5)) = %q, want 8", v)
+	}
+	// Associativity: ((2 ⊕ 3) ⊕ 5) == count over 10 folded straight.
+	step := agg.Merge(nil, part(2), part(3), nil)
+	step = agg.Merge(nil, step, part(5), nil)
+	if v, _, _ := agg.Result(nil, step, nil); string(v) != "10" {
+		t.Fatalf("associative merge = %q, want 10", v)
+	}
+	if v, _, _ := agg.Result(nil, part(10), nil); string(v) != "10" {
+		t.Fatalf("whole-fold sanity = %q, want 10", v)
+	}
+}

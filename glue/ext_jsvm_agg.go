@@ -73,6 +73,11 @@ func RegisterJSAggregate(name, source string) error {
 			return fmt.Errorf("JS aggregate %q: source must define a function %q", name, name+suffix)
 		}
 	}
+	// NAME_merge(stateA, stateB) is OPTIONAL: defining it makes the aggregate
+	// mergeable (a commutative monoid — foldable across windows/shards). Absent, the
+	// aggregate is fold-only, exactly as before.
+	_, hasMerge := goja.AssertFunction(check.Get(name + "_merge"))
+	jsAggHasMerge[name] = hasMerge
 	recordExtExamples("javascript-aggregate", name, readJSExamples(check, name+"_final")) // inline goldens.
 
 	// Make the callbacks available in every per-query runtime (keyed distinctly so
@@ -107,11 +112,12 @@ func installJSAggregate(name string) {
 }
 
 // makeJSAgg builds a base.Agg whose Init/Update/Result drive the JS callbacks,
-// carrying the accumulator state as a length-prefixed JSON blob.
+// carrying the accumulator state as a length-prefixed JSON blob. If the source
+// defines NAME_merge(a, b), Merge is wired too (the aggregate is mergeable).
 func makeJSAgg(name string) *base.Agg {
-	initFn, updateFn, finalFn := name+"_init", name+"_update", name+"_final"
+	initFn, updateFn, finalFn, mergeFn := name+"_init", name+"_update", name+"_final", name+"_merge"
 
-	return &base.Agg{
+	agg := &base.Agg{
 		Init: func(vars *base.Vars, agg []byte) []byte {
 			sr := jsSharedFromVars(vars)
 			state := jsAggCall(sr, initFn)
@@ -137,7 +143,26 @@ func makeJSAgg(name string) *base.Agg {
 			return base.Val(vBuf), rest, base.BufUnused(buf, len(vBuf))
 		},
 	}
+
+	// Optional NAME_merge(stateA, stateB): combine two partial accumulators into one.
+	// Wired only when the source defines it, so a fold-only aggregate stays Merge==nil.
+	if jsAggHasMerge[name] {
+		agg.Merge = func(vars *base.Vars, aggA, aggB, aggOut []byte) []byte {
+			sr := jsSharedFromVars(vars)
+			blobA, _ := readJSONBlob(aggA)
+			blobB, _ := readJSONBlob(aggB)
+			stateA := sr.rt.ToValue(unmarshalJSON(blobA))
+			stateB := sr.rt.ToValue(unmarshalJSON(blobB))
+			merged := jsAggCall(sr, mergeFn, stateA, stateB)
+			return appendJSONBlob(aggOut, marshalGoja(merged))
+		}
+	}
+	return agg
 }
+
+// jsAggHasMerge records which JS aggregates defined an optional NAME_merge callback,
+// so makeJSAgg wires base.Agg.Merge only for those (and reloads pick it up).
+var jsAggHasMerge = map[string]bool{}
 
 // jsSharedFromVars resolves the per-query/per-actor JS runtime the aggregate
 // should run on (the same one the scalar UDFs use), or a throwaway if the eval

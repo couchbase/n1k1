@@ -54,6 +54,15 @@ type Agg struct {
 	// Result returns the final result of the aggregation.
 	// Also returns aggRest or the agg bytes that were unread.
 	Result func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte)
+
+	// Merge, when non-nil, combines two PARTIAL accumulators of this aggregate
+	// (each an aggA/aggB in the same encoding Init/Update produce) into one, appended
+	// to aggOut. It makes the aggregate a commutative monoid — foldable across windows
+	// (incremental) or shards (parallel) — so `combine(part(A), part(B)) ==
+	// aggregate(A ∪ B)`. nil means the aggregate is fold-only (not mergeable); a caller
+	// that needs to combine partials checks for nil. Single-pass GROUP BY never needs
+	// it (one accumulator per key). See glue.CombineAggregate and the JS NAME_merge hook.
+	Merge func(vars *Vars, aggA, aggB, aggOut []byte) []byte
 }
 
 // -----------------------------------------------------

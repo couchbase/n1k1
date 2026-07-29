@@ -156,11 +156,20 @@ distinct with an explicit `too_many_distinct` marker (never silent truncation), 
   MISSING/NULL rather than propagating them (that's the point). A TYPE_NAME query now lints `native`;
   the gen-compiler differential (`make test-compiler`) stays green. Guards: `base.TestTypeNameVal`,
   `glue.TestExprTypeNameNative`.
-- **A `merge(stateA, stateB)` hook on the JS aggregate API.** Today `foo.agg.js` exposes
-  `init`/`update`/`final` — a fold with no way to combine two partial states, so a custom aggregate
-  can't participate in the incremental/cursored story at all. An optional `merge` makes **every**
-  user-defined aggregate incremental and parallelizable, and it's the natural home for a mergeable
-  HLL sketch (the one piece value-level distinct-counting needs). Small API addition, general win.
+- **A `merge(stateA, stateB)` hook on the JS aggregate API — SHIPPED.** Previously `foo.agg.js`
+  exposed only `init`/`update`/`final` — a fold with no way to combine two partial states, so a
+  custom aggregate couldn't participate in the incremental/cursored story at all. Now an **optional**
+  `NAME_merge(a, b)` callback (single-file `*.agg.js` and multi-export modules alike) makes the
+  aggregate a commutative monoid: define it and the aggregate becomes foldable across windows
+  (incremental) or shards (parallel); omit it and the aggregate stays fold-only, exactly as before.
+  The contract lives on `base.Agg.Merge` (a native field, JS-independent), the JS bridge wires it
+  when `NAME_merge` is present (`glue/ext_jsvm_agg.go`), and `glue.Session.CombineAggregate` is the
+  seam that folds partials and proves `combine(part(A), part(B)) == aggregate(A ∪ B)`. The flagship
+  is a **mergeable HLL** distinct-count sketch (`extensions/functions/js/hll.agg.js`) — the one piece
+  value-level distinct-counting needs — plus a `merge` on the shipped `geomean`. Guards:
+  `base.TestAggMergeMonoid` (native), `glue.TestCombineAggregateMonoid` + `TestCombineAggregateHLL`.
+  Note: n1k1's GROUP BY is single-pass (one accumulator per key, no combine site), so `CombineAggregate`
+  is the *only* caller that folds partials today; automatic two-phase/parallel grouping is future work.
   (The core census needs no JS — `COUNT`/`MIN`/`MAX`/`SUM` are built-in and already mergeable, which
   keeps the census map tier fused; a JS aggregate in tier 1 would box it.)
 
