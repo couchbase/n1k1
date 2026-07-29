@@ -240,7 +240,7 @@ func builtinCmds() []Cmd {
 		{names: []string{".multi"},
 			run: func(c *cli, _, arg string) bool { c.cmdMulti(arg); return false },
 			help: func(c *cli) string {
-				return ".multi [list|run|lint|test|cursor|help] --queries <dir>  run a multi-query pack of tagged *.sql++ queries over the datastore, shared execution; cursor = named \"what's new\" cursors (.multi help / .multi cursor help)"
+				return ".multi [list|run|lint|test|cursor|compose|help] --queries <dir>  run a multi-query pack of tagged *.sql++ queries over the datastore, shared execution; cursor = named \"what's new\" cursors; compose = a DAG of packs (.multi help)"
 			}},
 
 		{names: []string{".extensions", ".ext"},

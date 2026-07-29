@@ -584,6 +584,18 @@ downstream pack can `FROM`; topological ordering (reject cycles); per-pack curso
 poll composes; lineage on labelResults. MVP re-polls A's materialized labelResults from B (not true
 cross-layer delta). → correlation/incident packs over primitive detections.
 
+> **Status — SHIPPED** (`.multi compose <dir>`). Each `*.sql++` in `<dir>` is one DAG node (name =
+> stem); a node declares upstream deps via `-- needs: a, b` front-matter and reads them as
+> `FROM pack_a`. Nodes run in **topological order** (cycles + unknown deps rejected) on ONE session;
+> each node's labelResults materialize into a `pack_<name>` **temp keyspace** (`temp_keyspace.go` — the
+> same heap that backs fixtures), so a downstream `FROM pack_<up>` resolves through the session's temp
+> overlay. Materialized rows are `{label, result, fingerprint}` — `result` stays nested (navigate
+> `x.result.<field>`), `label` enables per-detector `GROUP BY`, `fingerprint` is the lineage handle.
+> Core: `glue/compose.go` (`ComposeNode`, `TopoOrder`, `Session.Compose`); CLI `multi_compose.go`.
+> *MVP scope (as the design calls for):* **batch** re-run of the whole DAG (materialize + re-poll) —
+> per-node cursors for incremental cross-layer composition, and full lineage-graph walk, are deferred
+> (the Materialize/DBSP problem). Uses the same single-keyspace-per-node fusion, so it's `-race` clean.
+
 **Phase 5 — `n1k1 serve` + MCP (scheduled monitors).** *New:* a long-running process holding the
 cursor store; the `monitor` object (cursor + query + schedule + status); server-driven scheduled
 `peek`+`advance`; the MCP resource/tool/subscribe surface + long-poll HTTP. No unbounded source yet

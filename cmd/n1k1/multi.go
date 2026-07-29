@@ -78,6 +78,8 @@ func (c *cli) cmdMulti(arg string) {
 		c.cmdMultiTest(rest)
 	case "cursor":
 		c.cmdMultiCursor(rest)
+	case "compose":
+		c.cmdMultiCompose(rest)
 	case "", "help":
 		c.cmdMultiHelp()
 	default:
