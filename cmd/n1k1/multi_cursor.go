@@ -45,14 +45,16 @@ import (
 // the per-verb flags. Unlike parseMultiArgs it does NOT require --queries (a
 // peek/advance is addressed by cursor name; --pack is create-only).
 type cursorArgs struct {
-	name  string   // the cursor NAME (first positional)
-	pack  []string // --pack <dir> (repeatable / comma-list), create-only
-	bind  string   // --bind <manifest>
-	to    string   // --to <pos>, advance-only (the opaque position token)
-	from  string   // --from now|start, create-only (default: now)
-	desc  string   // --desc <text>, create-only
-	store string   // --cursor-store <dir> (override the default state dir)
-	quiet bool     // --quiet, advance-only (ack only, no labelResults echo)
+	name    string   // the cursor NAME (first positional)
+	pack    []string // --pack <dir> (repeatable / comma-list), create-only
+	bind    string   // --bind <manifest>
+	to      string   // --to <pos>, advance-only (the opaque position token)
+	from    string   // --from now|start, create-only (default: now)
+	desc    string   // --desc <text>, create-only
+	store   string   // --cursor-store <dir> (override the default state dir)
+	mode    string   // --mode append|diff, create-only (default: append)
+	idField string   // --id-field <name>, create-only diff (default: id)
+	quiet   bool     // --quiet, advance-only (ack only, no labelResults echo)
 }
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
@@ -129,6 +131,20 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 				}
 			}
 			a.store = val
+		case "mode":
+			if !hasEq {
+				if err := need(&i, &val, "--mode"); err != nil {
+					return a, err
+				}
+			}
+			a.mode = val
+		case "id-field", "id":
+			if !hasEq {
+				if err := need(&i, &val, "--id-field"); err != nil {
+					return a, err
+				}
+			}
+			a.idField = val
 		case "quiet":
 			a.quiet = !hasEq || val == "true" || val == "1"
 		default:
@@ -165,10 +181,13 @@ func (c *cli) cmdMultiCursor(arg string) {
 // ------------------------------------------------------------- the envelope
 
 type cursorRow struct {
-	Op          string          `json:"op"`          // "insert" (append mode is always an insert)
-	Label       string          `json:"label"`       // which detector fired
-	Fingerprint string          `json:"fingerprint"` // dedup_key: hash(label + result), for agent-side dedup
-	Result      json.RawMessage `json:"result"`      // the labelResult value
+	Op          string          `json:"op"`               // append: "insert"; diff: insert|update|delete
+	Id          string          `json:"id,omitempty"`     // diff: the doc identity
+	Label       string          `json:"label"`            // which detector fired
+	Fingerprint string          `json:"fingerprint"`      // dedup_key for agent-side dedup
+	Result      json.RawMessage `json:"result,omitempty"` // append: the labelResult value
+	Before      json.RawMessage `json:"before,omitempty"` // diff: prior doc (update/delete)
+	After       json.RawMessage `json:"after,omitempty"`  // diff: current doc (insert/update)
 }
 
 type cursorErr struct {
@@ -310,18 +329,15 @@ func (c *cli) cursorCreate(arg string) {
 		return
 	}
 
-	// Validate by compiling + running the pack once. This both proves the pack is
-	// runnable and (for --from now) yields the current head as the start position.
-	res, err := sess.RunCursorPack(dets, nil)
-	if err != nil {
-		c.cursorFail(a.name, "compile", err)
+	mode := strings.ToLower(a.mode)
+	if mode == "" {
+		mode = "append"
+	}
+	if mode != "append" && mode != "diff" {
+		c.cursorFail(a.name, "bad-args", fmt.Errorf("--mode must be append or diff, got %q", a.mode))
 		return
 	}
-
-	water := res.NewWater
-	if strings.EqualFold(a.from, "start") || strings.EqualFold(a.from, "beginning") {
-		water = map[string]int64{} // replay everything from the beginning on first peek
-	}
+	fromStart := strings.EqualFold(a.from, "start") || strings.EqualFold(a.from, "beginning")
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	st := &glue.CursorState{
@@ -329,12 +345,48 @@ func (c *cli) cursorCreate(arg string) {
 		Pack:        strings.Join(a.pack, ","),
 		Bind:        a.bind,
 		PackID:      glue.PackID(a.name, dets),
-		Mode:        "append",
-		Water:       water,
+		Mode:        mode,
 		Description: a.desc,
 		Created:     now,
 		Updated:     now,
 	}
+	var fromTok string
+
+	if mode == "append" {
+		// Validate by compiling + running once; --from now yields the current head.
+		res, rerr := sess.RunCursorPack(dets, nil)
+		if rerr != nil {
+			c.cursorFail(a.name, "compile", rerr)
+			return
+		}
+		st.Water = res.NewWater
+		if fromStart {
+			st.Water = map[string]int64{} // replay everything on the first peek
+		}
+		fromTok = encodeWater(st.Water)
+	} else { // diff
+		idField := a.idField
+		if idField == "" {
+			idField = "id"
+		}
+		st.IdField = idField
+		// Validate + capture the current state as the baseline snapshot.
+		lrs, rerr := sess.RunPackFull(dets)
+		if rerr != nil {
+			c.cursorFail(a.name, "compile", rerr)
+			return
+		}
+		snap, _ := glue.SnapshotFromResults(lrs, idField)
+		if fromStart {
+			snap = map[string]glue.SnapshotEntry{} // first peek reports all current rows as inserts
+		}
+		if err := store.SaveSnapshot(a.name, snap); err != nil {
+			c.cursorFail(a.name, "state-write", err)
+			return
+		}
+		fromTok = "snap:0"
+	}
+
 	if err := store.Save(st); err != nil {
 		c.cursorFail(a.name, "state-write", err)
 		return
@@ -352,8 +404,8 @@ func (c *cli) cursorCreate(arg string) {
 		OK:       true,
 		Pack:     st.PackID,
 		Compiles: "ok",
-		Mode:     "append",
-		From:     encodeWater(water),
+		Mode:     mode,
+		From:     fromTok,
 	})
 }
 
@@ -397,12 +449,18 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 	if gap := c.reportBindingCoverage(sess, binding); gap {
+		from := c.positionToken(st)
 		env := cursorEnvelope{Cursor: a.name, Pack: st.PackID, Status: "error",
-			From: encodeWater(st.Water), To: encodeWater(st.Water),
+			From: from, To: from,
 			Error: &cursorErr{Kind: "source-unbound",
 				Message: "one or more logical keyspaces resolved to nothing (fail-loud; see stderr)"}}
 		c.printJSON(env)
 		c.failed = true
+		return
+	}
+
+	if st.Mode == "diff" {
+		c.cursorDiffPeekAdvance(a, st, store, sess, dets, advance)
 		return
 	}
 
@@ -475,6 +533,121 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	c.printJSON(env)
 }
 
+// positionToken renders a cursor's committed position for display / envelopes:
+// the `{container→offset}` water token for append, "snap:N" for diff.
+func (c *cli) positionToken(st *glue.CursorState) string {
+	if st.Mode == "diff" {
+		return fmt.Sprintf("snap:%d", st.SnapVersion)
+	}
+	return encodeWater(st.Water)
+}
+
+// cursorDiffPeekAdvance is the diff-mode counterpart of the append peek/advance:
+// it runs the pack over the FULL current state, diffs against the committed
+// snapshot into Debezium {op,id,before,after} rows, and (on advance) replaces the
+// snapshot + bumps the snap version.
+func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *glue.CursorStore,
+	sess *glue.Session, dets []glue.MultiQueryEntry, advance bool) {
+
+	from := fmt.Sprintf("snap:%d", st.SnapVersion)
+
+	prior, err := store.LoadSnapshot(st.Name)
+	if err != nil {
+		c.cursorFail(st.Name, "state-read", err)
+		return
+	}
+	lrs, err := sess.RunPackFull(dets)
+	if err != nil {
+		c.printJSON(cursorEnvelope{Cursor: st.Name, Pack: st.PackID, Status: "error",
+			From: from, To: from, Error: &cursorErr{Kind: "run", Message: err.Error()}})
+		c.failed = true
+		return
+	}
+	current, _ := glue.SnapshotFromResults(lrs, st.IdField)
+	events := glue.DiffSnapshot(prior, current, st.IdField)
+	rows := diffRows(events)
+	changed := len(events) > 0
+
+	env := cursorEnvelope{Cursor: st.Name, Pack: st.PackID, From: from, Count: len(rows)}
+
+	if !advance {
+		// peek: does NOT replace the snapshot; re-peek recomputes the same diff.
+		if changed {
+			env.To = fmt.Sprintf("snap:%d", st.SnapVersion+1)
+			env.Status = "pending"
+			env.LabelResults = rows
+		} else {
+			env.To = from
+			env.Status = "empty"
+		}
+		env.Advanced = false
+		c.printJSON(env)
+		return
+	}
+
+	// advance: commit the current state as the new baseline snapshot.
+	newVer := st.SnapVersion
+	if changed {
+		newVer++
+	}
+	if err := store.SaveSnapshot(st.Name, current); err != nil {
+		c.cursorFail(st.Name, "state-write", err)
+		return
+	}
+	st.SnapVersion = newVer
+	st.Updated = time.Now().UTC().Format(time.RFC3339)
+	st.LastCount = len(rows)
+	if changed {
+		st.TotalAdvances++
+	}
+	if err := store.Save(st); err != nil {
+		c.cursorFail(st.Name, "state-write", err)
+		return
+	}
+
+	env.To = fmt.Sprintf("snap:%d", newVer)
+	env.Advanced = changed
+	if changed {
+		env.Status = "advanced"
+	} else {
+		env.Status = "empty"
+	}
+	if !a.quiet && len(rows) > 0 {
+		env.LabelResults = rows
+	}
+	c.printJSON(env)
+}
+
+func diffRows(events []glue.ChangeEvent) []cursorRow {
+	rows := make([]cursorRow, 0, len(events))
+	for _, e := range events {
+		rows = append(rows, cursorRow{
+			Op: e.Op, Id: e.Id, Label: e.Label,
+			Fingerprint: diffFingerprint(e),
+			Before:      e.Before, After: e.After,
+		})
+	}
+	return rows
+}
+
+// diffFingerprint is the dedup_key for a change event: hash over
+// (label, op, id, the new-or-prior doc), so an agent dedupes the same change.
+func diffFingerprint(e glue.ChangeEvent) string {
+	h := sha256.New()
+	h.Write([]byte(e.Label))
+	h.Write([]byte{0})
+	h.Write([]byte(e.Op))
+	h.Write([]byte{0})
+	h.Write([]byte(e.Id))
+	h.Write([]byte{0})
+	if e.After != nil {
+		h.Write(e.After)
+	} else {
+		h.Write(e.Before)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:6]
+}
+
 func (c *cli) cursorList(arg string) {
 	a, err := parseCursorArgs(arg)
 	if err != nil {
@@ -505,7 +678,7 @@ func (c *cli) cursorList(arg string) {
 			continue
 		}
 		out = append(out, listRow{Cursor: n, Pack: st.PackID, Mode: st.Mode,
-			Committed: encodeWater(st.Water), Advances: st.TotalAdvances})
+			Committed: c.positionToken(st), Advances: st.TotalAdvances})
 	}
 	c.printJSON(out)
 }
@@ -540,6 +713,7 @@ func (c *cli) cursorShow(arg string) {
 		PackDir       string            `json:"pack_dir"`
 		Bind          string            `json:"bind,omitempty"`
 		Mode          string            `json:"mode"`
+		IdField       string            `json:"id_field,omitempty"`
 		Committed     string            `json:"committed"`
 		Description   string            `json:"description,omitempty"`
 		Labels        map[string]string `json:"labels,omitempty"`
@@ -549,7 +723,7 @@ func (c *cli) cursorShow(arg string) {
 		TotalAdvances int               `json:"total_advances"`
 	}{
 		Cursor: st.Name, Pack: st.PackID, PackDir: st.Pack, Bind: st.Bind,
-		Mode: st.Mode, Committed: encodeWater(st.Water), Description: st.Description,
+		Mode: st.Mode, IdField: st.IdField, Committed: c.positionToken(st), Description: st.Description,
 		Labels: st.Labels, Created: st.Created, Updated: st.Updated,
 		LastCount: st.LastCount, TotalAdvances: st.TotalAdvances,
 	})
@@ -602,8 +776,11 @@ func (c *cli) cursorHelp() {
 
 const cursorHelpText = `.multi cursor <verb> — CEP named cursors (a durable "what's new since I last looked")
 
-  create NAME --pack <dir> [--bind <m>] [--from now|start] [--desc <t>]
+  create NAME --pack <dir> [--bind <m>] [--from now|start] [--mode append|diff]
+              [--id-field <name>] [--desc <t>]
                        bind + validate a pack; set the start position. No rows.
+                       --mode diff tracks a snapshot keyed by --id-field (default id)
+                       and emits {op:insert|update|delete, id, before, after}.
   peek   NAME          the pending delta; does NOT move the cursor (re-peek is safe).
   advance NAME [--to <pos>] [--quiet]
                        commit (get + move). Echoes the delta unless --quiet.

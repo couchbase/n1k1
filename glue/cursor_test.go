@@ -163,3 +163,96 @@ func TestCursorAppendDelta(t *testing.T) {
 		t.Fatal("PackID not stable")
 	}
 }
+
+// TestCursorDiffDelta is the Phase-2 end-to-end: over a MUTABLE current-state
+// keyspace (rewritten between runs), diffing the full pack output against a prior
+// snapshot yields the Debezium {insert,update,delete} change set.
+func TestCursorDiffDelta(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "default", "incidents")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(ksDir, "incidents.jsonl")
+	writeState := func(lines ...string) {
+		if err := os.WriteFile(path, []byte(joinLines(lines)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entry, err := ParseMultiQueryEntry("inc.sql++",
+		"-- label: inc\n"+`SELECT e.id, e.status FROM incidents e`)
+	if err != nil {
+		t.Fatalf("ParseMultiQueryEntry: %v", err)
+	}
+	dets := []MultiQueryEntry{entry}
+
+	snapshot := func() map[string]SnapshotEntry {
+		sess, err := OpenSession(dir, "default")
+		if err != nil {
+			t.Fatalf("OpenSession: %v", err)
+		}
+		lrs, err := sess.RunPackFull(dets)
+		if err != nil {
+			t.Fatalf("RunPackFull: %v", err)
+		}
+		snap, skipped := SnapshotFromResults(lrs, "id")
+		if skipped != 0 {
+			t.Fatalf("unexpected %d skipped (no id) rows", skipped)
+		}
+		return snap
+	}
+
+	// Baseline: two open incidents.
+	writeState(`{"id":1,"status":"open"}`, `{"id":2,"status":"open"}`)
+	base := snapshot()
+	if len(base) != 2 {
+		t.Fatalf("baseline snapshot: want 2 entries, got %d", len(base))
+	}
+
+	// No change → empty diff.
+	if evs := DiffSnapshot(base, snapshot(), "id"); len(evs) != 0 {
+		t.Fatalf("no-op diff: want 0 events, got %v", evs)
+	}
+
+	// Mutate: #1 open→closed (update), #2 gone (delete), #3 new (insert).
+	writeState(`{"id":1,"status":"closed"}`, `{"id":3,"status":"open"}`)
+	events := DiffSnapshot(base, snapshot(), "id")
+	if len(events) != 3 {
+		t.Fatalf("mutation diff: want 3 events, got %d: %+v", len(events), events)
+	}
+	// Sorted by (label,id): update #1, delete #2, insert #3.
+	want := []struct{ op, id string }{{"update", "1"}, {"delete", "2"}, {"insert", "3"}}
+	for i, w := range want {
+		if events[i].Op != w.op || events[i].Id != w.id {
+			t.Fatalf("event[%d]: got %s/%s, want %s/%s", i, events[i].Op, events[i].Id, w.op, w.id)
+		}
+	}
+	if string(events[0].Before) != `{"id":1,"status":"open"}` || string(events[0].After) != `{"id":1,"status":"closed"}` {
+		t.Fatalf("update before/after wrong: %s → %s", events[0].Before, events[0].After)
+	}
+	if string(events[1].Before) != `{"id":2,"status":"open"}` || events[1].After != nil {
+		t.Fatalf("delete should carry before only: %+v", events[1])
+	}
+	if events[2].Before != nil || string(events[2].After) != `{"id":3,"status":"open"}` {
+		t.Fatalf("insert should carry after only: %+v", events[2])
+	}
+
+	// Snapshot store round-trips the entry map.
+	st := NewCursorStore(t.TempDir())
+	if err := st.SaveSnapshot("c", base); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	got, err := st.LoadSnapshot("c")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("LoadSnapshot: %v len=%d", err, len(got))
+	}
+}
+
+func joinLines(lines []string) string {
+	out := ""
+	for _, ln := range lines {
+		out += ln + "\n"
+	}
+	return out
+}

@@ -56,11 +56,22 @@ type CursorState struct {
 	Bind string `json:"bind,omitempty"`
 	// PackID is "<name>@<sha>" captured at create time (a drift check on peek).
 	PackID string `json:"pack_id,omitempty"`
-	// Mode is the delta strategy; only "append" in Phase 1.
+	// Mode is the delta strategy: "append" (offset high-water, Phase 1) or "diff"
+	// (snapshot-keyed-by-id, Phase 2 — for mutable / current-state-only sources).
 	Mode string `json:"mode"`
+
+	// --- append mode ---
 	// Water is the committed high-water: source-container key -> offset. Empty
 	// means "from the very beginning" (every record is new).
-	Water map[string]int64 `json:"water"`
+	Water map[string]int64 `json:"water,omitempty"`
+
+	// --- diff mode ---
+	// IdField is the result field whose value keys the snapshot (default "id"); a
+	// result missing it can't be diffed (no stable identity) and is skipped.
+	IdField string `json:"id_field,omitempty"`
+	// SnapVersion is the committed snapshot generation, surfaced as the "snap:N"
+	// position token; it bumps on each advance that changed the snapshot.
+	SnapVersion int `json:"snap_version,omitempty"`
 
 	// Metadata (k8s labels-vs-annotations split): Labels are for selection/
 	// grouping; Annotations is free-form provenance the client attaches.
@@ -178,7 +189,8 @@ func (s *CursorStore) List() ([]string, error) {
 	return names, nil
 }
 
-// Remove deletes a cursor's state; returns ErrCursorNotExist if absent.
+// Remove deletes a cursor's state (and its diff-mode snapshot sidecar, if any);
+// returns ErrCursorNotExist if the state file is absent.
 func (s *CursorStore) Remove(name string) error {
 	if err := cursorNameOK(name); err != nil {
 		return err
@@ -187,6 +199,62 @@ func (s *CursorStore) Remove(name string) error {
 		if os.IsNotExist(err) {
 			return ErrCursorNotExist
 		}
+		return err
+	}
+	os.Remove(s.snapPath(name)) // best-effort; absent for append cursors
+	return nil
+}
+
+// snapPath is the diff-mode snapshot sidecar for a cursor.
+func (s *CursorStore) snapPath(name string) string {
+	return filepath.Join(s.dir, name+".snap.json")
+}
+
+// SnapshotEntry is one row of a diff-mode snapshot: the labelResult's Doc (so a
+// later diff can emit `before`) tagged with the detector Label that produced it.
+type SnapshotEntry struct {
+	Label string          `json:"label,omitempty"`
+	Doc   json.RawMessage `json:"doc"`
+}
+
+// LoadSnapshot reads a cursor's prior diff snapshot (id -> entry). A missing file
+// is an empty snapshot (nil, nil) — the "from the beginning" case.
+func (s *CursorStore) LoadSnapshot(name string) (map[string]SnapshotEntry, error) {
+	if err := cursorNameOK(name); err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(s.snapPath(name))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]SnapshotEntry{}, nil
+		}
+		return nil, err
+	}
+	m := map[string]SnapshotEntry{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, fmt.Errorf("cursor %q: corrupt snapshot: %v", name, err)
+	}
+	return m, nil
+}
+
+// SaveSnapshot atomically replaces a cursor's diff snapshot (write-temp-rename).
+func (s *CursorStore) SaveSnapshot(name string, snap map[string]SnapshotEntry) error {
+	if err := cursorNameOK(name); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return err
+	}
+	out, err := json.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	tmp := s.snapPath(name) + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.snapPath(name)); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return nil
@@ -297,8 +365,22 @@ type CursorRunResult struct {
 // the recomputed high-water. Used by both `peek` (discards the water) and
 // `advance` (commits it).
 func (s *Session) RunCursorPack(dets []MultiQueryEntry, since map[string]int64) (*CursorRunResult, error) {
-	filter := NewRecordScanFilter(since)
-	s.cursorFilter = filter
+	return s.runCursorPack(dets, NewRecordScanFilter(since))
+}
+
+// RunPackFull compiles and runs the pack `dets` over the FULL current state (no
+// append filter) — the `diff`-mode read: every currently-matching row, to be
+// diffed against a stored snapshot by the caller.
+func (s *Session) RunPackFull(dets []MultiQueryEntry) ([]LabelResult, error) {
+	res, err := s.runCursorPack(dets, nil)
+	if err != nil {
+		return nil, err
+	}
+	return res.LabelResults, nil
+}
+
+func (s *Session) runCursorPack(dets []MultiQueryEntry, filter *RecordScanFilter) (*CursorRunResult, error) {
+	s.cursorFilter = filter // nil => DatastoreScanRecords wraps nothing (full read)
 	defer func() { s.cursorFilter = nil }()
 
 	cc, err := s.MultiQueryCompile(dets)
@@ -309,7 +391,11 @@ func (s *Session) RunCursorPack(dets []MultiQueryEntry, since map[string]int64) 
 	if err != nil {
 		return nil, err
 	}
-	return &CursorRunResult{LabelResults: lrs, NewWater: filter.NewWater(), Report: report}, nil
+	res := &CursorRunResult{LabelResults: lrs, Report: report}
+	if filter != nil {
+		res.NewWater = filter.NewWater()
+	}
+	return res, nil
 }
 
 // PackID returns a stable "<name>@<sha>" identity for a pack: name is the given
@@ -323,4 +409,101 @@ func PackID(name string, dets []MultiQueryEntry) string {
 	sort.Strings(lines)
 	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	return name + "@" + hex.EncodeToString(h[:])[:8]
+}
+
+// -------------------------------------------------------------- diff / snapshot
+
+// ChangeEvent is one Debezium-style change (DESIGN-cep.md § Delta strategies):
+// an insert has After, a delete has Before, an update has both. Id is the doc's
+// identity; Label is the detector whose current/prior view produced it.
+type ChangeEvent struct {
+	Op     string          // "insert" | "update" | "delete"
+	Id     string          // the doc identity (from the id field)
+	Label  string          // the detector that matched
+	Before json.RawMessage // prior doc (update / delete)
+	After  json.RawMessage // current doc (insert / update)
+}
+
+// SnapshotFromResults keys a run's labelResults by doc identity for diffing: the
+// value of the `idField` field in each result (default "id"). A result missing a
+// usable id can't be diffed (no stable identity) and is counted in `skipped`
+// rather than silently dropped. Rows are keyed by (label, id) so two detectors
+// that both match the same doc keep independent change streams; the reported Id
+// stays the bare doc identity. On a same-key collision within one detector, the
+// last row wins.
+func SnapshotFromResults(lrs []LabelResult, idField string) (snap map[string]SnapshotEntry, skipped int) {
+	if idField == "" {
+		idField = "id"
+	}
+	snap = make(map[string]SnapshotEntry, len(lrs))
+	for _, lr := range lrs {
+		id, ok := extractIdField(lr.Result, idField)
+		if !ok {
+			skipped++
+			continue
+		}
+		snap[lr.Label+"\x00"+id] = SnapshotEntry{Label: lr.Label, Doc: lr.Result}
+	}
+	return snap, skipped
+}
+
+// DiffSnapshot compares a prior snapshot with the current one and returns the
+// change events, sorted by (label,id) for deterministic output. Keys present only
+// in current => insert; only in prior => delete; in both with differing Doc bytes
+// => update; byte-identical => no event.
+func DiffSnapshot(prior, current map[string]SnapshotEntry, idField string) []ChangeEvent {
+	var events []ChangeEvent
+	keys := make([]string, 0, len(prior)+len(current))
+	seen := map[string]bool{}
+	for k := range current {
+		keys = append(keys, k)
+		seen[k] = true
+	}
+	for k := range prior {
+		if !seen[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		cur, inCur := current[k]
+		old, inOld := prior[k]
+		id := k
+		if i := strings.IndexByte(k, 0); i >= 0 {
+			id = k[i+1:] // strip the "<label>\x00" prefix back to the bare doc id
+		}
+		switch {
+		case inCur && !inOld:
+			events = append(events, ChangeEvent{Op: "insert", Id: id, Label: cur.Label, After: cur.Doc})
+		case !inCur && inOld:
+			events = append(events, ChangeEvent{Op: "delete", Id: id, Label: old.Label, Before: old.Doc})
+		case inCur && inOld && !bytesEqualJSON(old.Doc, cur.Doc):
+			events = append(events, ChangeEvent{Op: "update", Id: id, Label: cur.Label, Before: old.Doc, After: cur.Doc})
+		}
+	}
+	return events
+}
+
+func bytesEqualJSON(a, b json.RawMessage) bool {
+	return string(a) == string(b)
+}
+
+// extractIdField pulls the identity value of `field` from a result object: a
+// string value is used verbatim; any other JSON value uses its compact encoding
+// (so numeric ids like 42 key stably). ok is false when the result isn't an
+// object or the field is absent/null.
+func extractIdField(result json.RawMessage, field string) (string, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(result, &obj); err != nil {
+		return "", false
+	}
+	raw, ok := obj[field]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s, true // it was a JSON string
+	}
+	return string(raw), true // numeric / other: use the compact JSON form
 }

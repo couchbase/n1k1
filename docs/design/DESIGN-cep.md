@@ -546,6 +546,19 @@ whole crash-safe run-and-done "what's new" loop for append sources.
 *New:* `mode: diff` — persist a prior snapshot keyed by id under the cursor, diff on run, emit the
 Debezium envelope, replace snapshot. → "what changed" on mutable / current-state-only sources.
 
+> **Status — SHIPPED** (`.multi cursor create … --mode diff [--id-field <name>]`). A diff cursor
+> runs the pack over the **full current state** (no append filter — `Session.RunPackFull`), keys each
+> labelResult by its id-field value (default `id`; a result missing it is skipped, not silently
+> dropped), and diffs against a prior snapshot persisted as a `<name>.snap.json` sidecar (atomic
+> temp-rename; keyed by `(label, id)` so overlapping detectors keep independent streams). `peek`
+> recomputes the diff without moving; `advance` replaces the snapshot and bumps the `snap:N` version.
+> Output rows are the Debezium envelope: `insert` (after), `update` (before+after), `delete`
+> (before), each with a fingerprint. Core: `glue/cursor.go` (`SnapshotEntry`, `SnapshotFromResults`,
+> `DiffSnapshot`, `CursorStore.{Load,Save}Snapshot`). *Open (still):* the snapshot is an in-memory
+> map + JSON sidecar, not yet spilled through the rhmap store (matters only past RAM); `--to` is
+> append-only (diff `advance` always commits the peeked current state); the id-field is a top-level
+> field only (no path).
+
 **Phase 3 — GitOps `plan` / `apply`.** *Build on:* the corpus loader (already reads a dir of
 recipes), `.multi lint`. *New:* treat a recipe dir as desired-state; `plan` (diff + lint) and
 `apply --prune` (reconcile, preserve unchanged cursors); labels/annotations in front-matter.
