@@ -83,7 +83,9 @@ func (c *cli) cmdMulti(arg string) {
 	case "census":
 		c.cmdMultiCensus(rest)
 	case "doctor":
-		c.cmdMultiDoctor(rest)
+		fmt.Fprintf(c.stderr, "%s: .multi doctor was renamed -- use `.multi lint --census` "+
+			"(the data-aware tier of lint)\n", c.prog)
+		c.failed = true
 	case "", "help":
 		c.cmdMultiHelp()
 	default:
@@ -99,6 +101,7 @@ type multiArgs struct {
 	bind    string
 	update  bool // .multi test: record produced labelResults back into each entry's @expect
 	sql     bool // .multi explain: render the pretty SQL++ + provenance view instead of the op tree
+	census  bool // .multi lint: census-aware lint (data-driven field-existence check; was `.multi doctor`)
 }
 
 // parseMultiArgs parses `--queries <dir>... [--bind <file>] [--update]` (also accepting
@@ -145,8 +148,12 @@ func parseMultiArgs(arg string) (multiArgs, error) {
 		case "sql":
 			// A boolean flag (.multi explain): bare `--sql`, or `--sql=true|false`.
 			a.sql = !hasEq || val == "true" || val == "1"
+		case "census":
+			// A boolean flag (.multi lint): escalate to census-aware lint (data-driven
+			// field-existence check). bare `--census`, or `--census=true|false`.
+			a.census = !hasEq || val == "true" || val == "1"
 		default:
-			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--bind <manifest>] [--update] [--sql])", t)
+			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--bind <manifest>] [--update] [--sql] [--census])", t)
 		}
 	}
 	if len(a.queries) == 0 {
@@ -539,7 +546,21 @@ func (c *cli) cmdMultiLint(arg string) {
 	// Lint compiles (plans) each entry, which resolves keyspaces -- so report the
 	// same fail-loud binding coverage, but here it is advisory (lint still reports the
 	// report card, where an unresolved keyspace shows up as a rejected row).
-	c.reportBindingCoverage(sess, binding)
+	gap := c.reportBindingCoverage(sess, binding)
+
+	// --census escalates to the data-aware tier (the former `.multi doctor`): cross-
+	// reference each entry's referenced fields against a census of its keyspace. It
+	// reads real data, so an unresolved keyspace is a hard abort here (unlike the
+	// static report card above, which just flags it as a rejected row).
+	if args.census {
+		if gap {
+			fmt.Fprintf(c.stderr, "%s: .multi lint --census: aborting -- unresolved logical keyspace(s) above\n", c.prog)
+			c.failed = true
+			return
+		}
+		c.lintCensus(dets, sess)
+		return
+	}
 
 	report, score, err := sess.MultiQueryLint(dets)
 	if err != nil {

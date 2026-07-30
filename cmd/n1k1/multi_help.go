@@ -47,13 +47,12 @@ WHERE / GROUP BY / ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
 COMMANDS
   .multi list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
   .multi run  --queries <dir> [--bind <manifest>]  compile & execute the queries over the open dataset
-  .multi lint --queries <dir> [--bind <manifest>]  authoring report card (compiles, does NOT run)
+  .multi lint --queries <dir> [--bind <manifest>] [--census]  authoring report card (compiles, does NOT run); --census escalates to census-aware lint: cross-check each query's referenced fields against a census of its data — flags a field the corpus lacks (birth-in-error) + corpus fields no query reads
   .multi explain --queries <dir> [--bind <manifest>] [--sql]  show the fused shared-scan plan + fusion map; --sql = pretty SQL++ w/ provenance + hints (does NOT run)
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
   .multi cursor <verb> ...                         named "what's new since I last looked" cursors over a pack (.multi cursor help)
   .multi compose --queries <dir> [--only a,b | --terminal] [--allow-rejected]   run a DAG of queries: each *.sql++ = a node; "-- needs: a" reads FROM pack_a (topo-ordered). --only/--terminal limit which nodes emit rows; a node that fails to parse is "rejected" and hard-fails unless --allow-rejected
   .multi census <keyspace> [--bind <m>] [--type-field <f>] [--time-field <f>] [--depth 1|2] [--exclude a,b]   time-aware key-space census: per (type, path, val_type) -> docs, coverage, first/last-seen (schema drift)
-  .multi doctor --queries <dir> [--bind <m>]   join the pack against a census: flag a detector reading a field the corpus lacks (birth-in-error) + corpus fields no detector reads
   .multi help                                      this guide
 
 FLAGS

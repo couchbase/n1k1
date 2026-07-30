@@ -13,19 +13,20 @@
 
 package main
 
-// `.multi doctor` — the pack↔census JOIN (DESIGN-census.md Phase 2). For each
-// detector, cross-reference the field paths it references (planner-sourced) against
-// a census of the keyspace it scans, and report:
+// `.multi lint --census` — census-aware lint, the pack↔census JOIN (DESIGN-census.md
+// Phase 2; was the `.multi doctor` verb). For each entry, cross-reference the field
+// paths it references (planner-sourced) against a census of the keyspace it scans, and
+// report:
 //
-//   - references_absent : a detector reads a top-level field the corpus doesn't have
+//   - references_absent : an entry reads a top-level field the corpus doesn't have
 //     -> a birth-in-error / typo / renamed-or-retired field. Hard-fails (CI signal).
-//   - unreferenced      : corpus fields no detector reads -> unexplored surface, a
-//     detector-generation queue (informational).
+//   - unreferenced      : corpus fields no entry reads -> unexplored surface, a
+//     query-generation queue (informational).
 //
 // The referenced set is planner-sourced (glue.EntryReferencedFields via ExprFieldPath),
 // never a text heuristic. First check is at TOP-LEVEL granularity: high precision (no
 // false positives against a depth-limited census), and it catches the class that cost
-// the most — a detector aimed at a field that never existed.
+// the most — a query aimed at a field that never existed.
 
 import (
 	"fmt"
@@ -34,31 +35,9 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-func (c *cli) cmdMultiDoctor(arg string) {
-	args, err := parseMultiArgs(arg) // --queries <dir>... [--bind <manifest>]
-	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .multi doctor: %v\n", c.prog, err)
-		c.failed = true
-		return
-	}
-	dets, err := loadMultiQueryEntries(args.queries)
-	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .multi doctor: %v\n", c.prog, err)
-		c.failed = true
-		return
-	}
-	sess, binding, err := c.multiSession(args.bind)
-	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .multi doctor: %v\n", c.prog, err)
-		c.failed = true
-		return
-	}
-	if gap := c.reportBindingCoverage(sess, binding); gap {
-		fmt.Fprintf(c.stderr, "%s: .multi doctor: aborting -- unresolved logical keyspace(s) above\n", c.prog)
-		c.failed = true
-		return
-	}
-
+// lintCensus is the `--census` tier of `.multi lint`: the caller (cmdMultiLint) has
+// already loaded the entries and built the session (binding resolved, no gap).
+func (c *cli) lintCensus(dets []glue.MultiQueryEntry, sess *glue.Session) {
 	// Census each distinct keyspace once; the top-level field set is what we join
 	// against (present iff some census path has that first segment).
 	censusTop := map[string]map[string]bool{} // keyspace -> set of top-level fields present
@@ -79,13 +58,13 @@ func (c *cli) cmdMultiDoctor(arg string) {
 	}
 
 	type check struct {
-		Detector string   `json:"detector"`
+		Query    string   `json:"query"`
 		Keyspace string   `json:"keyspace"`
 		Absent   []string `json:"references_absent,omitempty"`
 	}
 	var checks []check
 	var skipped []string
-	referencedByKS := map[string]map[string]bool{} // keyspace -> top-level fields any detector reads
+	referencedByKS := map[string]map[string]bool{} // keyspace -> top-level fields any query reads
 	anyAbsent := false
 
 	for _, d := range dets {
@@ -96,7 +75,7 @@ func (c *cli) cmdMultiDoctor(arg string) {
 		}
 		present, cerr := topLevels(ks)
 		if cerr != nil {
-			fmt.Fprintf(c.stderr, "%s: .multi doctor: census %q: %v\n", c.prog, ks, cerr)
+			fmt.Fprintf(c.stderr, "%s: .multi lint --census: census %q: %v\n", c.prog, ks, cerr)
 			c.failed = true
 			return
 		}
@@ -115,10 +94,10 @@ func (c *cli) cmdMultiDoctor(arg string) {
 		if len(absent) > 0 {
 			anyAbsent = true
 		}
-		checks = append(checks, check{Detector: d.Label, Keyspace: ks, Absent: absent})
+		checks = append(checks, check{Query: d.Label, Keyspace: ks, Absent: absent})
 	}
 
-	// Unexplored surface: corpus top-level fields no detector references, per keyspace.
+	// Unexplored surface: corpus top-level fields no query references, per keyspace.
 	unreferenced := map[string][]string{}
 	for ks, present := range censusTop {
 		var un []string
@@ -141,7 +120,7 @@ func (c *cli) cmdMultiDoctor(arg string) {
 	}{Checks: checks, Unreferenced: unreferenced, Skipped: skipped, OK: !anyAbsent})
 
 	if anyAbsent {
-		fmt.Fprintf(c.stderr, "%s: .multi doctor: a detector references a field absent from the corpus "+
+		fmt.Fprintf(c.stderr, "%s: .multi lint --census: a query references a field absent from the corpus "+
 			"(a birth-in-error / rename) -- see references_absent above\n", c.prog)
 		c.failed = true
 	}

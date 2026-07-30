@@ -22,11 +22,11 @@ import (
 	"testing"
 )
 
-// TestMultiDoctor covers the ISSUE-06 Phase-2 differentiator: doctor flags a
-// detector that reads a field the corpus lacks (birth-in-error) and hard-fails,
-// leaves a detector reading real fields clean, and lists corpus fields no detector
+// TestMultiDoctor covers the ISSUE-06 Phase-2 differentiator: `lint --census` flags a
+// query that reads a field the corpus lacks (birth-in-error) and hard-fails,
+// leaves a query reading real fields clean, and lists corpus fields no query
 // references (the unexplored surface).
-func TestMultiDoctor(t *testing.T) {
+func TestMultiLintCensus(t *testing.T) {
 	root := t.TempDir()
 	ks := filepath.Join(root, "default", "events")
 	if err := os.MkdirAll(ks, 0o755); err != nil {
@@ -44,11 +44,11 @@ func TestMultiDoctor(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
-	c.cmdMulti("doctor --queries " + pack)
+	c.cmdMulti("lint --census --queries " + pack)
 
 	var env struct {
 		Checks []struct {
-			Detector string   `json:"detector"`
+			Query    string   `json:"query"`
 			Keyspace string   `json:"keyspace"`
 			Absent   []string `json:"references_absent"`
 		} `json:"checks"`
@@ -61,7 +61,7 @@ func TestMultiDoctor(t *testing.T) {
 
 	byDet := map[string][]string{}
 	for _, ch := range env.Checks {
-		byDet[ch.Detector] = ch.Absent
+		byDet[ch.Query] = ch.Absent
 	}
 	if len(byDet["GOOD"]) != 0 {
 		t.Fatalf("GOOD should have no absent refs, got %v", byDet["GOOD"])
@@ -70,12 +70,12 @@ func TestMultiDoctor(t *testing.T) {
 		t.Fatalf("BIRTH should flag isAbortedMidStream, got %v", byDet["BIRTH"])
 	}
 	if env.OK {
-		t.Fatal("doctor should report ok=false when a detector references an absent field")
+		t.Fatal("lint --census should report ok=false when a query references an absent field")
 	}
 	if !c.failed {
-		t.Fatal("doctor should hard-fail on a birth-in-error")
+		t.Fatal("lint --census should hard-fail on a birth-in-error")
 	}
-	// `type` exists in the corpus but no detector reads it -> unexplored surface.
+	// `type` exists in the corpus but no query reads it -> unexplored surface.
 	found := false
 	for _, f := range env.Unreferenced["events"] {
 		if f == "type" {
@@ -84,5 +84,16 @@ func TestMultiDoctor(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("unreferenced should include 'type', got %v", env.Unreferenced["events"])
+	}
+}
+
+// TestMultiDoctorRemoved: the `.multi doctor` verb was renamed to `.multi lint
+// --census` (hard cut) and now errors with a message naming the replacement.
+func TestMultiDoctorRemoved(t *testing.T) {
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+	c.cmdMulti("doctor --queries ./x")
+	if !c.failed || !strings.Contains(errb.String(), "lint --census") {
+		t.Fatalf("doctor should error naming `lint --census`; failed=%v stderr=%q", c.failed, errb.String())
 	}
 }
