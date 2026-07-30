@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/couchbase/n1k1/glue"
 )
 
 // TestMultiCompose drives the Phase-4 CLI: a two-node DAG (primitive errors ->
@@ -51,7 +53,7 @@ func TestMultiCompose(t *testing.T) {
 	}
 	writeNode("errors", "-- label: errors\n"+`SELECT l.host, l.msg FROM logs l WHERE l.sev = "ERROR"`)
 	writeNode("incident", "-- label: incident\n-- needs: errors\n"+
-		`SELECT e.result.host AS host, COUNT(*) AS n FROM pack_errors e GROUP BY e.result.host HAVING COUNT(*) >= 2`)
+		`SELECT e.result.host AS host, COUNT(*) AS n FROM node('errors') e GROUP BY e.result.host HAVING COUNT(*) >= 2`)
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
@@ -91,10 +93,10 @@ func TestMultiCompose(t *testing.T) {
 
 	// A cycle is rejected (nothing emitted to stdout; error on stderr).
 	cyc := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cyc, "p.sql++"), []byte("-- label: p\n-- needs: q\nSELECT 1 AS n FROM pack_q"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cyc, "p.sql++"), []byte("-- label: p\n-- needs: q\nSELECT 1 AS n FROM node('q')"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cyc, "q.sql++"), []byte("-- label: q\n-- needs: p\nSELECT 1 AS n FROM pack_p"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cyc, "q.sql++"), []byte("-- label: q\n-- needs: p\nSELECT 1 AS n FROM node('p')"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
@@ -127,7 +129,7 @@ func TestMultiComposeSelection(t *testing.T) {
 	}
 	mustWrite("errs", "-- label: errs\n"+`SELECT l.host FROM logs l WHERE l.sev = "ERROR"`)
 	mustWrite("roll", "-- label: roll\n-- needs: errs\n"+
-		`SELECT p.result.host AS host, COUNT(*) AS n FROM pack_errs p GROUP BY p.result.host`)
+		`SELECT p.result.host AS host, COUNT(*) AS n FROM node('errs') p GROUP BY p.result.host`)
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
@@ -194,7 +196,7 @@ func TestMultiComposeRejectedNode(t *testing.T) {
 	}
 	w("errs", "-- label: errs\n"+`SELECT l.host FROM logs l WHERE l.sev = "ERROR"`)
 	// `value` is a reserved word => this node fails to parse.
-	w("roll", "-- label: roll\n-- needs: errs\n"+"SELECT p.result.host AS value FROM `pack_errs` p")
+	w("roll", "-- label: roll\n-- needs: errs\n"+"SELECT p.result.host AS value FROM node('errs') p")
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
@@ -245,5 +247,29 @@ func TestMultiComposeRejectedNode(t *testing.T) {
 	}
 	if c.failed {
 		t.Fatalf("--allow-rejected must not hard-fail")
+	}
+}
+
+// TestComposeNodeRefOutsideDAG: node('x') parses + routes as a table source, but
+// errors clearly when used outside a compose DAG (no materialized node to read).
+func TestComposeNodeRefOutsideDAG(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "t")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "t.jsonl"), []byte(`{"x":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := glue.OpenSession(root, defaultNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root, sess: sess}
+	c.exec(`SELECT * FROM node('foo') AS r`)
+	if !strings.Contains(errb.String()+out.String(), "no such node") &&
+		!strings.Contains(errb.String()+out.String(), "compose") {
+		t.Fatalf("node() outside a DAG should error clearly; out=%q err=%q", out.String(), errb.String())
 	}
 }

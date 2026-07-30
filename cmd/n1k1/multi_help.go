@@ -51,7 +51,7 @@ COMMANDS
   .multi explain --queries <dir> [--bind <manifest>] [--sql]  show the fused shared-scan plan + fusion map; --sql = pretty SQL++ w/ provenance + hints (does NOT run)
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
   .multi cursor <verb> ...                         named "what's new since I last looked" cursors over a pack (.multi cursor help)
-  .multi compose --queries <dir> [--only a,b | --terminal] [--allow-rejected]   run a DAG of queries: each *.sql++ = a node; "-- needs: a" reads FROM pack_a (topo-ordered). --only/--terminal limit which nodes emit rows; a node that fails to parse is "rejected" and hard-fails unless --allow-rejected
+  .multi compose --queries <dir> [--only a,b | --terminal] [--allow-rejected]   run a DAG of queries: each *.sql++ = a node; "-- needs: a" then reads its rows with FROM node('a') (topo-ordered). --only/--terminal limit which nodes emit rows; a node that fails to parse is "rejected" and hard-fails unless --allow-rejected
   .multi run --queries "builtin:census?keyspace=<ks>[&type-field=f&time-field=f&depth=1|2&exclude=a,b]" [--bind <m>]   time-aware key-space census (a built-in queries source): per (type, path, val_type) -> docs, coverage, first/last-seen (schema drift); cursor it for an ongoing census
   .multi help                                      this guide
 
@@ -138,7 +138,7 @@ TIPS (get the best out of a collection)
     WHERE literal (a per-row cost on woken rows, not a scan cost). In the GATING predicate it forfeits index
     pruning UNLESS a native literal rides alongside as a top-level AND conjunct ("... AND msg LIKE '%lit%'
     AND udf(x)=y" still prunes on '%lit%'). Move UDFs to a downstream ".multi compose" rollup over a
-    materialized pack_<node> keyspace only when the per-row cost matters.
+    downstream node (read via node('<name>')) only when the per-row cost matters.
   - For grep -A/-B/-C style CONTEXT (the matching line + surrounding lines), use a sliding-window
     match flag (see CONTEXT below) -- and PARTITION BY _meta.` + "`path`" + ` on a multi-file keyspace, or
     context LEAKS across rotated files.

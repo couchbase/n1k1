@@ -21,9 +21,10 @@ package glue
 //
 // Mechanism (the MVP the design calls for — materialize + re-poll, not true
 // cross-layer delta): nodes run in topological order on ONE session; each node's
-// labelResults are materialized into a `pack_<name>` TEMP KEYSPACE (temp_keyspace.go),
-// so a downstream node's `FROM pack_<up>` resolves through the session's temp
-// overlay. Each materialized row is {label, result, fingerprint} — result stays
+// labelResults are materialized into a TEMP KEYSPACE (temp_keyspace.go, named by
+// ComposeKeyspace), which a downstream node reads with the collision-free table
+// reference `FROM node('<up>')` (compose_node.go — a function ref can't clash with a
+// keyspace name). Each materialized row is {label, result, fingerprint} — result stays
 // nested (navigate x.result.<field>), label enables per-detector GROUP BY, and the
 // fingerprint is a lineage handle.
 
@@ -37,7 +38,7 @@ import (
 )
 
 // ComposeNode is one DAG node: a named pack plus the upstream node names it reads
-// (via `FROM pack_<dep>`). Needs edges are declared, not inferred.
+// (via `FROM node('<dep>')`). Needs edges are declared, not inferred.
 type ComposeNode struct {
 	Name    string
 	Needs   []string
@@ -61,8 +62,11 @@ type ComposeResult struct {
 	Nodes []ComposeNodeResult
 }
 
-// ComposeKeyspace is the temp-keyspace name a node's labelResults materialize
-// under; a downstream node reads them as `FROM pack_<name>`.
+// ComposeKeyspace is the INTERNAL temp-keyspace name a node's labelResults
+// materialize under. The `pack_` prefix is not user-facing — a downstream node reads
+// the rows via `FROM node('<name>')` (compose_node.go resolves the name here), never
+// by this keyspace name. Kept prefixed so the internal keyspace is unlikely to shadow
+// a real one.
 func ComposeKeyspace(node string) string { return "pack_" + node }
 
 // TopoOrder returns the node names in dependency order (every node after all its
