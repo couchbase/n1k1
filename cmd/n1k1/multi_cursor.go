@@ -62,6 +62,7 @@ type cursorArgs struct {
 	quiet         bool     // --quiet, advance-only (ack only, no labelResults echo)
 	force         bool     // --force, advance --to only (commit a rewinding/unknown position anyway)
 	allowDrift    bool     // --allow-drift, advance only (commit even though the query edited since create)
+	expect        string   // --expect <committed_id>, advance only (compare-and-swap: refuse if moved)
 	positions     bool     // --positions, show-only (full position map, not a summary)
 	only          []string // --only <node,...>, compose-only (emit rows for just these)
 	terminal      bool     // --terminal, compose-only (emit rows for leaf nodes only)
@@ -178,6 +179,13 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.force = !hasEq || val == "true" || val == "1"
 		case "allow-drift":
 			a.allowDrift = !hasEq || val == "true" || val == "1"
+		case "expect":
+			if !hasEq {
+				if err := need(&i, &val, "--expect"); err != nil {
+					return a, err
+				}
+			}
+			a.expect = val
 		case "positions":
 			a.positions = !hasEq || val == "true" || val == "1"
 		case "only":
@@ -295,6 +303,11 @@ type cursorEnvelope struct {
 	// (creation-time) id, QueriesCurrent is the id re-hashed from the query NOW. They
 	// differ iff the query drifted. advance refuses on drift unless --allow-drift.
 	QueriesCurrent string `json:"queries_current,omitempty"`
+
+	// ISSUE-15: a fixed-width digest of the COMMITTED position (see committedID) — the
+	// machine-readable "did the position move?" surface + the handle for `advance
+	// --expect <committed_id>` compare-and-swap.
+	CommittedID string `json:"committed_id,omitempty"`
 }
 
 // printJSON emits v as the single response envelope: indented at a TTY (the
@@ -708,6 +721,17 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
+	// ISSUE-15: `advance --expect <committed_id>` is a compare-and-swap — refuse if the
+	// committed position moved since the caller peeked (a concurrent runner, or a stale
+	// retry). This is the principled guard behind the ISSUE-13 family: instead of
+	// n1k1 guessing which positions are "silly", the caller asserts the base it acted on.
+	if advance && a.expect != "" {
+		if got := committedID(st); got != a.expect {
+			c.cursorExpectRefuse(a.name, got, a.expect)
+			return
+		}
+	}
+
 	if st.Mode == "diff" {
 		c.cursorDiffPeekAdvance(a, st, store, sess, dets, advance, currentID, drifted)
 		return
@@ -727,8 +751,9 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	rows := toRows(res.LabelResults)
 	env := cursorEnvelope{
 		Cursor: a.name, Pack: st.PackID,
-		From:  encodeWater(committed),
-		Count: len(rows),
+		From:        encodeWater(committed),
+		Count:       len(rows),
+		CommittedID: committedID(st), // the CURRENTLY-committed position (peek: unchanged)
 	}
 	if drifted {
 		env.QueriesCurrent = currentID
@@ -811,6 +836,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	}
 
 	env.To = encodeWater(newWater)
+	env.CommittedID = committedID(st) // now reflects the NEWLY-committed position
 	env.Advanced = moved
 	if moved {
 		env.Status = "advanced"
@@ -821,6 +847,25 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		env.LabelResults = rows
 	}
 	c.printJSON(env)
+}
+
+// committedID is a short, fixed-width digest of a cursor's COMMITTED position
+// (ISSUE-15): a sha over the canonical position token. Unlike list's {containers,min,max}
+// summary it changes iff the position changes — even a one-byte rewind of one middle
+// container — so it is a safe compare-and-swap handle for `advance --expect` and the
+// machine-readable "did anything move?" surface. Uniform across modes.
+func committedID(st *glue.CursorState) string {
+	var pos string
+	switch st.Mode {
+	case "diff":
+		pos = fmt.Sprintf("snap:%d", st.SnapVersion)
+	case "census":
+		pos = fmt.Sprintf("census:%d", st.CensusVersion)
+	default:
+		pos = encodeWater(st.Water)
+	}
+	h := sha256.Sum256([]byte("cursor-pos\x00" + pos))
+	return hex.EncodeToString(h[:])[:12]
 }
 
 // positionToken renders a cursor's committed position as the OPAQUE from/to token
@@ -891,7 +936,7 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 	rows := diffRows(events)
 	changed := len(events) > 0
 
-	env := cursorEnvelope{Cursor: st.Name, Pack: st.PackID, From: from, Count: len(rows)}
+	env := cursorEnvelope{Cursor: st.Name, Pack: st.PackID, From: from, Count: len(rows), CommittedID: committedID(st)}
 	if drifted {
 		env.QueriesCurrent = currentID
 	}
@@ -933,6 +978,7 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 	}
 
 	env.To = fmt.Sprintf("snap:%d", newVer)
+	env.CommittedID = committedID(st) // now reflects the newly-committed snapshot
 	env.Advanced = changed
 	if changed {
 		env.Status = "advanced"
@@ -992,11 +1038,12 @@ func (c *cli) cursorList(arg string) {
 		return
 	}
 	type listRow struct {
-		Cursor    string      `json:"cursor"`
-		Pack      string      `json:"queries"`
-		Mode      string      `json:"mode"`
-		Committed interface{} `json:"committed"`
-		Advances  int         `json:"total_advances"`
+		Cursor      string      `json:"cursor"`
+		Pack        string      `json:"queries"`
+		Mode        string      `json:"mode"`
+		Committed   interface{} `json:"committed"`
+		CommittedID string      `json:"committed_id"`
+		Advances    int         `json:"total_advances"`
 	}
 	out := make([]listRow, 0, len(names))
 	for _, n := range names {
@@ -1005,7 +1052,8 @@ func (c *cli) cursorList(arg string) {
 			continue
 		}
 		out = append(out, listRow{Cursor: n, Pack: st.PackID, Mode: st.Mode,
-			Committed: committedField(st, a.positions), Advances: st.TotalAdvances})
+			Committed: committedField(st, a.positions), CommittedID: committedID(st),
+			Advances: st.TotalAdvances})
 	}
 	c.printJSON(out)
 }
@@ -1101,6 +1149,7 @@ func (c *cli) cursorShow(arg string) {
 		Mode          string      `json:"mode"`
 		IdField       string      `json:"id_field,omitempty"`
 		Committed     interface{} `json:"committed"`
+		CommittedID   string      `json:"committed_id"`
 		Description   string      `json:"description,omitempty"`
 		Created       string      `json:"created,omitempty"`
 		Updated       string      `json:"updated,omitempty"`
@@ -1110,7 +1159,8 @@ func (c *cli) cursorShow(arg string) {
 		Cursor: st.Name, Pack: st.PackID, PackDir: st.Pack,
 		Keyspace: st.Keyspace, CensusCells: len(st.Census), CensusRecords: st.CensusRecords,
 		Bind: st.Bind,
-		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions), Description: st.Description,
+		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions),
+		CommittedID: committedID(st), Description: st.Description,
 		Created: st.Created, Updated: st.Updated,
 		LastCount: st.LastCount, TotalAdvances: st.TotalAdvances,
 	})
@@ -1153,6 +1203,18 @@ func (c *cli) cursorFail(name, kind string, err error) {
 		Status:   "error",
 		Advanced: false,
 		Error:    &cursorErr{Kind: kind, Message: err.Error()},
+	})
+	c.failed = true
+}
+
+// cursorExpectRefuse reports an `advance --expect` compare-and-swap miss (ISSUE-15): the
+// committed position moved since the caller captured `expected`, so the advance is refused.
+func (c *cli) cursorExpectRefuse(name, got, expected string) {
+	c.printJSON(cursorEnvelope{
+		Cursor: name, Status: "error", CommittedID: got,
+		Error: &cursorErr{Kind: "stale", Message: fmt.Sprintf(
+			"cursor moved since you looked: committed_id is %s, --expect was %s. "+
+				"peek again to re-read the position, then advance.", got, expected)},
 	})
 	c.failed = true
 }
@@ -1205,6 +1267,10 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        If the query was EDITED since create, peek surfaces
                        "queries_current" and advance refuses (error kind "pack-drift")
                        unless --allow-drift (which adopts the new query as the baseline).
+                       --expect <committed_id> is a compare-and-swap: advance only if the
+                       committed position still matches (peek reports committed_id);
+                       refuses (error kind "stale") if another run moved it. Safe for
+                       concurrent runners / stale retries.
   list                 the cursors in the store.
   show   NAME [--positions]
                        one cursor's committed position + metadata (description);

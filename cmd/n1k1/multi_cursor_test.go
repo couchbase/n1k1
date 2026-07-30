@@ -438,6 +438,57 @@ func TestMultiCursorPackDrift(t *testing.T) {
 	}
 }
 
+// TestMultiCursorExpectCAS guards ISSUE-15: peek exposes committed_id (a digest of the
+// committed position); `advance --expect <committed_id>` is a compare-and-swap that
+// refuses (kind "stale") if the position moved since the caller peeked.
+func TestMultiCursorExpectCAS(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "e.jsonl"), []byte(`{"n":1}`+"\n"+`{"n":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := writeMultiQueryEntries(t, map[string]string{"all": "-- label: all\nSELECT e.n FROM events e"})
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	run := func(cmd string) map[string]interface{} {
+		out.Reset()
+		errb.Reset()
+		c.failed = false
+		c.cmdMulti("cursor " + cmd + " --cursor-store " + store)
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+
+	if e := run("create CAS --queries " + pack + " --from start"); e["ok"] != true {
+		t.Fatalf("create: %v (stderr %s)", e, errb.String())
+	}
+	cid, _ := run("peek CAS")["committed_id"].(string)
+	if cid == "" {
+		t.Fatal("peek exposed no committed_id")
+	}
+
+	// advance --expect <current> succeeds and reports a NEW committed_id.
+	e := run("advance CAS --expect " + cid + " --quiet")
+	if e["status"] != "advanced" {
+		t.Fatalf("advance --expect <current>: want advanced, got %v", e)
+	}
+	if e["committed_id"] == cid || e["committed_id"] == "" {
+		t.Errorf("advance should report the new committed_id, got %v (was %v)", e["committed_id"], cid)
+	}
+
+	// reusing the now-stale committed_id is refused (compare-and-swap miss).
+	e = run("advance CAS --expect " + cid)
+	if e["status"] != "error" || e["error"].(map[string]interface{})["kind"] != "stale" {
+		t.Fatalf("advance --expect <stale>: want error/stale, got %v", e)
+	}
+}
+
 // runList runs a cursor command that prints a JSON ARRAY envelope (list/check).
 func runList(c *cli, out, errb *bytes.Buffer, cmd string) []map[string]interface{} {
 	out.Reset()
