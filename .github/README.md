@@ -8,7 +8,7 @@ including on pull requests from forks.
 |---|---|---|
 | [`ci.yml`](workflows/ci.yml) | push to `master`, every PR, nightly | regenerates the recipes doc and fails if it drifted; builds + tests on Linux/macOS/Windows; runs every SQL++ recipe; runs the conformance suite (not on PRs) |
 | [`release.yml`](workflows/release.yml) | tag `v*` (or manual) | cross-builds the CLI for 6 targets, packages + checksums them, publishes a GitHub Release |
-| [`pages.yml`](workflows/pages.yml) | push to `master` touching `docs/recipes.*` | publishes the SQL++ recipes doc to GitHub Pages |
+| [`pages.yml`](workflows/pages.yml) | push to `master` touching `docs/recipes.*`, `docs/deck/**`, or `web/**` | publishes the SQL++ recipes doc (`/`), the wasm playground (`/play/`) and the design deck (`/deck/`) to GitHub Pages |
 
 ## One-time setup
 
@@ -16,9 +16,11 @@ Only one step, and only for the docs site:
 
 > Settings → Pages → Build and deployment → Source = **GitHub Actions**
 
-Then run the `Pages (SQL++ recipes)` workflow (or push a `docs/recipes.*` change).
-The site is published at `https://couchbase.github.io/n1k1/`, with the recipes page
-as the site root. **This is a public page** (the repository is public).
+Then run the `Pages (SQL++ recipes + playground + deck)` workflow (or push a change
+under one of its trigger paths). The site is published at
+`https://couchbase.github.io/n1k1/`, with the recipes page as the site root, the
+playground at `/play/` and the design deck at `/deck/`. **These are public pages**
+(the repository is public).
 
 ## Local equivalent
 

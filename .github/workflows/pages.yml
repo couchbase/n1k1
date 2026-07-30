@@ -1,10 +1,12 @@
-name: Pages (SQL++ recipes + playground)
+name: Pages (SQL++ recipes + playground + deck)
 
 # Publishes to GitHub Pages:
 #   /            the generated SQL++ recipes doc (docs/recipes.html, pure Python).
 #   /play/       the browser SQL++ playground -- n1k1's engine compiled to wasm
 #                (web/wasm/build.sh), so queries run 100% client-side; Pages only
 #                serves static assets. This is what a recipe's "Try It Now" links to.
+#   /deck/       the design & internals deck (docs/deck/, impress.js). Hand-written
+#                and self-contained -- nothing to generate, just copied.
 #
 # Building the playground needs the Go toolchain + the EE-module bootstrap (no secrets;
 # see .github/actions/bootstrap-go). One-time repo setup: Settings -> Pages -> Source =
@@ -16,6 +18,7 @@ on:
     paths:
       - docs/recipes.yaml
       - docs/recipes_build.py
+      - docs/deck/**
       - web/**
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -77,6 +80,11 @@ jobs:
           # paths resolve (index.html -> samples.js + wasm/worker.js -> ../n1k1.wasm etc).
           cp web/index.html web/samples.js web/n1k1.wasm web/wasm_exec.js _site/play/
           cp web/wasm/worker.js web/wasm/fs_mem.js web/wasm/ingest.js web/wasm/opfs.js _site/play/wasm/
+          # The design deck under /deck/ -- three static files, self-contained
+          # (impress.js is vendored, no external requests). Named explicitly so
+          # editor backups (docs/deck/*~) can never be published.
+          mkdir -p _site/deck
+          cp docs/deck/index.html docs/deck/deck.css docs/deck/impress.js _site/deck/
           touch _site/.nojekyll   # serve files verbatim; skip Jekyll processing
           echo "--- site tree ---"; find _site -type f -exec ls -lh {} + | awk '{print $5, $NF}'
 
