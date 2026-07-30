@@ -108,3 +108,23 @@ func TestRunBuiltinCensus(t *testing.T) {
 		t.Fatalf("unknown builtin should error; failed=%v stderr=%q", c.failed, errb.String())
 	}
 }
+
+// TestCensusMigrationsRemoved: the `.multi census` verb and the `cursor --mode census`
+// selector are gone (hard cut); each errors naming the builtin:census replacement.
+func TestCensusMigrationsRemoved(t *testing.T) {
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb}
+
+	c.cmdMulti("census events")
+	if !c.failed || !strings.Contains(errb.String(), "builtin:census") {
+		t.Fatalf(".multi census should error naming builtin:census; stderr=%q", errb.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("cursor create x --queries ./nope --mode census")
+	if !c.failed || !strings.Contains(out.String()+errb.String(), "builtin:census") {
+		t.Fatalf("--mode census should error naming builtin:census; out=%q stderr=%q", out.String(), errb.String())
+	}
+}

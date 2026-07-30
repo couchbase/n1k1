@@ -63,12 +63,14 @@ type cursorArgs struct {
 	terminal      bool     // --terminal, compose-only (emit rows for leaf nodes only)
 	allowRejected bool     // --allow-rejected, compose-only (don't hard-fail on a rejected node)
 
-	// census-mode create (--mode census)
-	keyspace      string   // --keyspace <ks>
-	censusType    string   // --type-field <f>
-	censusTime    string   // --time-field <f>
-	censusDepth   int      // --depth 1|2
-	censusExclude []string // --exclude a,b
+	// census cursor (create --queries builtin:census?keyspace=..&...): filled from the
+	// builtin:census ref's params, not from standalone flags.
+	keyspace       string   // ?keyspace=<ks>
+	censusType     string   // ?type-field=<f>
+	censusTime     string   // ?time-field=<f>
+	censusDepth    int      // ?depth=1|2
+	censusExclude  []string // ?exclude=a,b
+	builtinVersion string   // the resolved builtin ref (e.g. "census@1"), stamped into state
 }
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
@@ -185,47 +187,6 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.terminal = !hasEq || val == "true" || val == "1"
 		case "allow-rejected":
 			a.allowRejected = !hasEq || val == "true" || val == "1"
-		case "keyspace":
-			if !hasEq {
-				if err := need(&i, &val, "--keyspace"); err != nil {
-					return a, err
-				}
-			}
-			a.keyspace = val
-		case "type-field":
-			if !hasEq {
-				if err := need(&i, &val, "--type-field"); err != nil {
-					return a, err
-				}
-			}
-			a.censusType = val
-		case "time-field":
-			if !hasEq {
-				if err := need(&i, &val, "--time-field"); err != nil {
-					return a, err
-				}
-			}
-			a.censusTime = val
-		case "depth":
-			if !hasEq {
-				if err := need(&i, &val, "--depth"); err != nil {
-					return a, err
-				}
-			}
-			if n, e := strconv.Atoi(val); e == nil {
-				a.censusDepth = n
-			}
-		case "exclude":
-			if !hasEq {
-				if err := need(&i, &val, "--exclude"); err != nil {
-					return a, err
-				}
-			}
-			for _, e := range strings.Split(val, ",") {
-				if e = strings.TrimSpace(e); e != "" {
-					a.censusExclude = append(a.censusExclude, e)
-				}
-			}
 		default:
 			if repl, ok := renamedCursorFlag[strings.TrimLeft(key, "-")]; ok {
 				return a, fmt.Errorf("flag %q was removed; use %s", key, repl)
@@ -245,6 +206,12 @@ var renamedCursorFlag = map[string]string{
 	"description": "--desc",
 	"id":          "--id-field",
 	"verbose":     "--positions",
+	// census cursor params moved into the builtin:census ref's query-string.
+	"keyspace":   `--queries "builtin:census?keyspace=<ks>"`,
+	"type-field": `builtin:census?type-field=<f>`,
+	"time-field": `builtin:census?time-field=<f>`,
+	"depth":      `builtin:census?depth=<n>`,
+	"exclude":    `builtin:census?exclude=a,b`,
 }
 
 // cmdMultiCursor dispatches `.multi cursor <verb>`.
@@ -421,8 +388,32 @@ func (c *cli) cursorCreate(arg string) {
 		c.cursorFail("", "bad-args", fmt.Errorf("cursor NAME is required"))
 		return
 	}
-	// A census cursor binds a KEYSPACE, not a pack — separate create path.
+	// census stopped being a --mode; it's a queries source (checked up front so the
+	// migration error fires regardless of the --queries value).
 	if strings.EqualFold(a.mode, "census") {
+		c.cursorFail(a.name, "bad-args", fmt.Errorf(
+			`census is a queries source now, not a --mode: cursor create %s --queries "builtin:census?keyspace=<ks>"`, a.name))
+		return
+	}
+	// A census cursor is created over the `builtin:census` entity (params in its
+	// query-string), not a *.sql++ pack — separate create path.
+	if ref, ok := builtinCensusRef(a.pack); ok {
+		a.keyspace = ref.params["keyspace"]
+		a.censusType = ref.params["type-field"]
+		a.censusTime = ref.params["time-field"]
+		if d := ref.params["depth"]; d != "" {
+			if n, e := strconv.Atoi(d); e == nil {
+				a.censusDepth = n
+			}
+		}
+		if ex := ref.params["exclude"]; ex != "" {
+			for _, e := range strings.Split(ex, ",") {
+				if e = strings.TrimSpace(e); e != "" {
+					a.censusExclude = append(a.censusExclude, e)
+				}
+			}
+		}
+		a.builtinVersion = ref.name + "@" + ref.version
 		c.cursorCensusCreate(a)
 		return
 	}
@@ -959,14 +950,14 @@ const cursorHelpText = `.multi cursor <verb> — CEP named cursors (a durable "w
 
   create NAME --queries <dir> [--bind <m>] [--from now|start] [--mode append|diff]
               [--id-field <name>] [--desc <t>]
-  create NAME --mode census --keyspace <ks> [--bind <m>] [--type-field <f>]
-              [--time-field <f>] [--depth 1|2] [--exclude a,b] [--from now|start]
+  create NAME --queries "builtin:census?keyspace=<ks>[&type-field=f&time-field=f&depth=1|2&exclude=a,b]"
+              [--bind <m>] [--from now|start]
                        bind + validate; set the start position. No rows.
                        --mode diff tracks a snapshot keyed by --id-field (default id)
                        and emits {op:insert|update|delete, id, before, after}.
-                       --mode census accumulates a schema census of <keyspace>;
-                       peek/advance fold new records + emit drift (field_added /
-                       type_changed). The census + watermark commit atomically.
+                       A cursor over builtin:census accumulates a schema census of the
+                       keyspace; peek/advance fold new records + emit drift (field_added
+                       / type_changed). The census + watermark commit atomically.
   peek   NAME          the pending delta; does NOT move the cursor (re-peek is safe).
   advance NAME [--to <pos> | --to-file <path>] [--quiet]
                        commit (get + move). Echoes the delta unless --quiet.

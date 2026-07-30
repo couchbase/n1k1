@@ -201,6 +201,19 @@ func (c *cli) runBuiltinCensus(args multiArgs, r queriesRef) {
 	c.emitCensus(sess, keyspace, opts)
 }
 
+// builtinCensusRef reports whether queries is a single `builtin:census[...]` ref (and
+// returns it parsed). Used by `cursor create` to route to the census-cursor path.
+func builtinCensusRef(queries []string) (queriesRef, bool) {
+	if len(queries) != 1 {
+		return queriesRef{}, false
+	}
+	r, err := parseQueriesRef(queries[0])
+	if err != nil || r.kind != refBuiltin || r.name != "census" {
+		return queriesRef{}, false
+	}
+	return r, true
+}
+
 func builtinNames() []string {
 	out := make([]string, 0, len(builtinVersions))
 	for n := range builtinVersions {

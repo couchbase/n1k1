@@ -63,7 +63,7 @@ func TestMultiCensusCursor(t *testing.T) {
 		return env
 	}
 
-	if env := run("create schema --mode census --keyspace events"); env["ok"] != true || env["mode"] != "census" {
+	if env := run("create schema --queries builtin:census?keyspace=events"); env["ok"] != true || env["mode"] != "census" {
 		t.Fatalf("create: %v", env)
 	}
 	if env := run("peek schema"); env["status"] != "empty" || env["count"].(float64) != 0 {

@@ -88,6 +88,11 @@ type CursorState struct {
 	CensusRecords   int64            `json:"census_records,omitempty"`
 	CensusVersion   int              `json:"census_version,omitempty"` // "census:N" token; bumps on drift
 
+	// Builtin is the resolved builtin-queries ref this cursor is over, if any
+	// (e.g. "census@1") — stamped at create so a future, incompatible builtin version
+	// can detect + refuse/rebase a stale cursor rather than fold mismatched data.
+	Builtin string `json:"builtin,omitempty"`
+
 	// Description is a free-form note set at create time (--desc).
 	Description string `json:"description,omitempty"`
 

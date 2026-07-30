@@ -53,7 +53,8 @@ func (c *cli) censusOpts(a cursorArgs) glue.CensusOptions {
 // accumulates future records). The watermark is captured either way.
 func (c *cli) cursorCensusCreate(a cursorArgs) {
 	if a.keyspace == "" {
-		c.cursorFail(a.name, "bad-args", fmt.Errorf("--mode census needs --keyspace <ks>"))
+		c.cursorFail(a.name, "bad-args", fmt.Errorf(
+			`builtin:census needs a keyspace, e.g. --queries "builtin:census?keyspace=<ks>"`))
 		return
 	}
 	store, err := c.cursorStore(a.store)
@@ -87,6 +88,7 @@ func (c *cli) cursorCensusCreate(a cursorArgs) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	st := &glue.CursorState{
 		Name: a.name, Bind: a.bind, Mode: "census", Keyspace: a.keyspace,
+		Builtin:         a.builtinVersion, // e.g. "census@1" -- for future version-compat checks
 		CensusTypeField: a.censusType, CensusTimeField: a.censusTime,
 		CensusDepth: a.censusDepth, CensusExclude: a.censusExclude,
 		Water: res.NewWater, CensusTotals: map[string]int64{},

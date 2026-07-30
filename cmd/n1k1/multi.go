@@ -81,7 +81,9 @@ func (c *cli) cmdMulti(arg string) {
 	case "compose":
 		c.cmdMultiCompose(rest)
 	case "census":
-		c.cmdMultiCensus(rest)
+		fmt.Fprintf(c.stderr, "%s: .multi census was removed -- census is a queries source now: "+
+			"`.multi run --queries \"builtin:census?keyspace=<ks>\"` (or a cursor over it)\n", c.prog)
+		c.failed = true
 	case "doctor":
 		fmt.Fprintf(c.stderr, "%s: .multi doctor was renamed -- use `.multi lint --census` "+
 			"(the data-aware tier of lint)\n", c.prog)
