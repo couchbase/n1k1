@@ -76,18 +76,19 @@ func (c *cli) cmdMultiCompose(arg string) {
 		c.failed = true
 		return
 	}
-	dir := a.name // the positional is the compose <dir>
-	if dir == "" {
-		fmt.Fprintf(c.stderr, "%s: .multi compose: a <dir> of *.sql++ nodes is required\n", c.prog)
+	if a.name != "" {
+		fmt.Fprintf(c.stderr, "%s: .multi compose: pass the DAG dir as --queries <dir>, "+
+			"not a positional argument (got %q)\n", c.prog, a.name)
 		c.failed = true
 		return
 	}
-	if len(a.pack) > 0 {
-		fmt.Fprintf(c.stderr, "%s: .multi compose: takes a single <dir>; --queries/--pack are not valid here "+
-			"(the DAG is the files in <dir>)\n", c.prog)
+	if len(a.pack) != 1 {
+		fmt.Fprintf(c.stderr, "%s: .multi compose: exactly one --queries <dir> is required "+
+			"(a directory of *.sql++ nodes)\n", c.prog)
 		c.failed = true
 		return
 	}
+	dir := a.pack[0]
 	nodes, err := buildComposeNodes(dir)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi compose: %v\n", c.prog, err)

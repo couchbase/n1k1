@@ -55,7 +55,7 @@ func TestMultiCompose(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
-	c.cmdMulti("compose " + dag)
+	c.cmdMulti("compose --queries " + dag)
 
 	var env struct {
 		Order []string `json:"order"`
@@ -100,7 +100,7 @@ func TestMultiCompose(t *testing.T) {
 	out.Reset()
 	errb.Reset()
 	c.failed = false
-	c.cmdMulti("compose " + cyc)
+	c.cmdMulti("compose --queries " + cyc)
 	if !c.failed || !strings.Contains(errb.String(), "cycle") {
 		t.Fatalf("cycle: want failure mentioning cycle; failed=%v stderr=%q stdout=%q", c.failed, errb.String(), out.String())
 	}
@@ -135,7 +135,7 @@ func TestMultiComposeSelection(t *testing.T) {
 		out.Reset()
 		errb.Reset()
 		c.failed = false
-		c.cmdMulti("compose " + cmd)
+		c.cmdMulti("compose --queries " + cmd)
 		var env struct {
 			Nodes []struct {
 				Node         string        `json:"node"`
@@ -164,13 +164,13 @@ func TestMultiComposeSelection(t *testing.T) {
 		t.Fatalf("--only errs: want errs=2,roll=0, got %v", m)
 	}
 
-	// --queries is rejected.
+	// A positional dir (the pre-Phase-1c form) is rejected, naming --queries.
 	out.Reset()
 	errb.Reset()
 	c.failed = false
-	c.cmdMulti("compose " + dag + " --queries /tmp/x")
-	if !c.failed || !strings.Contains(errb.String(), "single <dir>") {
-		t.Fatalf("--queries: want rejection, failed=%v stderr=%q", c.failed, errb.String())
+	c.cmdMulti("compose " + dag)
+	if !c.failed || !strings.Contains(errb.String(), "--queries") {
+		t.Fatalf("positional dir: want rejection naming --queries, failed=%v stderr=%q", c.failed, errb.String())
 	}
 }
 
@@ -222,7 +222,7 @@ func TestMultiComposeRejectedNode(t *testing.T) {
 	out.Reset()
 	errb.Reset()
 	c.failed = false
-	c.cmdMulti("compose " + dag)
+	c.cmdMulti("compose --queries " + dag)
 	st, reason := nodeStatus()
 	if st["roll"] != "rejected" {
 		t.Fatalf("want roll status=rejected, got %v", st)
@@ -238,7 +238,7 @@ func TestMultiComposeRejectedNode(t *testing.T) {
 	out.Reset()
 	errb.Reset()
 	c.failed = false
-	c.cmdMulti("compose " + dag + " --allow-rejected")
+	c.cmdMulti("compose --queries " + dag + " --allow-rejected")
 	st, _ = nodeStatus()
 	if st["roll"] != "rejected" {
 		t.Fatalf("--allow-rejected: still want status=rejected, got %v", st)
