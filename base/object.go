@@ -673,7 +673,10 @@ func ObjectConcatVals(c *ValComparer, vals Vals, bufPre []byte) (Val, []byte) {
 // The name Val keeps its JSON quotes and is emitted as the key. Pool-backed (zero
 // steady-state garbage), like ObjectConcatVals.
 func ObjectConstructVals(c *ValComparer, vals Vals, bufPre []byte) (Val, []byte) {
-	kvs := c.KeyValsAcquire(0)
+	// Dedicated construction arena, NOT the depth-0 KeyVals pool: a reader (OBJECT_PAIRS)
+	// leaves source-aliasing residue in KeyVals[0], and CollObjectPut's in-place reuse
+	// would write through and corrupt that source. See ValComparer.KeyValsConstruct.
+	kvs := c.KeyValsConstructAcquire()
 
 	for i := 0; i+1 < len(vals); i += 2 {
 		name, val := vals[i], vals[i+1]
@@ -683,7 +686,7 @@ func ObjectConstructVals(c *ValComparer, vals Vals, bufPre []byte) (Val, []byte)
 			continue
 		}
 		if !ValIsString(name) { // non-string name -> whole result NULL.
-			c.KeyValsRelease(0, kvs)
+			c.KeyValsConstructRelease(kvs)
 			return ValNull, bufPre
 		}
 		if len(val) == 0 { // MISSING value -> skip this pair.
@@ -694,6 +697,6 @@ func ObjectConstructVals(c *ValComparer, vals Vals, bufPre []byte) (Val, []byte)
 	}
 
 	out := CollObjectEmit(kvs, bufPre)
-	c.KeyValsRelease(0, kvs)
+	c.KeyValsConstructRelease(kvs)
 	return Val(out), out
 }

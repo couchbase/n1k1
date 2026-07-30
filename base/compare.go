@@ -80,6 +80,18 @@ func ParseFloat64(v []byte) (float64, error) {
 type ValComparer struct {
 	KeyVals []KeyVals // Indexed by depth.
 
+	// KeyValsConstruct is a scratch KeyVals used ONLY by OBJECT construction
+	// (ObjectConstructVals). It is deliberately SEPARATE from the depth-indexed
+	// KeyVals pool above: readers (OBJECT_PAIRS / OBJECT_VALUES) leave value slices
+	// in KeyVals[0] that ALIAS the scanned source bytes, and an OBJECT construct that
+	// reused that same pool slot would `append(kvs[n].Val[:0], ...)` in place and
+	// write THROUGH into — corrupting — the source object (e.g. a second object-valued
+	// comprehension over OBJECT_PAIRS(r) in one projection then read a clobbered r ->
+	// null). A dedicated arena that only construction ever touches never holds
+	// source-aliasing residue, so its in-place reuse is always sound (and still
+	// zero-alloc after warmup).
+	KeyValsConstruct KeyVals
+
 	Buffer bytes.Buffer
 
 	Bytes []byte
@@ -357,6 +369,12 @@ func (c *ValComparer) KeyValsAcquire(depth int) KeyVals {
 func (c *ValComparer) KeyValsRelease(depth int, s KeyVals) {
 	c.KeyVals[depth] = s[:0]
 }
+
+// KeyValsConstructAcquire / KeyValsConstructRelease hand out the dedicated OBJECT-construction
+// scratch (see KeyValsConstruct). Kept apart from the depth-indexed KeyVals pool so a
+// construct never reuses a reader's source-aliasing residue.
+func (c *ValComparer) KeyValsConstructAcquire() KeyVals  { return c.KeyValsConstruct }
+func (c *ValComparer) KeyValsConstructRelease(s KeyVals) { c.KeyValsConstruct = s[:0] }
 
 // ---------------------------------------------
 

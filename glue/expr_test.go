@@ -2629,3 +2629,59 @@ func TestLikeContainsRewrite(t *testing.T) {
 		}
 	}
 }
+
+// TestObjectComprehensionNoScanAliasCorruption guards a byte-lane value-aliasing
+// bug: OBJECT_PAIRS(r) used to store pooled KeyVal.Val slices that ALIASED the
+// scanned row r's bytes, and a later OBJECT construction reusing the same ValComparer
+// KeyVals pool (CollObjectPut's in-place `append(kvs[n].Val[:0], ...)`) would write
+// THROUGH and corrupt r. So a SECOND object-valued comprehension over the same
+// scanned row read garbage and yielded null. Fixed by copying values in
+// objectPairsInto (base/object.go). Trigger needs: a scanned (not constant) row, a
+// field whose value is itself an object, >1 object-constructing comprehension over
+// that row. Two identical projection columns must be byte-identical and non-null.
+func TestObjectComprehensionNoScanAliasCorruption(t *testing.T) {
+	root := t.TempDir()
+	d := filepath.Join(root, "default", "recs")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A nested-object-valued field ("m") is required to trip the old alias path.
+	for i := 0; i < 2; i++ {
+		doc := `{"m":{"x":1},"n":2}`
+		if err := os.WriteFile(filepath.Join(d, fmt.Sprintf("r%d.json", i)), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	res, err := s.Run(`SELECT (ARRAY {"k":p.name} FOR p IN OBJECT_PAIRS(r) END) AS a,
+	                          (ARRAY {"k":q.name} FOR q IN OBJECT_PAIRS(r) END) AS b
+	                   FROM recs r`)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(res.Rows))
+	}
+	for i, raw := range res.Rows {
+		var row struct {
+			A json.RawMessage `json:"a"`
+			B json.RawMessage `json:"b"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			t.Fatalf("row %d unmarshal: %v", i, err)
+		}
+		// The second comprehension must not be null and must equal the first: the
+		// null-b symptom is exactly the source-corruption regression.
+		if string(row.B) == "null" || len(row.B) == 0 {
+			t.Fatalf("row %d: second object-comprehension is null (source-alias corruption regressed): %s", i, raw)
+		}
+		if !bytes.Equal(row.A, row.B) {
+			t.Errorf("row %d: a != b (both should list the same keys): a=%s b=%s", i, row.A, row.B)
+		}
+	}
+}
