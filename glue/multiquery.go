@@ -648,20 +648,80 @@ func normalizeMultiQueryPred(filter *base.Op, scanLabels base.Labels, alias, ali
 		return []interface{}{"json", "true"}
 	}
 
-	// Native path: lower against the entry's own scan labels (`.["alias"]`, ^id),
-	// then re-root every `.["alias"]` labelPath to the shared "." row.
-	var buf bytes.Buffer
-	if out, ok := ExprTreeOptimize(scanLabels, expr, &buf, false); ok {
-		if rooted, ok := rewriteLabelRoot(out, aliasLabel, ".").([]interface{}); ok {
-			return rooted
+	return predTreeIndexable(scanLabels, expr, alias, aliasLabel)
+}
+
+// predTreeIndexable lowers a fusable entry's WHERE predicate to the tree the shared
+// "."-row engine op evaluates, preferring a shape the Aho-Corasick predicate index can
+// extract a NECESSARY literal from. Three outcomes, best-first:
+//
+//  1. Fully native -> the re-rooted native tree (every conjunct rides the byte lane;
+//     the index extracts a literal if the shape provides one).
+//  2. Partially-native AND -> a MIXED ["and", ...] tree: each top-level conjunct that
+//     lowers natively stays a native subtree (so PrefilterLiteral can walk it and
+//     extract that conjunct's required literal), and each that doesn't becomes a boxed
+//     ["exprTree", <conjunct>] island evaluated per row. In an AND every conjunct is
+//     necessary, so a literal from ANY native conjunct is a sound wake gate -- this is
+//     what lets `WHERE s.type = "assistant" AND UDF(s.x) = "y"` index-prune on
+//     "assistant" instead of always-waking because the UDF conjunct boxes.
+//  3. Otherwise -> the fully-boxed ["exprTree", <pred>] fallback (always-wake).
+//
+// Runtime correctness of the mixed tree is by construction: engine.MakeBiExprFunc
+// builds each ["and"] operand via MakeExprFunc, which dispatches native heads to the
+// byte lane and "exprTree" to the boxed cbq lane, and base.LogicAnd2 combines them
+// under three-valued semantics -- so a native operand beside a boxed one is just a
+// normal AND.
+func predTreeIndexable(labels base.Labels, expr expression.Expression, alias, aliasLabel string) []interface{} {
+	// Native root helper: lower one (sub)expression against the scan labels and
+	// re-root its `.["alias"]` labelPaths to the shared "." row. ok=false => not native.
+	native := func(e expression.Expression) ([]interface{}, bool) {
+		var buf bytes.Buffer
+		if out, ok := ExprTreeOptimize(labels, e, &buf, false); ok {
+			if rooted, ok := rewriteLabelRoot(out, aliasLabel, ".").([]interface{}); ok {
+				return rooted, true
+			}
+		}
+		return nil, false
+	}
+	boxed := func(e expression.Expression) []interface{} {
+		return []interface{}{"exprTree", renameAliasToSelf(e, alias)}
+	}
+
+	if tree, ok := native(expr); ok { // (1) fully native
+		return tree
+	}
+
+	// (2) partially-native AND: keep native conjuncts structured for the index.
+	if and, ok := expr.(*expression.And); ok {
+		conj := and.Operands()
+		parts := make([]interface{}, 0, len(conj))
+		anyNative := false
+		for _, c := range conj {
+			if tree, ok := native(c); ok {
+				parts = append(parts, tree)
+				anyNative = true
+			} else {
+				parts = append(parts, boxed(c))
+			}
+		}
+		if anyNative && len(parts) > 0 {
+			return nestBinaryAnd(parts)
 		}
 	}
 
-	// Boxed fallback: keep the cbq expression, but remap its keyspace identifier to
-	// SELF so it evaluates against the "."-labeled shared row (the alias no longer
-	// exists as a field key there). Still fully evaluated by ExprTree; just not
-	// indexed (no extractable literal), so the predicate index always-wakes it.
-	return []interface{}{"exprTree", renameAliasToSelf(expr, alias)}
+	return boxed(expr) // (3) fully boxed -> always-wake
+}
+
+// nestBinaryAnd right-nests conjunct nodes into binary ["and", p0, ["and", p1, ...pn]]
+// -- the shape engine.ExprAnd (a binary op) consumes. Right-nesting is exact under
+// three-valued AND (base.LogicAnd2 is associative on TRUE/FALSE/UNKNOWN). parts must be
+// non-empty; a single element returns as-is.
+func nestBinaryAnd(parts []interface{}) []interface{} {
+	acc := parts[len(parts)-1].([]interface{})
+	for i := len(parts) - 2; i >= 0; i-- {
+		acc = []interface{}{"and", parts[i], acc}
+	}
+	return acc
 }
 
 // corpusFilterExpr extracts the cbq expression from a filter op's boxed

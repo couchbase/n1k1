@@ -401,6 +401,54 @@ func TestMultiQueryRunReportWoken(t *testing.T) {
 	}
 }
 
+// TestMultiQueryPartialAndPruning guards the partial-AND predicate-pruning optimization
+// (predTreeIndexable / nestBinaryAnd): a fused entry whose WHERE is `native_literal AND
+// boxed_conjunct` still index-prunes on the native conjunct's necessary literal. Before,
+// the boxed conjunct (here a multi-wildcard LIKE, which falls back to cbq) collapsed the
+// WHOLE predicate to one opaque boxed node, so no literal was extractable and the entry
+// always-woke -- evaluating the expensive boxed conjunct on every scanned row. Now the
+// predicate lowers to a MIXED ["and", <native eq>, ["exprTree", <LIKE>]] tree: the index
+// extracts the eq's literal and the boxed conjunct runs ONLY on the rows that wake.
+func TestMultiQueryPartialAndPruning(t *testing.T) {
+	sess := multiQueryTestSession(t) // logs: 4 rows; row b msg "rare_token_xyz", sev "ERROR"
+	stmt := `SELECT l.id FROM logs l WHERE l.msg = "rare_token_xyz" AND l.sev LIKE "%R%R%"`
+
+	// Lint: the LIKE boxes the lane, but the entry is STILL index-pruned on the native
+	// eq's literal -- not always-wake.
+	e, perr := ParseMultiQueryEntry("pa.sql++", "-- label: PA\n"+stmt)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	rep, _, lerr := sess.MultiQueryLint([]MultiQueryEntry{e})
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if len(rep) != 1 || rep[0].Lane != "boxed" || !rep[0].Indexed {
+		t.Fatalf("partial-AND should lint boxed BUT index-pruned; got %+v", rep)
+	}
+	if rep[0].Literal != "rare_token_xyz" {
+		t.Errorf("extracted literal = %q, want %q (from the native conjunct)", rep[0].Literal, "rare_token_xyz")
+	}
+
+	// Run: woken == 1 -- only row b's bytes hold the literal, so the boxed LIKE is
+	// evaluated on that one row, not all 4. Row b's sev "ERROR" matches "%R%R%" (two Rs).
+	cc, err := sess.MultiQueryCompile([]MultiQueryEntry{{Label: "pa", Stmt: stmt}})
+	if err != nil {
+		t.Fatalf("MultiQueryCompile: %v", err)
+	}
+	labelResults, report, err := cc.RunReport()
+	if err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	if report.WokenByEntry["pa"] != 1 {
+		t.Errorf("partial-AND woken = %d, want 1 (the boxed LIKE must run only on the woken row, not all 4)",
+			report.WokenByEntry["pa"])
+	}
+	if len(labelResults) != 1 {
+		t.Errorf("partial-AND labelResults = %d, want 1 (row b: msg matches AND sev ERROR ~ %%R%%R%%)", len(labelResults))
+	}
+}
+
 // TestMultiQueryCompileSingleKeyspace: a pack confined to one keyspace returns the
 // per-keyspace broadcast directly (no union-all wrapper), and an empty / all-
 // unfusable pack yields a nil plan (Run -> no labelResults).

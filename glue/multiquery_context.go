@@ -42,7 +42,6 @@ package glue
 // each entry's own SQL (its standalone window result is the oracle).
 
 import (
-	"bytes"
 	"fmt"
 
 	"github.com/couchbase/query/algebra"
@@ -742,19 +741,14 @@ type identRefFinder struct {
 	expression.MapperBase
 }
 
-// contextPredTree lowers a context entry's match predicate to a native expr-tree
-// rooted at the shared "." row (so the engine op's Aho-Corasick index can extract a
-// necessary literal and prune), falling back to a boxed ["exprTree", ...] (always-wake)
-// when it doesn't lower natively. Mirrors normalizeCorpusPred's native/boxed split.
+// contextPredTree lowers a context entry's match predicate to an expr-tree rooted at
+// the shared "." row (so the engine op's Aho-Corasick index can extract a necessary
+// literal and prune). It shares predTreeIndexable with the main fusion path, so a
+// partially-native AND (`lit = ... AND UDF(...)`) still index-prunes on the native
+// conjunct rather than always-waking. Mirrors normalizeMultiQueryPred's split.
 func contextPredTree(pred expression.Expression, scanLabels base.Labels, alias string) []interface{} {
 	aliasLabel := "." + LabelSuffix(alias)
-	var buf bytes.Buffer
-	if out, ok := ExprTreeOptimize(scanLabels, pred, &buf, false); ok {
-		if rooted, ok := rewriteLabelRoot(out, aliasLabel, ".").([]interface{}); ok {
-			return rooted
-		}
-	}
-	return []interface{}{"exprTree", renameAliasToSelf(pred, alias)}
+	return predTreeIndexable(scanLabels, pred, alias, aliasLabel)
 }
 
 // isDotMetaField reports whether e is exactly `<ident>._meta.<leaf>` (e.g.
