@@ -45,11 +45,21 @@ import (
 	"github.com/couchbase/n1k1/records"
 )
 
+// CursorSchemaVersion is the version stamped into every persisted CursorState (and
+// echoed by show/list) so a reader can tell which sidecar shape it is looking at
+// (ISSUE-15 §3). The sidecar is an IMPLEMENTATION DETAIL -- `.multi cursor show`/`list`
+// are the supported machine-readable surface -- but stamping a version makes the
+// distinction explicit rather than a guess. Bump on an incompatible sidecar change.
+const CursorSchemaVersion = 1
+
 // CursorState is one cursor's durable state -- an opaque, serializable,
 // comparable value (so the same code works when the backend later becomes a
 // served KV). Persisted as <store>/<name>.json.
 type CursorState struct {
 	Name string `json:"name"`
+	// Schema is CursorSchemaVersion at write time (ISSUE-15 §3); 0 on a pre-versioning
+	// sidecar. Stamped by Save.
+	Schema int `json:"schema,omitempty"`
 	// Pack is the comma-joined query-pack dir(s) the cursor is bound to; Bind is
 	// the optional keyspace binding string (as passed to `.multi run --bind`).
 	Pack string `json:"pack"`
@@ -163,6 +173,7 @@ func (s *CursorStore) Save(st *CursorState) error {
 	if err := cursorNameOK(st.Name); err != nil {
 		return err
 	}
+	st.Schema = CursorSchemaVersion // stamp the current sidecar version on every write
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}

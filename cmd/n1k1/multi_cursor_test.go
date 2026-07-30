@@ -409,8 +409,8 @@ func TestMultiCursorPackDrift(t *testing.T) {
 
 	// peek surfaces the drift (pack != queries_current) but does not block.
 	pe := run("peek DR")
-	if pe["queries_current"] == nil || pe["queries_current"] == pe["pack"] {
-		t.Errorf("peek did not surface drift: pack=%v queries_current=%v", pe["pack"], pe["queries_current"])
+	if pe["queries_current"] == nil || pe["queries_current"] == pe["queries"] {
+		t.Errorf("peek did not surface drift: queries=%v queries_current=%v", pe["queries"], pe["queries_current"])
 	}
 
 	// advance refuses with pack-drift.
@@ -486,6 +486,71 @@ func TestMultiCursorExpectCAS(t *testing.T) {
 	e = run("advance CAS --expect " + cid)
 	if e["status"] != "error" || e["error"].(map[string]interface{})["kind"] != "stale" {
 		t.Fatalf("advance --expect <stale>: want error/stale, got %v", e)
+	}
+}
+
+// TestMultiCursorListLongAndVocab guards the ISSUE-15 completion: one machine-readable
+// surface (list --long is the whole status table in one call) with consistent vocabulary
+// (queries=id, queries_path=path — the pack/pack_dir trap gone), spec_hash + schema
+// fields, and peek's to_id.
+func TestMultiCursorListLongAndVocab(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "e.jsonl"), []byte(`{"n":1}`+"\n"+`{"n":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := writeMultiQueryEntries(t, map[string]string{"all": "-- label: all\n-- description: d\nSELECT e.n FROM events e"})
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	obj := func(cmd string) map[string]interface{} {
+		out.Reset()
+		errb.Reset()
+		c.failed = false
+		c.cmdMulti("cursor " + cmd + " --cursor-store " + store)
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+
+	if obj("create V --queries " + pack + " --from start")["ok"] != true {
+		t.Fatalf("create: %s", errb.String())
+	}
+
+	// show: unified vocabulary + spec_hash + schema; no legacy pack/pack_dir keys.
+	sh := obj("show V")
+	if sh["queries"] == nil || sh["queries_path"] == nil || sh["spec_hash"] == nil {
+		t.Errorf("show missing queries/queries_path/spec_hash: %v", sh)
+	}
+	if _, ok := sh["pack"]; ok {
+		t.Errorf("show still emits legacy 'pack' key")
+	}
+	if _, ok := sh["pack_dir"]; ok {
+		t.Errorf("show still emits legacy 'pack_dir' key")
+	}
+	if sh["schema"] == nil {
+		t.Errorf("show missing schema version")
+	}
+
+	// peek: committed_id (from) + to_id (pending).
+	pe := obj("peek V")
+	if pe["committed_id"] == nil || pe["to_id"] == nil {
+		t.Errorf("peek missing committed_id/to_id: %v", pe)
+	}
+
+	// list --long: one call, full field set including queries_path + spec_hash + description.
+	rows := runList(c, &out, &errb, "cursor list --long --cursor-store "+store)
+	if len(rows) != 1 {
+		t.Fatalf("list --long: want 1 row, got %d", len(rows))
+	}
+	for _, k := range []string{"queries", "queries_path", "spec_hash", "committed_id", "description", "mode", "total_advances"} {
+		if _, ok := rows[0][k]; !ok {
+			t.Errorf("list --long missing %q: %v", k, rows[0])
+		}
 	}
 }
 

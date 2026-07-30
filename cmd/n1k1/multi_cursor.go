@@ -64,6 +64,7 @@ type cursorArgs struct {
 	allowDrift    bool     // --allow-drift, advance only (commit even though the query edited since create)
 	expect        string   // --expect <committed_id>, advance only (compare-and-swap: refuse if moved)
 	positions     bool     // --positions, show-only (full position map, not a summary)
+	long          bool     // --long, list-only (every cursor's full field set — one machine-readable table)
 	only          []string // --only <node,...>, compose-only (emit rows for just these)
 	terminal      bool     // --terminal, compose-only (emit rows for leaf nodes only)
 	allowRejected bool     // --allow-rejected, compose-only (don't hard-fail on a rejected node)
@@ -188,6 +189,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.expect = val
 		case "positions":
 			a.positions = !hasEq || val == "true" || val == "1"
+		case "long":
+			a.long = !hasEq || val == "true" || val == "1"
 		case "only":
 			if !hasEq {
 				if err := need(&i, &val, "--only"); err != nil {
@@ -282,11 +285,14 @@ type cursorErr struct {
 }
 
 type cursorEnvelope struct {
-	Cursor       string      `json:"cursor"`
-	Pack         string      `json:"pack,omitempty"`
+	Cursor string `json:"cursor"`
+	// Pack is the cursor's content id; emitted as "queries" (ISSUE-15 §2a: one
+	// vocabulary — `queries` is the id everywhere, `queries_path` the source path).
+	Pack         string      `json:"queries,omitempty"`
 	Status       string      `json:"status"` // pending | advanced | empty | error
 	From         string      `json:"from,omitempty"`
 	To           string      `json:"to,omitempty"`
+	ToID         string      `json:"to_id,omitempty"` // digest of the position this op moves TO (peek: the pending head)
 	Advanced     bool        `json:"advanced"`
 	Count        int         `json:"count"`
 	LabelResults []cursorRow `json:"labelResults,omitempty"`
@@ -762,6 +768,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	if !advance {
 		// peek: never moves; the next peek still returns this (at-least-once).
 		env.To = encodeWater(res.NewWater)
+		env.ToID = positionDigest(env.To) // the id peek would advance TO (committed_id is FROM)
 		env.Advanced = false
 		if len(rows) > 0 {
 			env.Status = "pending"
@@ -864,8 +871,23 @@ func committedID(st *glue.CursorState) string {
 	default:
 		pos = encodeWater(st.Water)
 	}
+	return positionDigest(pos)
+}
+
+// positionDigest is the fixed-width sha of a position token — the shared core of
+// committedID and the peek `to_id` (the id a peek WOULD advance to).
+func positionDigest(pos string) string {
 	h := sha256.Sum256([]byte("cursor-pos\x00" + pos))
 	return hex.EncodeToString(h[:])[:12]
+}
+
+// specHash extracts the content-hash tail of a pack id ("<name>@<sha>" -> "<sha>"),
+// the field n1k1-for-ai's provenance ledger pins (ISSUE-15 ask 5). "" if no @.
+func specHash(packID string) string {
+	if i := strings.LastIndexByte(packID, '@'); i >= 0 {
+		return packID[i+1:]
+	}
+	return ""
 }
 
 // positionToken renders a cursor's committed position as the OPAQUE from/to token
@@ -951,6 +973,7 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 			env.To = from
 			env.Status = "empty"
 		}
+		env.ToID = positionDigest(env.To)
 		env.Advanced = false
 		c.printJSON(env)
 		return
@@ -1037,13 +1060,26 @@ func (c *cli) cursorList(arg string) {
 		c.cursorFail("", "state-read", err)
 		return
 	}
+	// listRow is the compact inventory; --long (ISSUE-15 §2b) adds every field a status
+	// table needs, so it is one call over all cursors instead of N+1 sidecar reads.
 	type listRow struct {
 		Cursor      string      `json:"cursor"`
 		Pack        string      `json:"queries"`
+		SpecHash    string      `json:"spec_hash,omitempty"`
 		Mode        string      `json:"mode"`
 		Committed   interface{} `json:"committed"`
 		CommittedID string      `json:"committed_id"`
 		Advances    int         `json:"total_advances"`
+
+		// --long only:
+		QueriesPath string `json:"queries_path,omitempty"`
+		Bind        string `json:"bind,omitempty"`
+		IdField     string `json:"id_field,omitempty"`
+		Schema      int    `json:"schema,omitempty"`
+		Description string `json:"description,omitempty"`
+		Created     string `json:"created,omitempty"`
+		Updated     string `json:"updated,omitempty"`
+		LastCount   int    `json:"last_count,omitempty"`
 	}
 	out := make([]listRow, 0, len(names))
 	for _, n := range names {
@@ -1051,9 +1087,15 @@ func (c *cli) cursorList(arg string) {
 		if lerr != nil {
 			continue
 		}
-		out = append(out, listRow{Cursor: n, Pack: st.PackID, Mode: st.Mode,
+		row := listRow{Cursor: n, Pack: st.PackID, SpecHash: specHash(st.PackID), Mode: st.Mode,
 			Committed: committedField(st, a.positions), CommittedID: committedID(st),
-			Advances: st.TotalAdvances})
+			Advances: st.TotalAdvances}
+		if a.long {
+			row.QueriesPath, row.Bind, row.IdField = st.Pack, st.Bind, st.IdField
+			row.Schema, row.Description = glue.CursorSchemaVersion, st.Description
+			row.Created, row.Updated, row.LastCount = st.Created, st.Updated, st.LastCount
+		}
+		out = append(out, row)
 	}
 	c.printJSON(out)
 }
@@ -1140,8 +1182,9 @@ func (c *cli) cursorShow(arg string) {
 	}
 	c.printJSON(struct {
 		Cursor        string      `json:"cursor"`
-		Pack          string      `json:"pack,omitempty"`
-		PackDir       string      `json:"pack_dir,omitempty"`
+		Pack          string      `json:"queries"`                // the content id (ISSUE-15 §2a: one vocabulary)
+		QueriesPath   string      `json:"queries_path,omitempty"` // the source dir/file
+		SpecHash      string      `json:"spec_hash,omitempty"`    // the @sha tail of the id (ISSUE-15 ask 5)
 		Keyspace      string      `json:"keyspace,omitempty"`     // census mode
 		CensusCells   int         `json:"census_cells,omitempty"` // census mode
 		CensusRecords int64       `json:"census_records,omitempty"`
@@ -1150,17 +1193,18 @@ func (c *cli) cursorShow(arg string) {
 		IdField       string      `json:"id_field,omitempty"`
 		Committed     interface{} `json:"committed"`
 		CommittedID   string      `json:"committed_id"`
+		Schema        int         `json:"schema"` // sidecar/output schema version (ISSUE-15 §3)
 		Description   string      `json:"description,omitempty"`
 		Created       string      `json:"created,omitempty"`
 		Updated       string      `json:"updated,omitempty"`
 		LastCount     int         `json:"last_count"`
 		TotalAdvances int         `json:"total_advances"`
 	}{
-		Cursor: st.Name, Pack: st.PackID, PackDir: st.Pack,
+		Cursor: st.Name, Pack: st.PackID, QueriesPath: st.Pack, SpecHash: specHash(st.PackID),
 		Keyspace: st.Keyspace, CensusCells: len(st.Census), CensusRecords: st.CensusRecords,
 		Bind: st.Bind,
 		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions),
-		CommittedID: committedID(st), Description: st.Description,
+		CommittedID: committedID(st), Schema: glue.CursorSchemaVersion, Description: st.Description,
 		Created: st.Created, Updated: st.Updated,
 		LastCount: st.LastCount, TotalAdvances: st.TotalAdvances,
 	})
@@ -1271,7 +1315,11 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        committed position still matches (peek reports committed_id);
                        refuses (error kind "stale") if another run moved it. Safe for
                        concurrent runners / stale retries.
-  list                 the cursors in the store.
+  list [--long]        the cursors in the store (one JSON array). --long adds every
+                       field a status table needs (queries_path, spec_hash, bind,
+                       description, created/updated, ...) so it is ONE call, not an
+                       N+1 sweep of the private sidecar files. Vocabulary: "queries" is
+                       the content id everywhere, "queries_path" the source dir/file.
   show   NAME [--positions]
                        one cursor's committed position + metadata (description);
                        committed is summarized for many-container append cursors unless
