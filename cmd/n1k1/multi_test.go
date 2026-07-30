@@ -253,9 +253,10 @@ func TestMultiRunHitStats(t *testing.T) {
 func TestMultiFixSnippets(t *testing.T) {
 	root := newLogsBundle(t)
 	entries := writeMultiQueryEntries(t, map[string]string{
-		"boxed":  `SELECT * FROM logs l WHERE l.msg LIKE "%a%b%"`, // boxed (interior wildcards) + always-wake
-		"wake":   `SELECT * FROM logs l WHERE l.ts > 5`,           // fused, always-wake (no literal)
-		"broken": `SELECT * FROM logs l WHERE`,                    // rejected
+		"boxed":   `SELECT * FROM logs l WHERE l.msg LIKE "%a%b%"`,                    // boxed PREDICATE (interior wildcards) + always-wake: genuinely unprunable
+		"boxproj": `SELECT l.msg LIKE "%a%b%" AS x FROM logs l WHERE l.sev = "ERROR"`, // boxed PROJECTION over a native literal predicate: still fused + index-pruned
+		"wake":    `SELECT * FROM logs l WHERE l.ts > 5`,                              // fused, always-wake (no literal)
+		"broken":  `SELECT * FROM logs l WHERE`,                                       // rejected
 	})
 
 	// lint: the advice column carries the boxed, always-wake, and rejected snippets.
@@ -264,10 +265,15 @@ func TestMultiFixSnippets(t *testing.T) {
 	c.cmdMulti("lint --queries " + entries)
 	lintOut := lout.String()
 	for _, want := range []string{
-		"predicate boxes (falls back to cbq)", // boxed advice
-		"no discriminating literal",           // always-wake advice
-		"not a runnable query",                // rejected advice
-		"msg LIKE '%a%b%'", "regexp_contains", // the boxed native-form example
+		"a boxed expression falls back to cbq", // boxed-predicate advice (unprunable)
+		"can't be index-pruned",                // ...and explains the pruning loss (boxed WHERE)
+		"no discriminating literal",            // always-wake advice
+		"not a runnable query",                 // rejected advice
+		"msg LIKE '%a%b%'", "regexp_contains",  // the boxed native-form example
+		// Regression guard (ISSUE-06 dogfooding): a boxed PROJECTION over a native
+		// literal predicate must NOT be told it lost index pruning -- the scan still
+		// fuses and prunes; boxing is only a per-row projection cost.
+		"per-row projection cost on woken rows, not a scan cost",
 	} {
 		if !strings.Contains(lintOut, want) {
 			t.Errorf("lint advice missing fix snippet %q; stdout:\n%s", want, lintOut)
