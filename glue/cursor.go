@@ -50,7 +50,33 @@ import (
 // (ISSUE-15 §3). The sidecar is an IMPLEMENTATION DETAIL -- `.multi cursor show`/`list`
 // are the supported machine-readable surface -- but stamping a version makes the
 // distinction explicit rather than a guess. Bump on an incompatible sidecar change.
-const CursorSchemaVersion = 1
+//
+// v2: the sidecar keys `pack`/`pack_id` were renamed to `queries_path`/`queries` to
+// match the show/list vocabulary (ISSUE-15 §2a). UnmarshalJSON still reads the v1 keys,
+// so a v1 sidecar loads unchanged and is rewritten as v2 on its next Save.
+const CursorSchemaVersion = 2
+
+// UnmarshalJSON loads a CursorState, accepting the pre-v2 sidecar keys `pack` (source
+// path) and `pack_id` (content id) as fallbacks for `queries_path` / `queries`. This
+// lets a v1 sidecar keep loading after the rename; Save rewrites it with the v2 keys.
+func (st *CursorState) UnmarshalJSON(b []byte) error {
+	type alias CursorState // avoid recursing into this method
+	aux := struct {
+		*alias
+		OldPack   *string `json:"pack"`
+		OldPackID *string `json:"pack_id"`
+	}{alias: (*alias)(st)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	if st.QueriesPath == "" && aux.OldPack != nil {
+		st.QueriesPath = *aux.OldPack
+	}
+	if st.Queries == "" && aux.OldPackID != nil {
+		st.Queries = *aux.OldPackID
+	}
+	return nil
+}
 
 // CursorState is one cursor's durable state -- an opaque, serializable,
 // comparable value (so the same code works when the backend later becomes a
@@ -60,12 +86,14 @@ type CursorState struct {
 	// Schema is CursorSchemaVersion at write time (ISSUE-15 §3); 0 on a pre-versioning
 	// sidecar. Stamped by Save.
 	Schema int `json:"schema,omitempty"`
-	// Pack is the comma-joined query-pack dir(s) the cursor is bound to; Bind is
+	// QueriesPath is the comma-joined query source dir(s)/file the cursor is bound to
+	// (the sidecar key was `pack` before the ISSUE-15 vocabulary unification); Bind is
 	// the optional keyspace binding string (as passed to `.multi run --bind`).
-	Pack string `json:"pack"`
-	Bind string `json:"bind,omitempty"`
-	// PackID is "<name>@<sha>" captured at create time (a drift check on peek).
-	PackID string `json:"pack_id,omitempty"`
+	QueriesPath string `json:"queries_path"`
+	Bind        string `json:"bind,omitempty"`
+	// Queries is "<name>@<sha>", the content id captured at create (the drift baseline
+	// checked on peek). The sidecar key was `pack_id` before the unification.
+	Queries string `json:"queries,omitempty"`
 	// Mode is the delta strategy: "append" (offset high-water, Phase 1), "diff"
 	// (snapshot-keyed-by-id, Phase 2 — mutable / current-state sources), or "census"
 	// (incremental schema census, Phase 3 — a keyspace, not a pack).

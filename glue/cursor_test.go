@@ -31,7 +31,7 @@ func TestCursorStoreRoundTrip(t *testing.T) {
 		t.Fatalf("Load(missing): got %v, want ErrCursorNotExist", err)
 	}
 
-	cs := &CursorState{Name: "errs", Pack: "pack", Mode: "append",
+	cs := &CursorState{Name: "errs", QueriesPath: "pack", Mode: "append",
 		Water: map[string]int64{"default/events/events.jsonl": 4096}}
 	if err := st.Save(cs); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -370,5 +370,28 @@ func TestFixturePrettyEquivalence(t *testing.T) {
 	}
 	if string(p[0].Result) != string(c[0].Result) || p[0].Label != c[0].Label {
 		t.Fatalf("pretty vs compact differ:\n pretty : %s %s\n compact: %s %s", p[0].Label, p[0].Result, c[0].Label, c[0].Result)
+	}
+}
+
+// TestCursorStateSchemaV1BackCompat pins the ISSUE-15 sidecar rename: a pre-v2 sidecar
+// (keys `pack` / `pack_id`) still loads into the renamed fields, so upgrading n1k1 does
+// not orphan existing cursor state — it is rewritten with the v2 keys on next Save.
+func TestCursorStateSchemaV1BackCompat(t *testing.T) {
+	var v1 CursorState
+	if err := json.Unmarshal([]byte(
+		`{"name":"c","pack":"./queries","pack_id":"c@abcd1234","mode":"append"}`), &v1); err != nil {
+		t.Fatal(err)
+	}
+	if v1.QueriesPath != "./queries" || v1.Queries != "c@abcd1234" {
+		t.Errorf("v1 keys not read: QueriesPath=%q Queries=%q", v1.QueriesPath, v1.Queries)
+	}
+	// v2 keys win when both are present (they never are in practice).
+	var v2 CursorState
+	if err := json.Unmarshal([]byte(
+		`{"name":"c","queries_path":"./q","queries":"c@ef567890","mode":"append"}`), &v2); err != nil {
+		t.Fatal(err)
+	}
+	if v2.QueriesPath != "./q" || v2.Queries != "c@ef567890" {
+		t.Errorf("v2 keys not read: QueriesPath=%q Queries=%q", v2.QueriesPath, v2.Queries)
 	}
 }

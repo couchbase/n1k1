@@ -584,9 +584,9 @@ func (c *cli) cursorCreate(arg string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	st := &glue.CursorState{
 		Name:        a.name,
-		Pack:        strings.Join(a.pack, ","),
+		QueriesPath: strings.Join(a.pack, ","),
 		Bind:        a.bind,
-		PackID:      glue.PackID(a.name, dets),
+		Queries:     glue.PackID(a.name, dets),
 		Mode:        mode,
 		Description: effDesc,
 		Created:     now,
@@ -651,7 +651,7 @@ func (c *cli) cursorCreate(arg string) {
 		Created:  a.name,
 		OK:       true,
 		Ignored:  ignored,
-		Pack:     st.PackID,
+		Pack:     st.Queries,
 		Compiles: "ok",
 		Mode:     mode,
 		From:     fromTok,
@@ -693,7 +693,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
-	dets, err := loadPackPaths(strings.Split(st.Pack, ","))
+	dets, err := loadPackPaths(strings.Split(st.QueriesPath, ","))
 	if err != nil {
 		c.cursorFail(a.name, "pack-load", err)
 		return
@@ -705,7 +705,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	}
 	if gap := c.reportBindingCoverage(sess, binding); gap {
 		from := c.positionToken(st)
-		env := cursorEnvelope{Cursor: a.name, Pack: st.PackID, Status: "error",
+		env := cursorEnvelope{Cursor: a.name, Pack: st.Queries, Status: "error",
 			From: from, To: from,
 			Error: &cursorErr{Kind: "source-unbound",
 				Message: "one or more logical keyspaces resolved to nothing (fail-loud; see stderr)"}}
@@ -721,9 +721,9 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	// committed position becomes meaningless under a different query) unless
 	// --allow-drift. `plan` used to be the drift check and was removed in the rename.
 	currentID := glue.PackID(st.Name, dets)
-	drifted := currentID != st.PackID
+	drifted := currentID != st.Queries
 	if advance && drifted && !a.allowDrift {
-		c.cursorDriftRefuse(a.name, st.PackID, currentID)
+		c.cursorDriftRefuse(a.name, st.Queries, currentID)
 		return
 	}
 
@@ -746,7 +746,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	committed := st.Water
 	res, err := sess.RunCursorPack(dets, committed)
 	if err != nil {
-		env := cursorEnvelope{Cursor: a.name, Pack: st.PackID, Status: "error",
+		env := cursorEnvelope{Cursor: a.name, Pack: st.Queries, Status: "error",
 			From: encodeWater(committed), To: encodeWater(committed),
 			Error: &cursorErr{Kind: "run", Message: err.Error()}}
 		c.printJSON(env)
@@ -756,7 +756,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 
 	rows := toRows(res.LabelResults)
 	env := cursorEnvelope{
-		Cursor: a.name, Pack: st.PackID,
+		Cursor: a.name, Pack: st.Queries,
 		From:        encodeWater(committed),
 		Count:       len(rows),
 		CommittedID: committedID(st), // the CURRENTLY-committed position (peek: unchanged)
@@ -812,7 +812,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		if len(dropped)+len(rewound)+len(unknown) > 0 {
 			if !a.force {
 				env := cursorEnvelope{
-					Cursor: a.name, Pack: st.PackID, Status: "error",
+					Cursor: a.name, Pack: st.Queries, Status: "error",
 					From: encodeWater(committed), To: encodeWater(committed),
 					Dropped: dropped, Rewound: rewound, Unknown: unknown,
 					Error: &cursorErr{Kind: "unsafe-position", Message: fmt.Sprintf(
@@ -831,7 +831,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	moved := !waterEqual(committed, newWater)
 
 	st.Water = newWater
-	st.PackID = currentID // ISSUE-17: adopt the current query as the baseline (no-op if unchanged; re-baselines an --allow-drift advance so it isn't permanently "drifted")
+	st.Queries = currentID // ISSUE-17: adopt the current query as the baseline (no-op if unchanged; re-baselines an --allow-drift advance so it isn't permanently "drifted")
 	st.Updated = time.Now().UTC().Format(time.RFC3339)
 	st.LastCount = len(rows)
 	if moved {
@@ -948,7 +948,7 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 	}
 	lrs, err := sess.RunPackFull(dets)
 	if err != nil {
-		c.printJSON(cursorEnvelope{Cursor: st.Name, Pack: st.PackID, Status: "error",
+		c.printJSON(cursorEnvelope{Cursor: st.Name, Pack: st.Queries, Status: "error",
 			From: from, To: from, Error: &cursorErr{Kind: "run", Message: err.Error()}})
 		c.failed = true
 		return
@@ -958,7 +958,7 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 	rows := diffRows(events)
 	changed := len(events) > 0
 
-	env := cursorEnvelope{Cursor: st.Name, Pack: st.PackID, From: from, Count: len(rows), CommittedID: committedID(st)}
+	env := cursorEnvelope{Cursor: st.Name, Pack: st.Queries, From: from, Count: len(rows), CommittedID: committedID(st)}
 	if drifted {
 		env.QueriesCurrent = currentID
 	}
@@ -989,7 +989,7 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 		return
 	}
 	st.SnapVersion = newVer
-	st.PackID = currentID // ISSUE-17: adopt the current query as the baseline (see append path)
+	st.Queries = currentID // ISSUE-17: adopt the current query as the baseline (see append path)
 	st.Updated = time.Now().UTC().Format(time.RFC3339)
 	st.LastCount = len(rows)
 	if changed {
@@ -1087,11 +1087,11 @@ func (c *cli) cursorList(arg string) {
 		if lerr != nil {
 			continue
 		}
-		row := listRow{Cursor: n, Pack: st.PackID, SpecHash: specHash(st.PackID), Mode: st.Mode,
+		row := listRow{Cursor: n, Pack: st.Queries, SpecHash: specHash(st.Queries), Mode: st.Mode,
 			Committed: committedField(st, a.positions), CommittedID: committedID(st),
 			Advances: st.TotalAdvances}
 		if a.long {
-			row.QueriesPath, row.Bind, row.IdField = st.Pack, st.Bind, st.IdField
+			row.QueriesPath, row.Bind, row.IdField = st.QueriesPath, st.Bind, st.IdField
 			row.Schema, row.Description = glue.CursorSchemaVersion, st.Description
 			row.Created, row.Updated, row.LastCount = st.Created, st.Updated, st.LastCount
 		}
@@ -1135,9 +1135,9 @@ func (c *cli) cursorCheck(arg string) {
 		if lerr != nil {
 			continue
 		}
-		row := checkRow{Cursor: n, Baseline: st.PackID, Current: st.PackID}
-		if st.Mode != "census" && st.Pack != "" { // pack-backed cursor: re-hash its query
-			dets, derr := loadPackPaths(strings.Split(st.Pack, ","))
+		row := checkRow{Cursor: n, Baseline: st.Queries, Current: st.Queries}
+		if st.Mode != "census" && st.QueriesPath != "" { // pack-backed cursor: re-hash its query
+			dets, derr := loadPackPaths(strings.Split(st.QueriesPath, ","))
 			if derr != nil {
 				row.Current, row.Error, row.Drifted = "", derr.Error(), true
 			} else {
@@ -1200,7 +1200,7 @@ func (c *cli) cursorShow(arg string) {
 		LastCount     int         `json:"last_count"`
 		TotalAdvances int         `json:"total_advances"`
 	}{
-		Cursor: st.Name, Pack: st.PackID, QueriesPath: st.Pack, SpecHash: specHash(st.PackID),
+		Cursor: st.Name, Pack: st.Queries, QueriesPath: st.QueriesPath, SpecHash: specHash(st.Queries),
 		Keyspace: st.Keyspace, CensusCells: len(st.Census), CensusRecords: st.CensusRecords,
 		Bind: st.Bind,
 		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions),
