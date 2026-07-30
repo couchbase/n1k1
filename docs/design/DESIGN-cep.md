@@ -1,5 +1,12 @@
 # Design: n1k1 CEP — named cursors, standing queries, and monitors
 
+> **⚠ Naming updated (2026-07 overhaul; this doc predates it).** Command examples below use
+> pre-rename names — the current CLI is: `--pack` → **`--queries`**; a compose node reads an upstream
+> node with **`FROM node('<name>')`** (not `FROM pack_<name>`; `pack_` is now an internal
+> keyspace name); and the GitOps reconcile **`.multi cursor plan`/`apply` was removed** (returns with
+> a `serve`/monitor runtime). Cursor verbs are `create`/`peek`/`advance`/`list`/`show`/`rm`. See
+> `tmp/naming.md` for the full spec.
+
 > **Spec + build plan.** Turn n1k1's MQO / `.multi` substrate (see
 > [DESIGN-prepare.md](DESIGN-prepare.md), "PREPARE++") into a **poll-first, cursor-based
 > standing-query engine** for AI agents and humans: *"what changed since I last looked?"* answered

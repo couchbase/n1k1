@@ -18,9 +18,9 @@ package main
 // paths it references (planner-sourced) against a census of the keyspace it scans, and
 // report:
 //
-//   - references_absent : an entry reads a top-level field the corpus doesn't have
+//   - references_absent : an entry reads a top-level field the data doesn't have
 //     -> a birth-in-error / typo / renamed-or-retired field. Hard-fails (CI signal).
-//   - unreferenced      : corpus fields no entry reads -> unexplored surface, a
+//   - unreferenced      : data fields no query reads -> unexplored surface, a
 //     query-generation queue (informational).
 //
 // The referenced set is planner-sourced (glue.EntryReferencedFields via ExprFieldPath),
@@ -97,7 +97,7 @@ func (c *cli) lintCensus(dets []glue.MultiQueryEntry, sess *glue.Session) {
 		checks = append(checks, check{Query: d.Label, Keyspace: ks, Absent: absent})
 	}
 
-	// Unexplored surface: corpus top-level fields no query references, per keyspace.
+	// Unexplored surface: data top-level fields no query references, per keyspace.
 	unreferenced := map[string][]string{}
 	for ks, present := range censusTop {
 		var un []string
@@ -120,7 +120,7 @@ func (c *cli) lintCensus(dets []glue.MultiQueryEntry, sess *glue.Session) {
 	}{Checks: checks, Unreferenced: unreferenced, Skipped: skipped, OK: !anyAbsent})
 
 	if anyAbsent {
-		fmt.Fprintf(c.stderr, "%s: .multi lint --census: a query references a field absent from the corpus "+
+		fmt.Fprintf(c.stderr, "%s: .multi lint --census: a query references a field absent from the data "+
 			"(a birth-in-error / rename) -- see references_absent above\n", c.prog)
 		c.failed = true
 	}

@@ -14,7 +14,7 @@
 package main
 
 // Census-mode cursor (DESIGN-census.md Phase 3): an incremental schema census. A
-// `.multi cursor create NAME --mode census --keyspace <ks>` seeds an accumulated
+// `.multi cursor create NAME --queries "builtin:census?keyspace=<ks>"` seeds an accumulated
 // census; `peek`/`advance` census ONLY the records appended since the watermark, fold
 // them into the accumulated census (the monoid), and emit the schema DRIFT
 // (field_added / type_changed) — the drift alarm for free. The accumulated census and

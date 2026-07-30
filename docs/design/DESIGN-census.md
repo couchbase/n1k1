@@ -1,5 +1,12 @@
 # Design: n1k1 census & doctor — keeping standing questions connected to reality
 
+> **⚠ Naming updated (2026-07 overhaul; this doc predates it).** Census is no longer its own verb
+> or cursor mode — it's a **built-in queries source**: run it with **`.multi run --queries
+> "builtin:census?keyspace=<ks>[&type-field=&time-field=&depth=&exclude=]"`**, and an ongoing census
+> is a cursor over it (**`.multi cursor create NAME --queries "builtin:census?keyspace=<ks>"`**), not
+> `--mode census`. And **`doctor` → `.multi lint --census`** (the data-aware tier of lint). See
+> `tmp/naming.md` for the full spec.
+
 > **Spec + build plan.** A time-aware key-space **census** over schemaless append-only data, and a
 > **doctor** that joins it against a committed `.multi` query pack — so n1k1 can answer the one
 > question a corpus of standing questions most needs: *are my questions still connected to reality?*

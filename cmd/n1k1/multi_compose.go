@@ -13,12 +13,12 @@
 
 package main
 
-// `.multi compose <dir>` — run a DAG of packs (DESIGN-cep.md Phase 4). Each
-// *.sql++ file in <dir> is one node (name = file stem); a node declares upstream
-// deps via `-- needs: a, b` front-matter and reads them as `FROM pack_a`. Nodes
-// run in topological order; each node's labelResults are materialized as a
-// `pack_<name>` temp keyspace the downstream nodes FROM. Output is one JSON
-// envelope: the topo order + every node's labelResults.
+// `.multi compose --queries <dir>` — run a DAG of queries (DESIGN-cep.md Phase 4).
+// Each *.sql++ file in <dir> is one node (name = file stem); a node declares upstream
+// deps via `-- needs: a, b` front-matter and reads them as `FROM node('a')`. Nodes
+// run in topological order; each node's labelResults are materialized so a downstream
+// node reads them via `FROM node('<name>')`. Output is one JSON envelope: the topo
+// order + every node's labelResults.
 
 import (
 	"encoding/json"
@@ -68,7 +68,7 @@ func buildComposeNodes(dir string) ([]glue.ComposeNode, error) {
 	return nodes, nil
 }
 
-// cmdMultiCompose implements `.multi compose <dir> [--bind <manifest>]`.
+// cmdMultiCompose implements `.multi compose --queries <dir> [--bind <manifest>]`.
 func (c *cli) cmdMultiCompose(arg string) {
 	a, err := parseCursorArgs(arg)
 	if err != nil {
@@ -97,7 +97,7 @@ func (c *cli) cmdMultiCompose(arg string) {
 	}
 	// Which nodes emit their labelResults: --only <list>, else --terminal (leaf
 	// nodes = no downstream dependents), else all. Non-selected nodes report a count
-	// only, so an upstream 75k-row detector isn't a firehose in a rollup pipeline.
+	// only, so an upstream 75k-row query isn't a firehose in a rollup pipeline.
 	emit := selectComposeNodes(nodes, a.only, a.terminal)
 	sess, binding, err := c.multiSession(a.bind)
 	if err != nil {

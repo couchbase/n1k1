@@ -251,7 +251,7 @@ func (c *cli) cmdMultiCursor(arg string) {
 type cursorRow struct {
 	Op          string          `json:"op"`               // append: "insert"; diff: insert|update|delete
 	Id          string          `json:"id,omitempty"`     // diff: the doc identity
-	Label       string          `json:"label"`            // which detector fired
+	Label       string          `json:"label"`            // which query fired
 	Fingerprint string          `json:"fingerprint"`      // dedup_key for agent-side dedup
 	Result      json.RawMessage `json:"result,omitempty"` // append: the labelResult value
 	Before      json.RawMessage `json:"before,omitempty"` // diff: prior doc (update/delete)
@@ -947,6 +947,9 @@ func (c *cli) cursorHelp() {
 }
 
 const cursorHelpText = `.multi cursor <verb> — CEP named cursors (a durable "what's new since I last looked")
+
+Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursors exist
+(occasional) = create/list/show/rm.
 
   create NAME --queries <dir> [--bind <m>] [--from now|start] [--mode append|diff]
               [--id-field <name>] [--desc <t>]
