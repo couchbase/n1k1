@@ -178,7 +178,7 @@ SQL++ ─▶│ parser ─▶ planner ─▶ plan tree ┼───▶│ conv.g
   FROM [{"id":1,"tags":["red","blue"]}] AS o
   UNNEST o.tags AS t
   <span class="c">-- {"id":1,"tag":"red"}</span>
-  <span class="c">-- {"id":1,"tag":"blue"}</span>    
+  <span class="c">-- {"id":1,"tag":"blue"}</span>
 </code></pre>
     <ul>
       <li><code>UNNEST</code>/<code>NEST</code> explode and re-nest arrays;</li>
@@ -441,33 +441,33 @@ buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</sp
     </div>
     <ul>
       <li>Identical queries and files, and cbq's own
-          parser+planner used by both — the variable: an executor that uses
-          (<code>value.AnnotatedValue</code> vs an executor that uses <code>[]byte</code>);
-          the n1k1 ideal: n1k1's EXPLAIN PLAN shows zero boxed markers.</li>
-      <li>Example: UNNEST 20K-element arrays + GROUP BY:
-          <span class="num">59 ms / 17.8 MB</span> vs
-          <span class="num">531 ms / 469 MB</span>.</li>
+          parser+planner used by both —<br>the variable: an executor that uses the boxed
+          (<code>value.AnnotatedValue</code> vs an executor that uses <code>[]byte</code>);<br>
+          the n1k1 ideal: n1k1's EXPLAIN PLAN should report zero boxed ops.</li>
+      <li>Example: UNNEST 20K-element arrays + GROUP BY:<br>
+          - boxed: <span class="num">531 ms / 469 MB</span><br>
+          - []byte: <span class="num">59 ms / 17.8 MB</span></li>
     </ul>
   </div>
 
   <div id="engine-col" class="step leaf" data-rel-to="hub-engine"
        data-rel-x="0" data-rel-y="1650" data-rel-z="300" data-scale="0.4">
     <p class="kicker">engine · fine print</p>
-    <h2>hybrid: columnar lane is the same lane</h2>
+    <h2>hybrid: row &amp; columnar - they're the same lane</h2>
 <pre class="diagram"><code>row batch:  Vals = [ "alice", 42, {"x":1} ]            <span class="c">← one row, 3 cols</span>
 col batch:  Vals = [ ["alice","bob"], [42,43], […] ]   <span class="c">← many rows</span></code></pre>
     <ul>
       <li><code>Val = []byte</code> is axis-agnostic: transpose the axis and
           the container, push plumbing, and recycling all still apply.
-          Fixed-width columnar vs row-JSON:
+          <br>Fixed-width columnar vs row-JSON:
           <span class="num">40–730×</span> on arm64, <em>no SIMD</em> —
-          the win is not-parsing + touching one stripe.</li>
-      <li>An Arrow buffer <em>is</em> a borrowed <code>Val</code>
-          (zero-copy on the []byte); the selection vector is layout-compatible with
-          Arrow's validity bitmap, so predicate ∧ validity is a byte-wise
+          <br>the win is not-parsing + touching one stripe.</li>
+      <li>An Arrow buffer is a borrowed <code>Val</code>
+          (zero-copy on the []byte);<br>the selection vector is layout-compatible with
+          Arrow's validity bitmap,<br>so predicate ∧ validity is a byte-wise
           AND and one masked reducer serves both.</li>
       <li>Vectorization is a post-plan rewrite by n1k1 of the <code>group</code> op
-          — EXPLAIN runs the same pass, so the displayed plan never lies.</li>
+          —<br>EXPLAIN runs the same pass, so the displayed plan never lies.</li>
     </ul>
   </div>
 
@@ -482,7 +482,7 @@ col batch:  Vals = [ ["alice","bob"], [42,43], […] ]   <span class="c">← man
        data-x="-9300" data-y="4800" data-z="0" data-scale="5">
     <div class="bignum">5</div>
     <p class="kicker">5 · the compiler</p>
-    <h1>n1k1 is an interpreter that is also a compiler</h1>
+    <h1>n1k1 is a SQL++ <i>interpreter</i><br>and also a SQL++ <i>compiler</i></h1>
     <p class="dim">one codebase, two execution modes</p>
   </div>
 
@@ -494,22 +494,22 @@ col batch:  Vals = [ ["alice","bob"], [42,43], […] ]   <span class="c">← man
 n := len(fields)                 <span class="c">// early-bound: known at plan time</span></code></pre>
     <ul>
       <li><code>engine/*.go</code> is a plan-tree interpreter written in a
-          disciplined subset of Go: a naming convention (<code>lz</code>)
-          plus comment directives mark which lines are late-bound.</li>
+          disciplined subset of Go:<br>a naming convention (<code>lz</code>)
+          plus comment directives mark which code is late-bound.</li>
       <li><code>intermed_build</code> is a <strong>line-oriented
-          translator</strong>: each lazy line of code becomes a
-          printf of itself; early-bound lines execute at codegen time.</li>
+          translator</strong>:<br>each lazy line of code becomes a
+          printf of itself;<br>early-bound lines execute at codegen time.</li>
     </ul>
 <pre class="diagram"><code>           engine/*.go            <span class="c">-- ONE source</span>
             │        │
      go build        intermed_build  <span class="c">("lz" lines → printf's)</span>
             ▼        ▼
- mode 1: ExecOp     intermed/ ─▶ mode 2: emit the fused Go
- interprets any                  for one specific plan
+ mode 1: ExecOp      intermed/ ─▶ mode 2: emit the fused Go for one specific plan
+ interprets any
  plan, immediately</code></pre>
     <ul>
-      <li>Lineage: Futamura projections / LMS (Rompf &amp; Odersky),
-          LegoBase (Klonatos &amp; Koch, VLDB'14) — with operator fusion and
+      <li>Lineage: Futamura projections / LMS (Rompf &amp; Odersky),<br>
+          LegoBase (Klonatos &amp; Koch, VLDB'14) —<br>with operator fusion and
           variable lifting for buffer reuse.</li>
     </ul>
   </div>
@@ -520,22 +520,22 @@ n := len(fields)                 <span class="c">// early-bound: known at plan t
     <h2>What gets emitted</h2>
     <ul>
       <li><code>.prepare &lt;SQL++ query&gt;</code> emits the fused Go for the
-          plan — readable, importing only <code>engine/</code> +
-          <code>base/</code>: <strong>the whole query minus its data-access</strong>, cbq-free and cgo-free.</li>
-      <li>Go has no <code>eval</code> or dynamic loading, so a freshly compiled query is
-          a separate binary — and n1k1's push model maps
-          onto this split; the same bytes are emitted for emit-only,
+          plan —<br>readable, importing only n1k1's <code>engine/</code> +
+          <code>base/</code>:<br><strong>the whole query minus its data-access</strong>, cbq-free and cgo-free.</li>
+      <li>Go has no <code>eval</code> or dynamic loading,<br>so a freshly compiled query is
+          a separate binary —<br>and n1k1's push model maps
+          onto this split;<br>the same bytes are emitted for emit-only,
           thin-child, fat-child, and wasm linkages:</li>
     </ul>
-<pre class="diagram"><code>child  = the compiled query.go binary ── drives the whole plan
-   ▲ ▼  DatastorePipe: Scan / Fetch / IndexScan / Meta
-parent = has cbq + the data ──────────── serves the leaves</code></pre>
+<pre class="diagram"><code>child  = the compiled query.go binary ── drives the whole plan;
+ ▲ ▼     the DatastorePipe provides: Scan / Fetch / IndexScan / Meta;
+parent = has cbq + the data, and serves the leaves of the plan via DatastorePipes</code></pre>
   </div>
 
   <div id="comp-honest" class="step" data-rel-to="hub-compiler"
        data-rel-x="1400" data-rel-y="350" data-rel-z="150">
     <p class="kicker">compiler</p>
-    <h2>BUT, is it worth it?</h2>
+    <h2>BUT, is codegen / compliation worth it?</h2>
     <div class="stats">
       <div class="stat"><span class="v">1.07–1.22×</span>
         <span class="l">codegen speedup per row (~10 ns)</span></div>
@@ -545,12 +545,12 @@ parent = has cbq + the data ──────────── serves the leav
         <span class="l">one-shot break-even if there's no reuse</span></div>
     </div>
     <ul>
-      <li>Why so low? Because the interpreter's already good with
+      <li>Why is the speedup so low?<br>Because the interpreter's already 'not too shabby'<br>with
           n1k1's native []byte lane processing.</li>
       <li>PREPARE-once / EXECUTE-many amortizes to
-          <span class="num">~10K rows</span> at K=1000 executions — which
+          <span class="num">~10K rows</span> at K=1000 executions —<br>which
           points at where compilation actually pays…</li>
-      <li>…the <strong>huge-K regime</strong>: the next section.</li>
+      <li>…the <strong>huge-K regime</strong>: the next section...</li>
     </ul>
   </div>
 
@@ -565,33 +565,33 @@ parent = has cbq + the data ──────────── serves the leav
        data-x="-3100" data-y="4800" data-z="0" data-scale="5">
     <div class="bignum">6</div>
     <p class="kicker">6 · many queries, one scan</p>
-    <h1>MQO (multi-query optimization), temporal joins &amp; CEP (complex event processing)</h1>
-    <p class="dim">driven by a git repo of SQL++ queries as the workload</p>
+    <h1>MQO (multi-query optimization), temporal joins &amp;<br>CEP (complex event processing)</h1>
+    <p class="dim">driven by a git repo of SQL++ queries as a 'git-ops' driven workload</p>
   </div>
 
   <div id="multi-fusion" class="step" data-rel-to="hub-multi"
        data-rel-x="-1400" data-rel-y="350" data-rel-z="150">
     <p class="kicker">multi-query</p>
-    <h2>Corpus fusion (PREPARE++)</h2>
-<pre class="diagram"><code>*.sql++ ×1000 ─▶ CorpusCompile ─▶ union-all( fused detectors… )
-   <span class="c">(in git)</span>                            ▲ <span class="c">each woken only on its literal hits</span>
-                                 broadcast-indexed( scan )
-                                       ▲ <span class="c">Aho–Corasick over each row</span>
-                                 one shared pass of the bundle</code></pre>
+    <h2>Multi-Query fusion</h2>
+<pre class="diagram"><code>*.sql++ ×1000 ─▶ QueriesCompile ─▶ union-all( fused SQL++ detectors… )
+   <span class="c">(in git)</span>                         ▲ <span class="c">each woken only on its literal hits</span>
+                                   broadcast-indexed( scan )
+                                    ▲ <span class="c">Aho–Corasick over each row</span>
+                                   one shared pass of the bundle</code></pre>
     <ul>
-      <li><strong>Broadcast</strong> — one scan feeds all consumers:
-          up to <span class="num">~6.3×</span> fewer allocs at K=256;
+      <li><strong>Broadcast</strong> —<br>one shared scan feeds all consumers:<br>
+          up to <span class="num">~6.3×</span> fewer allocs at K=256;<br>
           <strong>CSE</strong> (common subexpression elimination) across SQL++ queries —
           <span class="num">~2.5×</span> at K=32 sharing one regexp.</li>
-      <li><strong>Aho–Corasick predicate index</strong> — turns
-          O(K×rows) into ~O(hits×rows), flat in K:
+      <li><strong>Aho–Corasick predicates</strong> —<br>turns
+          O(K×rows) into ~O(hits×rows), flat in K:<br>
           <span class="num">~60×</span> at K=1000. Invariant: <em>the
-          literal must be necessary (absent ⇒ predicate false), so
+          literal must be necessary (absent ⇒ predicate false),<br>so
           over-wake is safe and under-wake never happens</em> — guarded by
           byte-identical differential testing.</li>
       <li><strong>Late binding to files</strong> — fusion keys on
-          <em>logical</em> keyspace identity: compile the corpus once,
-          rebind per bundle; the binding is data, not code.</li>
+          <em>logical</em> keyspace identity:<br>preprocess the SQL++ queries once,
+          change logical-to-physical bindings as needed.</li>
     </ul>
   </div>
 
@@ -604,20 +604,17 @@ parent = has cbq + the data ──────────── serves the leav
              ORDER BY r.ts DESC LIMIT 1) <span class="c">-- …argmax idiom</span>
   FROM events e</code></pre>
     <ul>
-      <li>A post-plan rewrite recognizes the stock correlated-argmax idiom
-          and lowers it to a streaming K-way merge-join:
-          <span class="num">O(N+M)</span> replacing O(N×M),
-          <span class="num">~19×</span> lower RSS. False negative costs
-          speed; the rewrite is semantics-preserving by construction.</li>
+      <li>A post-plan rewrite recognizes the stock correlated-argmax idiom<br>
+          and lowers it to a streaming K-way merge-join:<br>
+          <span class="num">O(N+M)</span> replaces O(N×M),
+          <span class="num">~19×</span> lower RSS memory.<br>
+          The rewrite is semantics-preserving.</li>
       <li>Flink's watermark model, applied offline: per-file sortedness
           metadata (<code>strict|near|none</code> + a
-          <code>disorder_bound</code>) picks concatenate / min-heap /
-          watermarked merge — and output monotonicity is checked at one
-          int64 compare per row, because <em>a wrong bound silently
-          corrupts a merge</em>.</li>
-      <li>grep&nbsp;-C decomposes into sparse match (Aho–Corasick) +
-          bounded ring-buffer expansion — beats general WINDOW machinery
-          for the idiom.</li>
+          <code>disorder_bound</code>)<br>picks concatenate / min-heap /
+          watermarked merge —<br>and output monotonicity is checked at one
+          int64 compare per row.</li>
+      <li>Use case: 'grep&nbsp;-C'-style scans decompose into sparse match (Aho–Corasick).</li>
     </ul>
   </div>
 
@@ -634,15 +631,11 @@ parent = has cbq + the data ──────────── serves the leav
           give at-least-once + idempotent consumer = exactly-once
           <em>effect</em>.</li>
       <li><code>diff</code> mode keeps a snapshot keyed by doc id and emits
-          Debezium-style envelopes: 
+          Debezium-style envelopes:
           <code>{op, id, before, after}</code> — like a
           <em>terraform-plan for arbitrary keyspaces</em>.</li>
-      <li>GitOps for standing monitors: a directory or pack of *.sql++ reconciles via
-          <code>plan</code>/<code>apply&nbsp;[--prune]</code>; the identity
-          hash deliberately excludes metadata, so a reworded description
-          doesn't reset a cursor.</li>
-      <li>DAG composition: each pack node's results materialize as a temp
-          keyspace the next node FROMs — the replay journal <em>is</em> the
+      <li>DAG composition: each pack of queries's results materialize as a temp
+          keyspace for the next node's FROM — providing
           inter-pack dataflow.</li>
     </ul>
   </div>
@@ -650,15 +643,15 @@ parent = has cbq + the data ──────────── serves the leav
   <div id="multi-lint" class="step leaf" data-rel-to="hub-multi"
        data-rel-x="0" data-rel-y="1450" data-rel-z="300" data-scale="0.4">
     <p class="kicker">multi-query · fine print</p>
-    <h2>Observability for a corpus</h2>
+    <h2>Observability for CEP</h2>
     <ul>
-      <li><code>.multi lint</code> is a report card per detector — fused vs
-          standalone, native vs boxed, index-pruned vs always-wake — the
-          signals to help developers succeed.</li>
+      <li><code>.multi lint</code> is a report card for shared-scan queries —<br>fused vs
+          standalone, native vs boxed, index-pruned vs always-wake —<br>these
+          signals help developers write better fused queries.</li>
       <li><code>gate:</code> — a cheap precondition probed as
           <code>SELECT 1 … LIMIT 1</code> before an expensive window/join
-          query is run; skips are reported, never silent.</li>
-      <li><code>.multi explain</code> prints the fused MQO
+          query is run.</li>
+      <li><code>.multi explain</code> prints the fused, shared-scan
           <code>union-all(broadcast-indexed(scan))</code> plan plus the
           fusion map.</li>
     </ul>
@@ -675,8 +668,7 @@ parent = has cbq + the data ──────────── serves the leav
        data-x="3100" data-y="4800" data-z="0" data-scale="5">
     <div class="bignum">7</div>
     <p class="kicker">7 · programmability</p>
-    <h1>Three extension layers</h1>
-    <p class="dim">values · files · syntax — kept religiously distinct</p>
+    <h1>Multiple extension layers</h1>
   </div>
 
   <div id="ext-udf" class="step" data-rel-to="hub-extend"
@@ -684,17 +676,16 @@ parent = has cbq + the data ──────────── serves the leav
     <p class="kicker">extensibility · values</p>
     <h2>JS UDFs: functions &amp; aggregates</h2>
     <ul>
-      <li>A JS extension author provides *.js files
-          to specify either JS UDF's or aggregate JS handlers, to follow git-ops practices.</li>
-      <li>goja (pure-Go JS) runtimes are scoped per query, per actor —
-          concurrent UNION ALL branches each get their own:
-          <strong>no pool, no lock</strong>; JS async/Promises are rejected
-          rather than hanging.</li>
-      <li>Boundary hopping cost ≈ <span class="num">1 µs/row</span> — dominated by
+      <li>A JS extension are *.js files for
+          JS UDF's;<br>or aggregate JS handlers, following git-ops practices.</li>
+      <li>goja (pure-Go JS) runtime is scoped per query, per actor —<br>
+          concurrent UNION ALL branches each get their own:<br>
+          <strong>no pool, no lock</strong>; JS async/Promises are disallowed.</li>
+      <li>Boundary hopping cost ≈ <span class="num">1 µs/row</span> —<br>dominated by
           JS related boxing.</li>
       <li><code>CGO_ENABLED=0</code> rules out <code>.so</code> plugins
-          entirely; the end-state ladder is goja → wazero (bounded linear
-          memory = isolation goja can't give).</li>
+          entirely;<br>the end-state roadmap: goja → WASM / wazero (bounded linear
+          memory).</li>
     </ul>
   </div>
 
@@ -704,18 +695,18 @@ parent = has cbq + the data ──────────── serves the leav
     <h2>Extract recipes: JS for custom data formats</h2>
     <ul>
       <li>JS <code>describe(file)</code> callback —
-          returns a <em>declarative</em> spec (framing/fields/time/order),
-          memoized in the <code>.n1k1</code> sidecar by file fingerprint;
-          then the spec executes <strong>natively</strong> per record.
+          returns a <em>declarative</em> spec (framing/fields/time/order),<br>
+          memoized in the <code>.n1k1/</code> sidecar directory by file fingerprint;<br>
+          then the spec executes <strong>natively</strong> per record.<br>
           One JS call per file, zero per record.</li>
-      <li>Imperative escape hatches when declarative spec's can't frame the data:
+      <li>Imperative escape hatches when declarative spec's can't frame the data:<br>
           <code>extract(file, emit)</code> (buffered) and
-          <code>extractStream</code> — JS on its own goroutine, each
-          <code>emit</code> handed over an unbuffered channel, so a 400 MB
-          log streams with bounded memory usage with backpressure.</li>
+          <code>extractStream</code> — JS on its own goroutine,<br>each
+          <code>emit</code> handed over an unbuffered channel,<br>so a 400 MB
+          log will stream with bounded memory usage &amp; backpressure.</li>
       <li><code>describe</code> can also specify time/order metadata:
-          e.g., near-sorted-source for ASOF k-way merging — and, each JS plugin
-          ships a golden fixture (a wrong bound is a silent merge risk).</li>
+          e.g., near-sorted-source for ASOF k-way merging —<br>and, each JS extension can
+          ship a golden test fixture for self-documentation and testing.</li>
     </ul>
   </div>
 
@@ -723,21 +714,23 @@ parent = has cbq + the data ──────────── serves the leav
        data-rel-x="-800" data-rel-y="900" data-rel-z="150">
     <p class="kicker">extensibility · syntax</p>
     <h2>JS Macros, because UDFs can't make SQL++ syntax</h2>
-<pre><code>SELECT * FROM @grep_context(logs, when =&gt; sev = "ERROR",
-                            before =&gt; 2, after =&gt; 2)</code></pre>
+<pre><code>SELECT * FROM @grep_context(logs,
+                            when =&gt; sev = "ERROR",
+                            before =&gt; 2,
+                            after =&gt; 2)</code></pre>
     <ul>
       <li>A motivating example: `grep&nbsp;-C` needs a
-          <code>WINDOW</code> subquery which few can one-shot write — and
-          <strong><code>WINDOW</code> is syntax; a scalar UDF returns
-          values</strong>.</li>
+          <code>WINDOW</code> subquery which few can one-shot write —<br>and
+          <code>WINDOW</code> is syntax; and, a UDF instead can only return
+          values.</li>
       <li>Optional <code>*.macro.js</code> expands <code>@name(…)</code> at the top
-          of <code>ParseStatement</code> — text→text, arguments arrive as
-          raw SQL++ substrings, gensym enables hygiene, innermost-first with a
-          depth cap. <em>Invisible to downstream steps</em>: planner, CSE, MQO, and
+          of n1k1's <code>ParseStatement</code> —<br>text→text, arguments arrive as
+          raw SQL++ substrings,<br>gensym enables hygiene, innermost-first with a
+          depth cap.<br><em>Invisible to downstream steps</em>: planner, CSE, MQO, and
           codegen all see SQL++.</li>
-      <li>Shipped starters: <code>grep_context</code>,
+      <li>Shipped *.macro.js examples: <code>grep_context</code>,
           <code>sessionize</code>, <code>top_per_group</code>,
-          <code>transitions</code>; <code>.macro expand</code> shows the
+          <code>transitions</code>;<br><code>.macro expand</code> shows the
           expansions to help developers.</li>
     </ul>
   </div>
@@ -754,16 +747,16 @@ parent = has cbq + the data ──────────── serves the leav
           <td><strong>~0.4–0.5 s</strong> <span class="dim">(15–29×)</span></td></tr>
     </table>
     <ul>
-      <li>It's counterintuitive, although unboxing greatly cut allocs
-          <span class="num">100M → 2M</span>, it only provides 1.6× wall speedup — the
-          reason: <em>JSON number parsing</em> (~38M ParseFloat calls).
-          Instead, n1k1's hybrid columnar lane is the actual win, as the math itself is 60 ms.</li>
-      <li>Embeddings via <code>VECTORIZE_BATCH</code>; batching is expressed
-          in SQL (GROUP BY pages), sugared by a @macro; unit tested via a deterministic fake
-          embedding model (for CI testability).
+      <li>Although unboxing to []byte lane greatly cut allocs
+          <span class="num">100M → 2M</span>, it only provides 1.6× wall speedup —<br>the
+          reason: <em>JSON number parsing</em> (~38M ParseFloat calls).<br>
+          Instead, n1k1's hybrid columnar lane is the actual win,<br>as the math itself is 60 ms.</li>
+      <li>Embeddings via <code>VECTORIZE_BATCH</code>;<br>batching is expressed
+          in SQL (GROUP BY pages), sugared by a @macro;<br>unit tested via a deterministic fake
+          embedding model (for CI testability).<br>
           n1k1's limited <code>INSERT INTO</code>'s operates in create-exclusive mode
           as a 'free' embedding cache check.</li>
-      <li>Exact brute force to ~1M rows is cgo-free; ANN is future (no FAISS since CGO_ENABLED=0).</li>
+      <li>Exact brute force to ~1M rows is cgo-free; ANN is possible roadmap (no FAISS since CGO_ENABLED=0).</li>
     </ul>
   </div>
 
@@ -779,7 +772,6 @@ parent = has cbq + the data ──────────── serves the leav
     <div class="bignum">8</div>
     <p class="kicker">8 · engineering rigor</p>
     <h1>cbq's reference implementation<br>is a SQL++ test oracle</h1>
-    <p class="dim">and other ways to avoid fooling yourself</p>
   </div>
 
   <div id="rigor-oracle" class="step" data-rel-to="hub-rigor"
