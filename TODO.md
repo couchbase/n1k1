@@ -67,6 +67,12 @@ _Last reviewed: 2026-07-23._
       glue/subquery.go); this is only worth it when the RHS set is large (cbq's threshold is 16 elems).
       cbq's machinery is ready (expression/coll_in.go, gated on `!IsCorrelated()`); the real work is the
       opt-in hook, since n1k1 runs its own engine, not cbq's Filter/Join operators.
+      - Fully-native variant (bigger; skips cbq boxing entirely): today `x IN (SELECT ...)` boxes because
+        the native optimizer can't lower a Subquery operand, so engine.ExprIn never fires (it fires only
+        for a literal/native-array RHS). Teach the optimizer to lower an UNCORRELATED subquery RHS to
+        `["in", <native x>, <array Val>]` so ExprIn + base.ValIn run in the byte lane. The result isn't
+        known at plan/optimize time (needs the datastore; const-fold has a nil ctx), so it needs a
+        run-once-then-cache seam feeding a native array node -- reuse the subquery result memo.
 
 ## Conformance (SQL++ suite corpus)
 - [ ] Raise the TestSuiteCases pass rate.
