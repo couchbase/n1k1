@@ -19,9 +19,12 @@ Open `index.html` in a browser — no server or network needed
 - clicking a slide jumps to it — handy from the map steps
 - the zoomed-out **map** appears right after the title and again at the
   end (`#map` / `#overview`)
-- bottom-left **⌂ home** — jump to the whole-poster view at any time
-- bottom-left **jump-to-slide picker** — the full outline, indented by
-  depth; it also tracks where you are as you present
+- bottom-left row, in order — **⌂ home** (the whole-poster view),
+  the **jump-to-slide picker** (full outline, indented by depth, and it
+  tracks where you are), then **◀ prev / next ▶** for stepping without
+  the keyboard. The row is styled to stay out of the slide's way while
+  still signalling, to someone landing on the published page, that this
+  is a deck to walk through.
 - `H` — impress.js help popup
 
 The fallback for browsers without CSS 3D support is a plain vertical
@@ -50,9 +53,32 @@ The deck is one big top-down **poster**, not a linear stack:
   `#overview` show the whole poster; the `#up-<section>` waypoints pull
   the camera back over a section's panel after its last slide, so
   moving to the next section reads as "up the hierarchy, then over".
-- `data-max-scale="1"` on `#impress` keeps slides at 1:1 on large
-  screens, which is what leaves a margin of parent-panel context
-  visible around the active card.
+
+### Camera framing &amp; the Z lift (readability vs grounding)
+
+These two knobs trade off against each other, and both are tuned for a
+back row reading projected text:
+
+- **`data-width` / `data-height` on `#impress` is the camera framing**,
+  not a pixel size — impress.js scales the world by
+  `min(winW/width, winH/height)`. At the current `1450x816` an active
+  card fills ~76% of screen width with ~24px body text on a 1080p
+  projector (and ~32px on a 2560px display). Raise the numbers to pull
+  the camera back, lower them to move in. Note impress.js's own default
+  is `1920x1080`, which renders the deck at 1:1 — 18px body text, too
+  small for a room.
+- **`data-rel-z` lifts child slides toward the viewer** (1200; leaves
+  2800) and is what makes that close framing affordable. Z does *not*
+  change the active card's size — impress.js brings whatever step is
+  active to the same plane — but it pushes the parent panel one
+  perspective step further away, so the panel is drawn smaller and
+  still frames the card instead of ballooning off-screen. Measured on
+  a 1080p screen: without the lift ~15% of the panel's watermark
+  numeral stays in frame; with it, ~80%, plus the panel's own heading
+  sits above the card like a banner.
+- **Leaves need a bigger lift** because `data-scale="0.4"` magnifies the
+  whole world 2.5x when a leaf is active, which magnifies the parent
+  too; 2800 compensates.
 
 To **add a slide**: copy a sibling `<div class="step" ...>`, keep its
 `data-rel-to` pointing at the panel, and nudge `data-rel-x`/`data-rel-y`
@@ -68,20 +94,34 @@ Each panel picks its tint hue inline via `style="--hue:<deg>"`.
 
 ### The bottom-left controls
 
-Both are wired up by the small script at the end of `index.html`; the
-styling is section 7 of `deck.css`.
+All four are wired up by the small script at the end of `index.html`;
+the styling is section 7 of `deck.css`. They are meant to recede, but
+their appearance is **constant** — no fade-in on hover. What keeps them
+quiet is the palette, not opacity: nothing in the row uses the accent
+color or pure white, and the brightest it ever gets is `--ink-dim`.
 
 - The **picker is built from the steps themselves** at load time, so a
   slide you add shows up automatically — there is no list to maintain.
-  Its label comes from the slide's `h2`/`h1` (a section panel gets its
-  watermark numeral prefixed); set `data-nav-label="…"` on a step to
-  override. Indent depth is derived: section panel = 0, a slide with
-  `data-rel-to` = 1, a `.leaf` = 2. `.camera` steps are left out.
+  Its label comes from the slide's `h2`/`h1` — read from a clone with
+  `<br>` swapped for a space, so a two-line title doesn't run together —
+  set `data-nav-label="…"` on a step to override. `.camera` steps are
+  left out. Its width is **fixed**, not shrink-to-fit: an auto-sized
+  picker would shift `prev`/`next` sideways on every step.
+- **Outline numbers** are derived, not written down: a panel's number is
+  its watermark numeral (`4`), and its slides continue it in document
+  order (`4.1`, `4.2`, …). The counter keys off each slide's
+  `data-rel-to`, not "the last panel seen", so moving a slide in the
+  markup renumbers it correctly rather than silently misfiling it. The
+  numbers carry the hierarchy on their own, so options are **not**
+  indented — a closed `<select>` shows only the selected row, and leading
+  spaces would show up in it as stray whitespace.
 - **⌂ home** targets `#map` rather than the identical `#overview`,
   because `#map` sits early in the step order — so pressing `→` after
   going home resumes at section 1 instead of wrapping to the title.
   Change the `HOME` constant to retarget it.
-- Both controls blur themselves after use, so the arrow keys keep
+- **◀ prev / next ▶** call `impress().prev()` / `.next()`, which wrap at
+  both ends, so neither ever dead-ends.
+- All four controls blur themselves after use, so the arrow keys keep
   driving the deck. Their own key events are stopped from reaching
   `document`, since impress.js binds arrows/space/tab and `H` there
   without checking whether a form control has focus. (One consequence

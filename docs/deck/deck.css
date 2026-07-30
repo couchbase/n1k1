@@ -330,21 +330,34 @@ th          { color: var(--ink-dim); font-weight: 600; font-size: 15px;
 }
 .impress-enabled .deck-nav { display: flex; }
 
+/* Quiet, but constant — no fade-in: the row always looks the way it used to
+   look only while hovered. What keeps it recessive is the palette, not
+   opacity: no accent color and no pure white anywhere here, the brightest
+   these ever get is --ink-dim. */
+
 .deck-nav button,
 .deck-nav select {
   padding: 6px 10px;
-  border: 1px solid var(--panel-edge);
+  border: 1px solid #232a34;
   border-radius: 8px;
-  background: rgba(11, 14, 19, 0.9);
+  background: rgba(11, 14, 19, 0.7);
   font-family: inherit;
   font-size: inherit;
-  color: var(--ink);
+  color: var(--ink-dim);
   cursor: pointer;
 }
 .deck-nav button:hover,
 .deck-nav select:hover {
-  border-color: var(--accent);
-  color: #fff;
+  border-color: #3d4757;      /* a shade lighter — no accent, no glow */
+  color: #c3ccd8;             /* still short of --ink, never #fff */
+}
+
+/* Hairline between the go-somewhere-specific controls and the step pair. */
+.deck-nav-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 2px;
+  background: #232a34;
 }
 
 /* The native dropdown caret varies by platform; draw our own so the
@@ -354,17 +367,22 @@ th          { color: var(--ink-dim); font-weight: 600; font-size: 15px;
   appearance: none;
   -webkit-appearance: none;
   padding-right: 26px;
-  max-width: 360px;
+  /* FIXED, not max-width: the label changes on every step, and an
+     auto-sized select would shift prev/next sideways as you navigate.
+     Long labels clip here; the open list still shows them in full. */
+  width: 250px;
 }
 .deck-select::after {
   content: "▾";
   position: absolute;
   right: 9px; top: 50%;
   transform: translateY(-50%);
-  color: var(--ink-dim);
+  color: #6b7686;
   pointer-events: none;
 }
 
-/* The opened list is drawn by the OS — set what browsers actually honor. */
+/* The opened list is drawn by the OS — set what browsers actually honor.
+   (Inside the popup, contrast is welcome; it's the resting page that must
+   stay quiet, and the list only exists while it's open.) */
 .deck-nav option           { background: #11161d; color: var(--ink); }
 .deck-nav option.nav-depth0 { font-weight: 700; }
