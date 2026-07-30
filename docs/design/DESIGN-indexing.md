@@ -197,6 +197,43 @@ self-describing per-instance `meta.json`, **never written back into `catalog.jso
 index that rewrote it would break the property). With encryption-at-rest (`DESIGN-data §6`),
 artifact payloads are encrypted with the dataset DEK; `meta.json` records the wrapping key id.
 
+## Sidecar location: `--index-store` (read-only datastores)
+
+The sidecar (`catalog.json` + built indexes + freshness state) defaults to `<dataRoot>/<sidecar>`,
+but **`--index-store <dir>`** (`glue.SetIndexStore` → `sidecarRootFor`) relocates the whole sidecar
+to a writable directory — so a **read-only** datastore (a mounted snapshot, an archived bundle, live
+state owned by another process) can still be indexed. Only the sidecar moves; source records are
+always read from the data root. Same rule as the cursor store: *n1k1 never writes inside a bundle it
+doesn't own*. Default (empty) keeps the sidecar under the data root, backward-compatible with
+existing in-bundle catalogs. Guard: `TestIndexStoreRelocatesSidecar`. (ISSUE-12 §3.)
+
+## Freshness & incremental maintenance (future)
+
+Today freshness is a coarse **`(file-count, newest-mtime)` signature** (`sourceSignature`) and any
+staleness triggers `buildIndex`'s **full rebuild** ("v1 rebuilds the whole index in one
+transaction"). On an **append-only** corpus (e.g. `~/.claude/**/*.jsonl`, appended by every live
+session) this makes an index a net loss — a single appended line re-indexes everything, measured
+~19× slower than the plain scan, and the bbolt file grows because freed pages aren't reclaimed
+(ISSUE-12 §1).
+
+The differentiator (n1k1 is **stateful across runs**): maintain indexes **incrementally from per-file
+byte watermarks**, the same machinery the census/cursors already use (`records` position
+`path#line@offset`). Append-only is the easy case — existing entries never change, so it's
+**insert-only**: store per-file offsets in the index's own bolt db instead of the mtime sig; on an
+append, scan only the tail past each watermark, evaluate the key exprs on the new records, insert,
+advance. Design notes:
+
+- **Truncation/rewrite guard** (required): if a file shrinks or its prefix changes, watermarks are
+  invalid → full-rebuild just that file (the same check a cursor needs).
+- **Cover FTS too** — `idx_fts.go` has the identical coarse-freshness rebuild.
+- **`-index stale-ok`** interim mode: serve the existing index and report how far behind it is
+  (`indexed as of Ns ago`). Makes indexes usable on a live corpus before the incremental path lands.
+- **Cursor-store unification** (follow-on): an index as a cursor consumer, sharing one watermark
+  implementation + atomic-commit story with the census. Start with the index owning its own
+  watermarks; unify only if it proves cheaper.
+
+Tracked in TODO.md.
+
 ## COUNT(*) / count-scan pushdown
 
 - **Whole-keyspace `COUNT(*)` done** — `VisitCountScan` de-optimizes to a records scan (like a

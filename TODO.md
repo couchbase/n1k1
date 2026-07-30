@@ -58,6 +58,20 @@ _Last reviewed: 2026-07-23._
       `filepath.Join`-built and mixed-separator cases in `TestGlobMatchAndFiles`, and the
       Windows CI leg is blocking again.
 - [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs.
+- [ ] Incremental index maintenance from per-file watermarks (ISSUE-12; the stateful-across-runs
+      differentiator). Today an SI/FTS index's freshness is a coarse `(file-count, newest-mtime)`
+      signature (glue/idx_si.go) and any append triggers `buildIndex`'s full rebuild ("v1 rebuilds
+      the whole index in one transaction") -- on an append-only corpus that makes an index SLOWER
+      than no index (measured ~19x penalty; also grows the bbolt file since pages aren't reclaimed).
+      Fix: store per-file byte OFFSETS in the index's own bolt db instead of the mtime sig; on an
+      append, scan only the tail past each watermark and INSERT (append-only = insert-only, no
+      deletes/compaction), then advance -- reusing the same `records` position machinery
+      (path#line@offset) the census/cursors already use. Needs: (1) a truncation/rewrite guard (if a
+      file shrinks or its prefix changes, full-rebuild just that file); (2) design to cover FTS too;
+      (3) a `-index stale-ok` interim mode (serve the current index + report lag) that makes indexes
+      usable on a live corpus before the incremental path lands. Cursor-store unification (an index
+      as a cursor consumer) is a follow-on -- start with the index owning its own watermarks. See
+      docs/design/DESIGN-indexing.md.
 - [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL).
 - [ ] GROUP BY ROLLUP / CUBE / GROUPING SETS (cbq-fork grammar does not support).
 - [ ] Large IN-list hash membership (perf; LARGE RHS only): implement cbq's `expression.InlistContext`
