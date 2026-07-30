@@ -63,7 +63,8 @@ type queriesRef struct {
 // detect + refuse/rebase a stale artifact, and (b) documents each version's schema.
 // See tmp/naming.md; recorded as a TODO in TODO.md.
 var builtinVersions = map[string][]string{
-	"census": {"1"},
+	"census":       {"1"}, // native Go implementation (the oracle)
+	"census.sql++": {"1"}, // the same census expressed as pure SQL++ (forkable; oracle-checked)
 }
 
 // parseQueriesRef classifies one `--queries` token. See the file header for the rules.
@@ -151,6 +152,8 @@ func (c *cli) runBuiltinQueries(args multiArgs) bool {
 	switch r.name {
 	case "census":
 		c.runBuiltinCensus(args, r)
+	case "census.sql++":
+		c.runBuiltinCensusSQL(args, r)
 	default:
 		fmt.Fprintf(c.stderr, "%s: .multi run: builtin %q is not runnable\n", c.prog, r.name)
 		c.failed = true
