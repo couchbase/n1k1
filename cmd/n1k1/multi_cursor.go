@@ -357,7 +357,7 @@ func loadPackPaths(paths []string) ([]glue.MultiQueryEntry, error) {
 		all = append(all, es...)
 	}
 	if len(all) == 0 {
-		return nil, fmt.Errorf("empty pack")
+		return nil, fmt.Errorf("no queries in the source")
 	}
 	return all, nil
 }
@@ -513,7 +513,7 @@ func (c *cli) cursorCreate(arg string) {
 
 	dets, err := loadPackPaths(a.pack)
 	if err != nil {
-		c.cursorFail(a.name, "pack-load", err)
+		c.cursorFail(a.name, "queries-load", err)
 		return
 	}
 	sess, binding, err := c.multiSession(a.bind)
@@ -695,7 +695,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 
 	dets, err := loadPackPaths(strings.Split(st.QueriesPath, ","))
 	if err != nil {
-		c.cursorFail(a.name, "pack-load", err)
+		c.cursorFail(a.name, "queries-load", err)
 		return
 	}
 	sess, binding, err := c.multiSession(st.Bind)
@@ -1268,7 +1268,7 @@ func (c *cli) cursorExpectRefuse(name, got, expected string) {
 func (c *cli) cursorDriftRefuse(name, baseline, current string) {
 	c.printJSON(cursorEnvelope{
 		Cursor: name, Pack: baseline, QueriesCurrent: current, Status: "error",
-		Error: &cursorErr{Kind: "pack-drift", Message: fmt.Sprintf(
+		Error: &cursorErr{Kind: "query-drift", Message: fmt.Sprintf(
 			"the query changed since create (baseline %s, current %s); advancing would commit a "+
 				"position taken under the old query. Re-create the cursor, or pass --allow-drift.",
 			baseline, current)},
@@ -1309,7 +1309,7 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        datastore lacks) is refused (error kind "unsafe-position", the
                        containers disclosed) — pass --force to commit it anyway.
                        If the query was EDITED since create, peek surfaces
-                       "queries_current" and advance refuses (error kind "pack-drift")
+                       "queries_current" and advance refuses (error kind "query-drift")
                        unless --allow-drift (which adopts the new query as the baseline).
                        --expect <committed_id> is a compare-and-swap: advance only if the
                        committed position still matches (peek reports committed_id);

@@ -415,8 +415,8 @@ func TestMultiCursorPackDrift(t *testing.T) {
 
 	// advance refuses with pack-drift.
 	ae := run("advance DR")
-	if ae["status"] != "error" || ae["error"].(map[string]interface{})["kind"] != "pack-drift" {
-		t.Fatalf("advance on drift: want error/pack-drift, got %v", ae)
+	if ae["status"] != "error" || ae["error"].(map[string]interface{})["kind"] != "query-drift" {
+		t.Fatalf("advance on drift: want error/query-drift, got %v", ae)
 	}
 
 	// check reports the drift and sets a nonzero exit (c.failed).

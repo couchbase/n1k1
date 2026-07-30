@@ -80,6 +80,8 @@ func (c *cli) cmdMulti(arg string) {
 		c.cmdMultiCursor(rest)
 	case "compose":
 		c.cmdMultiCompose(rest)
+	case "show":
+		c.cmdMultiShow(rest)
 	case "census":
 		fmt.Fprintf(c.stderr, "%s: .multi census was removed -- census is a queries source now: "+
 			"`.multi run --queries \"builtin:census?keyspace=<ks>\"` (or a cursor over it)\n", c.prog)
@@ -367,6 +369,73 @@ func (c *cli) cmdMultiList(arg string) {
 	c.renderRows(rows, "", false)
 	fmt.Fprintf(c.stderr, "%s%d query/queries in %s -- %d with a fixture, %d with a golden (run .multi lint for a health report)\n",
 		c.icon("📋 "), len(entries), strings.Join(args.queries, ", "), fixtures, goldens)
+}
+
+// cmdMultiShow prints the SOURCE of a queries entity WITHOUT running it: each *.sql++
+// file's label + tags + SQL++ (a viewer, and — since it parses every file — an
+// existence/validity check for a dir of ordinary queries), or, for a builtin like
+// builtin:census.sql++, the SQL++ that builtin generates. The native builtin:census
+// (Go) has no SQL++ source. Emits one JSON array; --queries-tags filters as elsewhere.
+func (c *cli) cmdMultiShow(arg string) {
+	args, err := parseMultiArgs(arg)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi show: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	type showRow struct {
+		Label       string   `json:"label,omitempty"`
+		Queries     string   `json:"queries,omitempty"`
+		QueriesPath string   `json:"queries_path,omitempty"`
+		Tags        []string `json:"tags,omitempty"`
+		Note        string   `json:"note,omitempty"`
+		SQL         string   `json:"sql,omitempty"`
+	}
+
+	// A single builtin ref: show the SQL++ it generates (or a note for a native builtin).
+	if len(args.queries) == 1 {
+		if r, perr := parseQueriesRef(args.queries[0]); perr == nil && r.kind == refBuiltin {
+			switch r.name {
+			case "census.sql++":
+				ks, tf, tif, depth, excl := censusParamsFromRef(r)
+				if ks == "" {
+					ks = "<keyspace>" // show the template even without a bound keyspace
+				}
+				id := "builtin:census.sql++@" + r.version
+				c.printJSON([]showRow{
+					{Queries: id, Note: "the mergeable census core (per type/path/val_type)", SQL: censusSQL(ks, tf, tif, depth, excl)},
+					{Queries: id, Note: "the per-type totals (coverage denominator)", SQL: censusTotalsSQL(ks, tf)},
+				})
+			case "census":
+				c.printJSON([]showRow{{Queries: "builtin:census@" + r.version,
+					Note: "native Go builtin — no SQL++ source; use builtin:census.sql++ to see/fork the SQL++ form"}})
+			default:
+				fmt.Fprintf(c.stderr, "%s: .multi show: builtin %q has no source to show\n", c.prog, r.name)
+				c.failed = true
+			}
+			return
+		}
+	}
+
+	// Otherwise: load the *.sql++ files. LoadMultiQueryEntries parses each one, so a
+	// parse error here IS the existence/validity check firing.
+	entries, err := loadMultiQueryEntries(args.queries)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi show: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	entries, ok := c.selectByTags(entries, args.queriesTags, args.queriesNotTags)
+	if !ok {
+		c.failed = true
+		return
+	}
+	out := make([]showRow, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, showRow{Label: e.Label, QueriesPath: e.Path, Tags: e.Tags, SQL: e.Stmt})
+	}
+	c.printJSON(out)
+	fmt.Fprintf(c.stderr, "%s%d query/queries shown from %s\n", c.icon("📄 "), len(out), strings.Join(args.queries, ", "))
 }
 
 // yesNo renders a boolean flag column as "yes"/"no" (kept short so the box stays tight).

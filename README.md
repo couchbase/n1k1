@@ -105,7 +105,7 @@ prints a sampled shape, and `-formats` restricts what gets scanned.
   navigation, `ROWS`/`RANGE`/`GROUPS` frames), `UNION`/`INTERSECT`/`EXCEPT`, subqueries.
 - **Bigger than memory.** Hash tables and sort heaps spill to temporary files, so joins,
   `DISTINCT`, `GROUP BY`, `ORDER BY`, and large window partitions are not RAM-bound.
-- **Multi-query packs.** `.multi` runs a whole directory of tagged `*.sql++` queries over
+- **Multi-query.** `.multi` runs a whole directory of tagged `*.sql++` queries over
   one shared, optimized scan instead of re-reading the data per query — useful for running
   a suite of detectors across a large bundle. See `.help multi`.
 - **Programmable.** JavaScript UDFs and aggregates, `*.extract.js` recipes that frame

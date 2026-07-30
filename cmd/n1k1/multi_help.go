@@ -29,13 +29,13 @@ func (c *cli) cmdMultiHelp() {
 
 // multiHelpText avoids backticks so it can be one clean raw string literal; inline
 // code is shown quoted or as indented blocks.
-const multiHelpText = `.multi -- run a multi-query pack of SQL++ queries over a dataset
+const multiHelpText = `.multi -- run a set of SQL++ queries together over a dataset
 
-"multi" is short for multi-query: a pack of related SELECTs run together with SHARED
+"multi" is short for multi-query: a set of related SELECTs run together with SHARED
 execution (multi-query optimization -- one scan feeds many queries: broadcast, predicate
 index, common-subexpression sharing). The queries are provided as a directory of *.sql++
 files. Each *.sql++ file is a single SQL++ SELECT query plus optional "-- key: value"
-front-matter and an optional inline golden fixture. Run the pack over a dataset to get
+front-matter and an optional inline golden fixture. Run the queries over a dataset to get
 tagged labelResults; lint the queries for a report card; unit-test each query against its
 golden fixture (such as for CI). (Renamed from ".rules" / RULE_MATCHES.)
 
@@ -46,18 +46,21 @@ WHERE / GROUP BY / ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
 
 COMMANDS
   .multi list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
+  .multi show --queries <dir | builtin:census.sql++>   print each query's SQL++ source (a viewer; also parses every *.sql++ = an existence/validity check); for a builtin, the SQL++ it generates
   .multi run  --queries <dir> [--bind <manifest>]  compile & execute the queries over the open dataset
   .multi lint --queries <dir> [--bind <manifest>] [--census]  authoring report card (compiles, does NOT run); --census escalates to census-aware lint: cross-check each query's referenced fields against a census of its data — flags a field the data lacks (birth-in-error) + data fields no query reads
   .multi explain --queries <dir> [--bind <manifest>] [--sql]  show the fused shared-scan plan + fusion map; --sql = pretty SQL++ w/ provenance + hints (does NOT run)
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect
-  .multi cursor <verb> ...                         named "what's new since I last looked" cursors over a pack (.multi cursor help)
+  .multi cursor <verb> ...                         named "what's new since I last looked" cursors over a set of queries (.multi cursor help)
   .multi compose --queries <dir> [--only a,b | --terminal] [--allow-rejected]   run a DAG of queries: each *.sql++ = a node; "-- needs: a" then reads its rows with FROM node('a') (topo-ordered). --only/--terminal limit which nodes emit rows; a node that fails to parse is "rejected" and hard-fails unless --allow-rejected
-  .multi run --queries "builtin:census?keyspace=<ks>[&type-field=f&time-field=f&depth=1|2&exclude=a,b]" [--bind <m>]   time-aware key-space census (a built-in queries source): per (type, path, val_type) -> docs, coverage, first/last-seen (schema drift); cursor it for an ongoing census
+  .multi run --queries "builtin:census?keyspace=<ks>[&type-field=f&time-field=f&depth=1|2&exclude=a,b]" [--bind <m>]   time-aware key-space census (a built-in queries source): per (type, path, val_type) -> docs, coverage, first/last-seen (schema drift); cursor it for an ongoing census. builtin:census.sql++ is the same census as pure, forkable SQL++ (identical output; ~6x slower -- see it with .multi show)
   .multi help                                      this guide
 
 FLAGS
   --queries <dir>    directory of *.sql++ query files (required). REPEATABLE, and accepts a comma-list, so
-                     several tiers fuse into ONE shared-scan pack: --queries a --queries b, or --queries a,b
+                     several tiers fuse into ONE shared-scan run: --queries a --queries b, or --queries a,b
+  --queries-tags a,b       keep only queries whose front-matter tags include one of these (--queries-not-tags a,b excludes);
+                           the selection is reported, and a tag matching nothing is a loud error (run/lint/test/explain/list/show)
   --bind <manifest>  map LOGICAL keyspace names (FROM <logical>) to per-dataset globs, so one collection
                      runs across differently-named datasets unchanged (run / lint). Manifest is either
                      "logical = glob" lines ('#' comments + blanks ignored), or a JSON object

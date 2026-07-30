@@ -45,7 +45,7 @@ var helpTopics = []helpTopic{
 	{name: "keyspaces", blurb: "how files/dirs become keyspaces; dotted names", alias: ".keyspaces help"},
 	{name: "macro", blurb: "*.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
 	{name: "meta", blurb: "the _meta record fields + external follow-up", alias: ".meta help"},
-	{name: "multi", blurb: "authoring & running a multi-query pack of *.sql++ queries (shared execution)", alias: ".multi help"},
+	{name: "multi", blurb: "authoring & running a set of *.sql++ queries together (shared execution)", alias: ".multi help"},
 	{name: "quoting", blurb: "backticks vs the shell vs dot-command args"},
 	{name: "reserved-words", blurb: "the SQL++ keywords you must backtick as identifiers (full list)"},
 	{name: "temp-keyspaces", blurb: "CREATE TEMP KEYSPACE such as for staged analysis pipelines"},
@@ -174,7 +174,7 @@ func (c *cli) helpVectors() {
 	c.hline("  @vectorize_field(...)          built-in macro that embeds a text field of a")
 	c.hline("                                 keyspace in batches (.macro show vectorize_field).")
 	c.hline("")
-	c.hline("Quick try — rank a tiny pack against a query; no model, no files:")
+	c.hline("Quick try — rank a tiny set of texts against a query; no model, no files:")
 	c.hline("")
 	c.hline("  WITH docs AS (VECTORIZE_BATCH([{\"id\":1,\"text\":\"the disk is full\"},")
 	c.hline("                                 {\"id\":2,\"text\":\"sunny weather today\"},")
@@ -209,7 +209,7 @@ func (c *cli) helpVectors() {
 	c.hline("    FROM vecs v ORDER BY dist ASC LIMIT 5;")
 	c.hline("")
 	c.hline("Tips:")
-	c.hline("  - Embed the pack and the query with the SAME model + opts, or the distances")
+	c.hline("  - Embed the texts and the query with the SAME model + opts, or the distances")
 	c.hline("    are meaningless.")
 	c.hline("  - Store as `.parquet` for fast search over large vector sets; `.jsonl` works too.")
 	c.hline("  - Keep an id next to the vector (a string doc key or a number -- both are fine)")

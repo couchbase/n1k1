@@ -15,6 +15,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -72,6 +73,45 @@ func TestMultiQueriesTagsSelector(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "available tags") {
 		t.Errorf("zero-match should list available tags, stderr=%s", errb.String())
+	}
+}
+
+// TestMultiShow guards `.multi show`: it prints each *.sql++ query's SQL++ (a viewer +
+// an existence/parse check), shows the SQL++ a builtin generates, and notes the native
+// builtin has none.
+func TestMultiShow(t *testing.T) {
+	root := newLogsBundle(t)
+	pack := writeMultiQueryEntries(t, map[string]string{
+		"a": "-- label: a\n-- tags: [\"t1\"]\nSELECT l.sev FROM logs l",
+	})
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	arr := func(cmd string) []map[string]interface{} {
+		out.Reset()
+		errb.Reset()
+		c.failed = false
+		c.cmdMulti(cmd)
+		var rows []map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &rows)
+		return rows
+	}
+
+	// a dir of *.sql++: each entry's label + SQL++ source.
+	rows := arr("show --queries " + pack)
+	if c.failed || len(rows) != 1 || rows[0]["label"] != "a" || rows[0]["sql"] == nil {
+		t.Fatalf("show dir: %v (stderr %s)", rows, errb.String())
+	}
+
+	// builtin:census.sql++: the generated SQL++ (>=1 statement, non-empty sql).
+	rows = arr(`show --queries "builtin:census.sql++?keyspace=sessions"`)
+	if c.failed || len(rows) == 0 || rows[0]["sql"] == nil || !strings.Contains(rows[0]["sql"].(string), "OBJECT_PAIRS") {
+		t.Fatalf("show census.sql++: %v (stderr %s)", rows, errb.String())
+	}
+
+	// native builtin:census: a note, no sql.
+	rows = arr(`show --queries "builtin:census?keyspace=sessions"`)
+	if c.failed || len(rows) != 1 || rows[0]["sql"] != nil || rows[0]["note"] == nil {
+		t.Fatalf("show census: want a note and no sql, got %v", rows)
 	}
 }
 

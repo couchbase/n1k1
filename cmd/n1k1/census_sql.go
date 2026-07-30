@@ -17,7 +17,13 @@ package main
 // sibling of the native Go `builtin:census`. Same params, same output; the Go builtin
 // is the comparison ORACLE (see TestCensusSQLMatchesOracle). The point is a census a
 // user can READ and FORK into their own specialized census: swap TYPE_NAME for a
-// value-bucketer, add a field, change the depth walk — it's just SQL++.
+// value-bucketer, add a field, change the depth walk — it's just SQL++. (See the exact
+// SQL with `.multi show --queries builtin:census.sql++`.)
+//
+// PERF: identical output to the Go builtin, but ~6x slower (measured 23.9s vs 3.85s over
+// 195k records) — the MAP materializes ~1 array-carrying row per record and UNNEST fans
+// it to millions of path rows before the GROUP BY, where the Go operator aggregates
+// in-flight (~1 row per cell). So: builtin:census for production, census.sql++ to fork.
 //
 // The mergeable core (per (type, path, val_type): docs, first/last-seen, first_id) is
 // one GROUP BY over a per-record MAP that flattens each object into path:type entries
@@ -97,35 +103,42 @@ type censusSQLRow struct {
 // as pure SQL++ and prints rows in the SAME shape as the native builtin:census (so the
 // two are byte-comparable). Params match builtin:census: keyspace (required),
 // type-field, time-field, depth (default 2), exclude (comma-list).
-func (c *cli) runBuiltinCensusSQL(args multiArgs, r queriesRef) {
-	keyspace := r.params["keyspace"]
-	if keyspace == "" {
-		fmt.Fprintf(c.stderr, "%s: .multi run --queries builtin:census.sql++: needs a keyspace, "+
-			"e.g. builtin:census.sql++?keyspace=sessions\n", c.prog)
-		c.failed = true
-		return
-	}
-	typeField := r.params["type-field"]
+// censusParamsFromRef reads the builtin:census[.sql++] URI params, applying defaults.
+// keyspace is returned RAW ("" if absent) — run requires it, but show substitutes a
+// placeholder. Shared by run and `.multi show`.
+func censusParamsFromRef(r queriesRef) (keyspace, typeField, timeField string, depth int, exclude []string) {
+	keyspace = r.params["keyspace"]
+	typeField = r.params["type-field"]
 	if typeField == "" {
 		typeField = "type"
 	}
-	timeField := r.params["time-field"]
+	timeField = r.params["time-field"]
 	if timeField == "" {
 		timeField = "timestamp"
 	}
-	depth := 2
+	depth = 2
 	if d := r.params["depth"]; d != "" {
 		if n, e := strconv.Atoi(d); e == nil {
 			depth = n
 		}
 	}
-	var exclude []string
 	if ex := r.params["exclude"]; ex != "" {
 		for _, e := range strings.Split(ex, ",") {
 			if e = strings.TrimSpace(e); e != "" {
 				exclude = append(exclude, e)
 			}
 		}
+	}
+	return keyspace, typeField, timeField, depth, exclude
+}
+
+func (c *cli) runBuiltinCensusSQL(args multiArgs, r queriesRef) {
+	keyspace, typeField, timeField, depth, exclude := censusParamsFromRef(r)
+	if keyspace == "" {
+		fmt.Fprintf(c.stderr, "%s: .multi run --queries builtin:census.sql++: needs a keyspace, "+
+			"e.g. builtin:census.sql++?keyspace=sessions\n", c.prog)
+		c.failed = true
+		return
 	}
 
 	sess, binding, err := c.multiSession(args.bind)
