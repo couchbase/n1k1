@@ -4,6 +4,11 @@ A spatial, [impress.js](https://github.com/impress/impress.js)-based
 presentation of n1k1's architecture and techniques, aimed at an audience
 that knows database internals.
 
+Published at **<https://couchbase.github.io/n1k1/deck/>** by
+[`.github/workflows/pages.yml`](../../.github/workflows/pages.yml) on any
+push to `master` under `docs/deck/**` — the three files are copied
+verbatim, since there is nothing to generate.
+
 ## Presenting
 
 Open `index.html` in a browser — no server or network needed
@@ -14,6 +19,9 @@ Open `index.html` in a browser — no server or network needed
 - clicking a slide jumps to it — handy from the map steps
 - the zoomed-out **map** appears right after the title and again at the
   end (`#map` / `#overview`)
+- bottom-left **⌂ home** — jump to the whole-poster view at any time
+- bottom-left **jump-to-slide picker** — the full outline, indented by
+  depth; it also tracks where you are as you present
 - `H` — impress.js help popup
 
 The fallback for browsers without CSS 3D support is a plain vertical
@@ -57,6 +65,28 @@ top). Slide markup uses a small set of components — `.kicker`, `.stats`
 / `.stat`, `.cols`, `.pills`, `pre` code blocks with `.k`/`.s`/`.n`/`.c`
 token spans, and `pre.diagram` for the phosphor-green ASCII diagrams.
 Each panel picks its tint hue inline via `style="--hue:<deg>"`.
+
+### The bottom-left controls
+
+Both are wired up by the small script at the end of `index.html`; the
+styling is section 7 of `deck.css`.
+
+- The **picker is built from the steps themselves** at load time, so a
+  slide you add shows up automatically — there is no list to maintain.
+  Its label comes from the slide's `h2`/`h1` (a section panel gets its
+  watermark numeral prefixed); set `data-nav-label="…"` on a step to
+  override. Indent depth is derived: section panel = 0, a slide with
+  `data-rel-to` = 1, a `.leaf` = 2. `.camera` steps are left out.
+- **⌂ home** targets `#map` rather than the identical `#overview`,
+  because `#map` sits early in the step order — so pressing `→` after
+  going home resumes at section 1 instead of wrapping to the title.
+  Change the `HOME` constant to retarget it.
+- Both controls blur themselves after use, so the arrow keys keep
+  driving the deck. Their own key events are stopped from reaching
+  `document`, since impress.js binds arrows/space/tab and `H` there
+  without checking whether a form control has focus. (One consequence
+  of using a real `<select>`: while it has focus, native type-ahead can
+  change the selection — and therefore navigate.)
 
 ## Files
 

@@ -309,3 +309,62 @@ th          { color: var(--ink-dim); font-weight: 600; font-size: 15px;
   pointer-events: none;
 }
 .impress-enabled .hint { opacity: 1; }
+
+/* Below ~1500px the centered hint runs into the bottom-left controls. The
+   controls (and H for help) say the same thing, so drop the hint instead. */
+@media (max-width: 1500px) {
+  .impress-enabled .hint { display: none; }
+}
+
+/* 7. Bottom-left nav controls: home button + slide picker ------------------- */
+
+.deck-nav {
+  position: fixed;
+  left: 16px; bottom: 12px;
+  z-index: 150;                /* above .hint, below #impress-help */
+  display: none;               /* only meaningful once impress.js is running */
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.impress-enabled .deck-nav { display: flex; }
+
+.deck-nav button,
+.deck-nav select {
+  padding: 6px 10px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  background: rgba(11, 14, 19, 0.9);
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--ink);
+  cursor: pointer;
+}
+.deck-nav button:hover,
+.deck-nav select:hover {
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* The native dropdown caret varies by platform; draw our own so the
+   control matches the deck in both light and dark system themes. */
+.deck-select { position: relative; display: inline-block; }
+.deck-select select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  max-width: 360px;
+}
+.deck-select::after {
+  content: "▾";
+  position: absolute;
+  right: 9px; top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-dim);
+  pointer-events: none;
+}
+
+/* The opened list is drawn by the OS — set what browsers actually honor. */
+.deck-nav option           { background: #11161d; color: var(--ink); }
+.deck-nav option.nav-depth0 { font-weight: 700; }

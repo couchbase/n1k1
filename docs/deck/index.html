@@ -45,7 +45,8 @@
 
   <!-- ======================= TITLE (top center) ======================== -->
 
-  <div id="title" class="step title" data-x="0" data-y="-4400" data-scale="6">
+  <div id="title" class="step title" data-nav-label="n1k1 — title"
+       data-x="0" data-y="-4400" data-scale="6">
     <p class="kicker">couchbase/n1k1 · SQL++</p>
     <h1>n1k1</h1>
     <p style="font-size:28px">SQL++ for local files and more —<br>
@@ -889,6 +890,17 @@ parent = has cbq + the data ──────────── serves the leav
 <div class="hint">→ / space: next · ←: previous · a slide can also be
      clicked · H: help</div>
 
+<!-- Bottom-left controls. The picker is BUILT FROM THE STEPS below at load
+     time, so a slide added to the markup appears in it automatically —
+     there is no list here to keep in sync. -->
+<div class="deck-nav">
+  <button id="nav-home" type="button"
+          title="Zoom out to the whole poster">⌂ home</button>
+  <span class="deck-select">
+    <select id="nav-jump" title="Jump to a slide"></select>
+  </span>
+</div>
+
 <script src="impress.js"></script>
 <script>
   impress().init();
@@ -899,6 +911,72 @@ parent = has cbq + the data ──────────── serves the leav
   document.querySelectorAll( ".step:not(.camera)" ).forEach( function( el ) {
     el.addEventListener( "click", function() { impress().goto( el.id ); } );
   } );
+
+  ( function() {
+
+    // The whole-poster camera position used as "home". #map is chosen over
+    // the identical #overview because it sits early in the step order, so
+    // pressing → after going home resumes at section 1 instead of wrapping.
+    var HOME = "map";
+
+    var home = document.getElementById( "nav-home" );
+    var jump = document.getElementById( "nav-jump" );
+
+    home.addEventListener( "click", function() {
+      impress().goto( HOME );
+      home.blur();          // else SPACE would re-trigger the button
+    } );
+
+    // --- build the picker from the steps, indented by depth ---------------
+    //   0 = title / section panel, 1 = a section's slide, 2 = a leaf
+    var placeholder = new Option( "— jump to slide —", "" );
+    jump.appendChild( placeholder );
+
+    document.querySelectorAll( "#impress .step" ).forEach( function( el ) {
+      if ( el.classList.contains( "camera" ) ) { return; }   // camera positions
+
+      var depth = el.classList.contains( "leaf" )     ? 2
+                : el.hasAttribute( "data-rel-to" )    ? 1
+                :                                       0;
+
+      var heading = el.querySelector( "h1, h2" );
+      var label = el.dataset.navLabel ||
+                  ( heading ? heading.textContent : el.id );
+
+      // A section panel's watermark numeral doubles as its outline number.
+      var numeral = el.querySelector( ".bignum" );
+      if ( numeral ) { label = numeral.textContent.trim() + " · " + label; }
+
+      var o = new Option(
+        "    ".repeat( depth ) +
+          label.replace( /\s+/g, " " ).trim(),
+        el.id );
+      o.className = "nav-depth" + depth;
+      jump.appendChild( o );
+    } );
+
+    jump.addEventListener( "change", function() {
+      if ( jump.value ) { impress().goto( jump.value ); }
+      jump.blur();          // hand the arrow keys back to the deck
+    } );
+
+    // Keep the picker showing where we are. An up-<section> waypoint reports
+    // its section; the whole-poster views fall back to the placeholder.
+    // Capture phase, so this works whether or not the event bubbles.
+    document.addEventListener( "impress:stepenter", function( event ) {
+      var id = event.target.id;
+      if ( id.indexOf( "up-" ) === 0 ) { id = "hub-" + id.slice( 3 ); }
+      jump.value = jump.querySelector( "[value='" + id + "']" ) ? id : "";
+    }, true );
+
+    // impress.js binds arrows/space/tab and "h" on `document` with no guard
+    // for form controls, so keep our controls' own key events to themselves.
+    [ "keydown", "keyup" ].forEach( function( type ) {
+      document.querySelector( ".deck-nav" )
+              .addEventListener( type, function( e ) { e.stopPropagation(); } );
+    } );
+
+  } )();
 </script>
 
 </body>
