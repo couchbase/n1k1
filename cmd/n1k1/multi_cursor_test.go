@@ -367,6 +367,88 @@ func TestMultiCursorAdvanceToSafety(t *testing.T) {
 	}
 }
 
+// TestMultiCursorPackDrift guards ISSUE-17: if the query file is edited after create,
+// the cursor would silently run the new query against a watermark advanced under the
+// old one. peek must surface queries_current; advance must refuse (pack-drift) unless
+// --allow-drift (which re-baselines); `check` must report it and exit nonzero.
+func TestMultiCursorPackDrift(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "e.jsonl"),
+		[]byte(`{"n":1,"sev":"ERROR"}`+"\n"+`{"n":2,"sev":"WARN"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	qfile := filepath.Join(t.TempDir(), "q.sql++")
+	writeQ := func(sev string) {
+		if err := os.WriteFile(qfile, []byte("-- label: DR\nSELECT e.n FROM events e WHERE e.sev = \""+sev+"\""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeQ("ERROR")
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	run := func(cmd string) map[string]interface{} {
+		out.Reset()
+		errb.Reset()
+		c.failed = false
+		c.cmdMulti("cursor " + cmd + " --cursor-store " + store)
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+
+	if e := run("create DR --queries " + qfile + " --from start"); e["ok"] != true {
+		t.Fatalf("create: %v (stderr %s)", e, errb.String())
+	}
+	writeQ("WARN") // edit the query out from under the cursor
+
+	// peek surfaces the drift (pack != queries_current) but does not block.
+	pe := run("peek DR")
+	if pe["queries_current"] == nil || pe["queries_current"] == pe["pack"] {
+		t.Errorf("peek did not surface drift: pack=%v queries_current=%v", pe["pack"], pe["queries_current"])
+	}
+
+	// advance refuses with pack-drift.
+	ae := run("advance DR")
+	if ae["status"] != "error" || ae["error"].(map[string]interface{})["kind"] != "pack-drift" {
+		t.Fatalf("advance on drift: want error/pack-drift, got %v", ae)
+	}
+
+	// check reports the drift and sets a nonzero exit (c.failed).
+	ce := runList(c, &out, &errb, "cursor check --cursor-store "+store)
+	if len(ce) != 1 || ce[0]["drifted"] != true {
+		t.Fatalf("check: want one drifted row, got %v", ce)
+	}
+	if !c.failed {
+		t.Errorf("check: expected nonzero exit (c.failed) on drift")
+	}
+
+	// --allow-drift advances AND re-baselines, so a subsequent check is clean.
+	if e := run("advance DR --allow-drift --quiet"); e["status"] != "advanced" {
+		t.Fatalf("advance --allow-drift: want advanced, got %v", e)
+	}
+	ce = runList(c, &out, &errb, "cursor check --cursor-store "+store)
+	if len(ce) != 1 || ce[0]["drifted"] != false {
+		t.Errorf("check after --allow-drift: want not drifted (re-baselined), got %v", ce)
+	}
+}
+
+// runList runs a cursor command that prints a JSON ARRAY envelope (list/check).
+func runList(c *cli, out, errb *bytes.Buffer, cmd string) []map[string]interface{} {
+	out.Reset()
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti(cmd)
+	var rows []map[string]interface{}
+	json.Unmarshal([]byte(strings.TrimSpace(out.String())), &rows)
+	return rows
+}
+
 // TestMultiCursorDiffLoop drives the Phase-2 diff loop over a MUTABLE keyspace:
 // create --mode diff --from now (baseline), peek (empty), mutate the state, peek
 // (insert+update+delete), advance (commit new snapshot, snap:0→snap:1), peek

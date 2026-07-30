@@ -61,6 +61,7 @@ type cursorArgs struct {
 	idField       string   // --id-field <name>, create-only diff (default: id)
 	quiet         bool     // --quiet, advance-only (ack only, no labelResults echo)
 	force         bool     // --force, advance --to only (commit a rewinding/unknown position anyway)
+	allowDrift    bool     // --allow-drift, advance only (commit even though the query edited since create)
 	positions     bool     // --positions, show-only (full position map, not a summary)
 	only          []string // --only <node,...>, compose-only (emit rows for just these)
 	terminal      bool     // --terminal, compose-only (emit rows for leaf nodes only)
@@ -175,6 +176,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.quiet = !hasEq || val == "true" || val == "1"
 		case "force":
 			a.force = !hasEq || val == "true" || val == "1"
+		case "allow-drift":
+			a.allowDrift = !hasEq || val == "true" || val == "1"
 		case "positions":
 			a.positions = !hasEq || val == "true" || val == "1"
 		case "only":
@@ -233,6 +236,8 @@ func (c *cli) cmdMultiCursor(arg string) {
 		c.cursorList(rest)
 	case "show":
 		c.cursorShow(rest)
+	case "check":
+		c.cursorCheck(rest)
 	case "rm":
 		c.cursorRemove(rest)
 	case "ls", "remove", "delete":
@@ -285,6 +290,11 @@ type cursorEnvelope struct {
 	Dropped []string `json:"dropped,omitempty"` // held (offset>0) but absent from --to -> would reset to byte 0
 	Rewound []string `json:"rewound,omitempty"` // --to offset < committed -> would re-deliver
 	Unknown []string `json:"unknown,omitempty"` // --to names a container the datastore lacks
+
+	// ISSUE-17: the query file can be edited after create; `pack` is the baseline
+	// (creation-time) id, QueriesCurrent is the id re-hashed from the query NOW. They
+	// differ iff the query drifted. advance refuses on drift unless --allow-drift.
+	QueriesCurrent string `json:"queries_current,omitempty"`
 }
 
 // printJSON emits v as the single response envelope: indented at a TTY (the
@@ -685,8 +695,21 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
+	// ISSUE-17: the query file may have been edited since create. Re-hash it now; a
+	// cursor that runs the NEW query against a watermark advanced under the OLD one
+	// silently skips the records the new predicate would have matched behind the
+	// watermark. peek surfaces the drift (queries_current); advance refuses it (the
+	// committed position becomes meaningless under a different query) unless
+	// --allow-drift. `plan` used to be the drift check and was removed in the rename.
+	currentID := glue.PackID(st.Name, dets)
+	drifted := currentID != st.PackID
+	if advance && drifted && !a.allowDrift {
+		c.cursorDriftRefuse(a.name, st.PackID, currentID)
+		return
+	}
+
 	if st.Mode == "diff" {
-		c.cursorDiffPeekAdvance(a, st, store, sess, dets, advance)
+		c.cursorDiffPeekAdvance(a, st, store, sess, dets, advance, currentID, drifted)
 		return
 	}
 
@@ -706,6 +729,9 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		Cursor: a.name, Pack: st.PackID,
 		From:  encodeWater(committed),
 		Count: len(rows),
+	}
+	if drifted {
+		env.QueriesCurrent = currentID
 	}
 
 	if !advance {
@@ -773,6 +799,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	moved := !waterEqual(committed, newWater)
 
 	st.Water = newWater
+	st.PackID = currentID // ISSUE-17: adopt the current query as the baseline (no-op if unchanged; re-baselines an --allow-drift advance so it isn't permanently "drifted")
 	st.Updated = time.Now().UTC().Format(time.RFC3339)
 	st.LastCount = len(rows)
 	if moved {
@@ -843,7 +870,7 @@ func committedField(st *glue.CursorState, verbose bool) interface{} {
 // snapshot into Debezium {op,id,before,after} rows, and (on advance) replaces the
 // snapshot + bumps the snap version.
 func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *glue.CursorStore,
-	sess *glue.Session, dets []glue.MultiQueryEntry, advance bool) {
+	sess *glue.Session, dets []glue.MultiQueryEntry, advance bool, currentID string, drifted bool) {
 
 	from := fmt.Sprintf("snap:%d", st.SnapVersion)
 
@@ -865,6 +892,9 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 	changed := len(events) > 0
 
 	env := cursorEnvelope{Cursor: st.Name, Pack: st.PackID, From: from, Count: len(rows)}
+	if drifted {
+		env.QueriesCurrent = currentID
+	}
 
 	if !advance {
 		// peek: does NOT replace the snapshot; re-peek recomputes the same diff.
@@ -891,6 +921,7 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 		return
 	}
 	st.SnapVersion = newVer
+	st.PackID = currentID // ISSUE-17: adopt the current query as the baseline (see append path)
 	st.Updated = time.Now().UTC().Format(time.RFC3339)
 	st.LastCount = len(rows)
 	if changed {
@@ -977,6 +1008,62 @@ func (c *cli) cursorList(arg string) {
 			Committed: committedField(st, a.positions), Advances: st.TotalAdvances})
 	}
 	c.printJSON(out)
+}
+
+// cursorCheck re-hashes every cursor's query and reports which have DRIFTED since
+// create (ISSUE-17: the drift check `plan` used to provide, gone in the rename). Prints
+// one row per cursor {cursor, baseline, current, drifted} and exits nonzero if any
+// drifted, so CI can gate on it. A census/builtin cursor (no query file) never drifts
+// here; a cursor whose source path is gone is reported drifted (can't verify -> loud).
+func (c *cli) cursorCheck(arg string) {
+	a, err := parseCursorArgs(arg)
+	if err != nil {
+		c.cursorFail("", "bad-args", err)
+		return
+	}
+	store, err := c.cursorStore(a.store)
+	if err != nil {
+		c.cursorFail("", "no-bundle", err)
+		return
+	}
+	names, err := store.List()
+	if err != nil {
+		c.cursorFail("", "state-read", err)
+		return
+	}
+	type checkRow struct {
+		Cursor   string `json:"cursor"`
+		Baseline string `json:"baseline"`
+		Current  string `json:"current,omitempty"`
+		Drifted  bool   `json:"drifted"`
+		Error    string `json:"error,omitempty"`
+	}
+	out := make([]checkRow, 0, len(names))
+	anyDrift := false
+	for _, n := range names {
+		st, lerr := store.Load(n)
+		if lerr != nil {
+			continue
+		}
+		row := checkRow{Cursor: n, Baseline: st.PackID, Current: st.PackID}
+		if st.Mode != "census" && st.Pack != "" { // pack-backed cursor: re-hash its query
+			dets, derr := loadPackPaths(strings.Split(st.Pack, ","))
+			if derr != nil {
+				row.Current, row.Error, row.Drifted = "", derr.Error(), true
+			} else {
+				row.Current = glue.PackID(st.Name, dets)
+				row.Drifted = row.Current != row.Baseline
+			}
+		}
+		if row.Drifted {
+			anyDrift = true
+		}
+		out = append(out, row)
+	}
+	c.printJSON(out)
+	if anyDrift {
+		c.failed = true // nonzero exit so a CI/monitor can gate on drift
+	}
 }
 
 func (c *cli) cursorShow(arg string) {
@@ -1070,6 +1157,19 @@ func (c *cli) cursorFail(name, kind string, err error) {
 	c.failed = true
 }
 
+// cursorDriftRefuse reports that the cursor's query changed since create (ISSUE-17), so
+// an advance would commit a position taken under the old query. Names both hashes.
+func (c *cli) cursorDriftRefuse(name, baseline, current string) {
+	c.printJSON(cursorEnvelope{
+		Cursor: name, Pack: baseline, QueriesCurrent: current, Status: "error",
+		Error: &cursorErr{Kind: "pack-drift", Message: fmt.Sprintf(
+			"the query changed since create (baseline %s, current %s); advancing would commit a "+
+				"position taken under the old query. Re-create the cursor, or pass --allow-drift.",
+			baseline, current)},
+	})
+	c.failed = true
+}
+
 func (c *cli) cursorHelp() {
 	fmt.Fprint(c.stderr, cursorHelpText)
 }
@@ -1102,11 +1202,17 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        (drop a held container, rewind an offset, or name a container the
                        datastore lacks) is refused (error kind "unsafe-position", the
                        containers disclosed) — pass --force to commit it anyway.
+                       If the query was EDITED since create, peek surfaces
+                       "queries_current" and advance refuses (error kind "pack-drift")
+                       unless --allow-drift (which adopts the new query as the baseline).
   list                 the cursors in the store.
   show   NAME [--positions]
                        one cursor's committed position + metadata (description);
                        committed is summarized for many-container append cursors unless
                        --positions asks for the full per-container map.
+  check                re-hash every cursor's query and report which DRIFTED since
+                       create ({cursor, baseline, current, drifted}); exits nonzero if
+                       any drifted, so a CI/monitor can gate on it.
   rm     NAME          forget a cursor.
 
   --cursor-store <dir> override the state dir (default ./.n1k1-state/cursors, CWD-
