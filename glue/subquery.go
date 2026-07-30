@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/couchbase/query/algebra"
 	"github.com/couchbase/query/datastore"
@@ -55,6 +56,20 @@ type subqEvaluator struct {
 	// isolated per branch -- see GlueContext.ChainClone.
 	mu    sync.Mutex
 	cache map[*algebra.Select]*subCompiled
+
+	// results memoizes the value of an UNCORRELATED subquery (its rows don't depend
+	// on the outer row, so the result is invariant across the whole outer scan).
+	// Without it, `x IN (SELECT ...)` re-runs the entire sub-plan once per outer row
+	// -- O(n*m), the ISSUE-11 blowup. Keyed by the SELECT pointer (the interpreter
+	// evaluates the one *algebra.Select the outer plan carries, per row). A CORRELATED
+	// subquery depends on the outer row and is never memoized here. mu-guarded (shared
+	// across concurrent UNION ALL actors, like cache); the map is populated lazily.
+	results map[*algebra.Select]value.Value
+
+	// execs counts actual sub-plan EXECUTIONS (ExecOp runs), i.e. cache misses -- a
+	// memoized uncorrelated subquery executes once no matter how many outer rows probe
+	// it. Test-only observability for the ISSUE-11 memo (TestSubqueryUncorrelatedMemoized).
+	execs int64
 
 	// withBindings carries the outer query's WITH CTE bindings into sub-SELECT
 	// conversions, so a sub-SELECT that references an outer CTE (WITH a AS (...),
@@ -162,14 +177,25 @@ func (c *GlueContext) EvaluateStatement(statement string, namedArgs map[string]v
 // parent is the outer row; for a correlated subquery it is exposed to the
 // sub-op's expressions (see corrParent below) so outer references resolve.
 //
-// TODO(subquery-perf): a correlated subquery is evaluated once per outer row,
-// and each call does MakeVars (a fresh temp dir) + a full ExecOp of the sub-op.
-// The conv is cached (see compile), but the per-row MakeVars/spill-dir setup and
-// re-execution are not amortized -- fine for correctness, worth revisiting for
-// large correlated workloads (e.g. reuse vars, or a join-style rewrite).
+// An UNCORRELATED subquery (no outer references) has a result invariant across the
+// outer scan, so it is evaluated ONCE and memoized (c.subq.results) -- otherwise
+// `x IN (SELECT ...)` re-runs the whole sub-plan per outer row, the O(n*m) ISSUE-11
+// blowup. A CORRELATED subquery depends on the outer row (parent) and is re-run each
+// call; each such call does MakeVars (a fresh temp dir) + a full ExecOp of the sub-op.
+// TODO(subquery-perf): the correlated per-row MakeVars/spill-dir setup and re-execution
+// are still not amortized -- worth revisiting for large correlated workloads (reuse
+// vars, or a join-style rewrite).
 func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value) (value.Value, error) {
 	if c.subq == nil {
 		return nil, fmt.Errorf("subquery evaluation not configured")
+	}
+
+	// Uncorrelated: return the memoized result if we've already run it this query.
+	uncorrelated := !query.IsCorrelated()
+	if uncorrelated {
+		if v, ok := c.subq.cachedResult(query); ok {
+			return v, nil
+		}
 	}
 
 	sc, err := c.subq.compile(query)
@@ -265,6 +291,7 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 		}
 	}
 
+	atomic.AddInt64(&c.subq.execs, 1) // an actual sub-plan execution (cache miss)
 	engine.ExecOp(sc.topOp, vars, yieldVals, yieldErr, "", "")
 	if execErr != nil {
 		return nil, execErr
@@ -280,7 +307,33 @@ func (c *GlueContext) EvaluateSubquery(query *algebra.Select, parent value.Value
 		out = []interface{}{}
 	}
 
-	return value.NewValue(out), nil
+	result := value.NewValue(out)
+	if uncorrelated {
+		c.subq.putResult(query, result) // memoize: every later outer row reuses this
+	}
+	return result, nil
+}
+
+// cachedResult returns the memoized value of an uncorrelated subquery, or (nil,false)
+// if not yet evaluated this query. mu-guarded (the evaluator is shared across
+// concurrent UNION ALL actors).
+func (e *subqEvaluator) cachedResult(query *algebra.Select) (value.Value, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	v, ok := e.results[query]
+	return v, ok
+}
+
+// putResult memoizes an uncorrelated subquery's result. A concurrent double-miss
+// (two UNION ALL actors) just recomputes the same invariant value and the last write
+// wins -- correct, only mildly redundant. Never holds mu across ExecOp.
+func (e *subqEvaluator) putResult(query *algebra.Select, v value.Value) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.results == nil {
+		e.results = map[*algebra.Select]value.Value{}
+	}
+	e.results[query] = v
 }
 
 // subqKey is the preplanned-map key for a subquery SELECT: its canonical
