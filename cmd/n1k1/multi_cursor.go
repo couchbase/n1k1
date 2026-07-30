@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -447,15 +448,59 @@ func (c *cli) cursorCreate(arg string) {
 		return
 	}
 
-	mode := strings.ToLower(a.mode)
+	// ISSUE-14: a single-file cursor's query carries policy in its front-matter
+	// (`from`, `mode`, `description`, ...). `cursor apply` used to honor those keys;
+	// `create` replaced apply but never learned them, so a checked-in `from: start`
+	// was silently dropped and the cursor baselined at NOW -- skipping the whole
+	// corpus while reporting {"ok":true}. Honor them here (precedence: CLI flag >
+	// front-matter > default), and report any front-matter key create does NOT
+	// consume in the envelope's "ignored" list, so a dropped key is never silent.
+	var fm map[string]string
+	var fmDesc string
+	if len(dets) == 1 { // front-matter is per-query; only meaningful for a single-file cursor
+		fm = dets[0].Meta
+		fmDesc = dets[0].Description
+	}
+	effFrom := a.from
+	if effFrom == "" {
+		effFrom = fm["from"]
+	}
+	effMode := a.mode
+	if effMode == "" {
+		effMode = fm["mode"]
+	}
+	effDesc := a.desc
+	if effDesc == "" {
+		effDesc = fmDesc
+	}
+
+	mode := strings.ToLower(effMode)
 	if mode == "" {
 		mode = "append"
 	}
 	if mode != "append" && mode != "diff" {
-		c.cursorFail(a.name, "bad-args", fmt.Errorf("--mode must be append or diff, got %q", a.mode))
+		c.cursorFail(a.name, "bad-args", fmt.Errorf("--mode must be append or diff, got %q", effMode))
 		return
 	}
-	fromStart := strings.EqualFold(a.from, "start") || strings.EqualFold(a.from, "beginning")
+	fromStart := strings.EqualFold(effFrom, "start") || strings.EqualFold(effFrom, "beginning")
+
+	// ignored: front-matter keys create saw but did not translate into cursor state
+	// (create honors from/mode above; description/source/tags/label are consumed
+	// elsewhere). Also flags a CLI --id-field that append mode discards (ISSUE-14 §3).
+	honoredFM := map[string]bool{"from": true, "mode": true}
+	if mode == "diff" {
+		honoredFM["id-field"], honoredFM["id_field"] = true, true
+	}
+	var ignored []string
+	for k := range fm {
+		if !honoredFM[k] {
+			ignored = append(ignored, k)
+		}
+	}
+	if a.idField != "" && mode == "append" {
+		ignored = append(ignored, "id-field") // append tracks byte watermarks; no row identity
+	}
+	sort.Strings(ignored)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	st := &glue.CursorState{
@@ -464,7 +509,7 @@ func (c *cli) cursorCreate(arg string) {
 		Bind:        a.bind,
 		PackID:      glue.PackID(a.name, dets),
 		Mode:        mode,
-		Description: a.desc,
+		Description: effDesc,
 		Created:     now,
 		Updated:     now,
 	}
@@ -484,6 +529,11 @@ func (c *cli) cursorCreate(arg string) {
 		fromTok = encodeWater(st.Water)
 	} else { // diff
 		idField := a.idField
+		if idField == "" { // ISSUE-14: fall back to front-matter, then the default
+			if idField = fm["id-field"]; idField == "" {
+				idField = fm["id_field"]
+			}
+		}
 		if idField == "" {
 			idField = "id"
 		}
@@ -511,15 +561,17 @@ func (c *cli) cursorCreate(arg string) {
 	}
 
 	c.printJSON(struct {
-		Created  string `json:"created"`
-		OK       bool   `json:"ok"`
-		Pack     string `json:"queries"`
-		Compiles string `json:"compiles"`
-		Mode     string `json:"mode"`
-		From     string `json:"from"`
+		Created  string   `json:"created"`
+		OK       bool     `json:"ok"`
+		Pack     string   `json:"queries"`
+		Compiles string   `json:"compiles"`
+		Mode     string   `json:"mode"`
+		From     string   `json:"from"`
+		Ignored  []string `json:"ignored,omitempty"`
 	}{
 		Created:  a.name,
 		OK:       true,
+		Ignored:  ignored,
 		Pack:     st.PackID,
 		Compiles: "ok",
 		Mode:     mode,
@@ -961,6 +1013,9 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        A cursor over builtin:census accumulates a schema census of the
                        keyspace; peek/advance fold new records + emit drift (field_added
                        / type_changed). The census + watermark commit atomically.
+                       A single-file cursor HONORS the query's front-matter (from / mode
+                       / description); precedence is CLI flag > front-matter > default. A
+                       front-matter key create does not consume is listed in "ignored".
   peek   NAME          the pending delta; does NOT move the cursor (re-peek is safe).
   advance NAME [--to <pos> | --to-file <path>] [--quiet]
                        commit (get + move). Echoes the delta unless --quiet.

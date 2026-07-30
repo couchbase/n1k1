@@ -206,6 +206,88 @@ func TestMultiCursorCreateGuards(t *testing.T) {
 	}
 }
 
+// TestMultiCursorCreateFrontMatter guards ISSUE-14: a single-file cursor's query
+// front-matter (from/description/mode) must be honored by `create` (cursor apply used
+// to, and apply was removed in the rename). A dropped `from: start` silently baselined
+// at NOW and skipped the whole corpus while reporting ok. Precedence: CLI > front-matter
+// > default; a front-matter key create doesn't consume is reported in "ignored".
+func TestMultiCursorCreateFrontMatter(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "default", "events"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default", "events", "e.jsonl"),
+		[]byte(`{"n":1}`+"\n"+`{"n":2}`+"\n"+`{"n":3}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A single-file cursor query declaring its baseline policy in front-matter.
+	qfile := filepath.Join(t.TempDir(), "q.sql++")
+	if err := os.WriteFile(qfile, []byte(
+		"-- label: CC-X\n-- description: the marker query\n-- from: start\n-- managed: true\n"+
+			"SELECT e.n FROM events e"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	sidecar := func(name string) map[string]interface{} {
+		b, err := os.ReadFile(filepath.Join(store, name+".json"))
+		if err != nil {
+			t.Fatalf("read sidecar %s: %v (stderr %s)", name, err, errb.String())
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	env := func() map[string]interface{} {
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+	waterNonZero := func(m map[string]interface{}) int {
+		n := 0
+		if w, ok := m["water"].(map[string]interface{}); ok {
+			for _, v := range w {
+				if f, _ := v.(float64); f > 0 {
+					n++
+				}
+			}
+		}
+		return n
+	}
+
+	// (A) create WITHOUT --from: front-matter `from: start` -> every watermark zero.
+	out.Reset()
+	c.cmdMulti("cursor create CC-X --queries " + qfile + " --cursor-store " + store)
+	if env()["ok"] != true {
+		t.Fatalf("create: %s (stderr %s)", out.String(), errb.String())
+	}
+	sc := sidecar("CC-X")
+	if n := waterNonZero(sc); n != 0 {
+		t.Errorf("front-matter from:start ignored: %d non-zero watermarks, want 0", n)
+	}
+	if sc["description"] != "the marker query" {
+		t.Errorf("front-matter description dropped: got %v", sc["description"])
+	}
+	ignored, _ := env()["ignored"].([]interface{})
+	if len(ignored) != 1 || ignored[0] != "managed" {
+		t.Errorf("ignored: want [managed], got %v", env()["ignored"])
+	}
+
+	// (B) CLI --from now must OVERRIDE front-matter from:start -> non-zero watermarks.
+	out.Reset()
+	c.cmdMulti("cursor create CC-Y --queries " + qfile + " --from now --cursor-store " + store)
+	if env()["ok"] != true {
+		t.Fatalf("create --from now: %s", out.String())
+	}
+	if n := waterNonZero(sidecar("CC-Y")); n == 0 {
+		t.Errorf("CLI --from now did not override front-matter from:start (watermarks all zero)")
+	}
+}
+
 // TestMultiCursorDiffLoop drives the Phase-2 diff loop over a MUTABLE keyspace:
 // create --mode diff --from now (baseline), peek (empty), mutate the state, peek
 // (insert+update+delete), advance (commit new snapshot, snap:0→snap:1), peek
