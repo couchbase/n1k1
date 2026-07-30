@@ -251,36 +251,34 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
                                  <span class="c">-- the fork-free table-function dodge</span></code></pre>
     <ul>
       <li>Flat dirs, <code>&lt;namespace&gt;/&lt;keyspace&gt;/</code> trees, globs,
-          multiple roots (<code>docs=~/Documents/**</code>) — heterogeneous
+          multiple roots (<code>docs=~/Documents/**</code>) —<br>heterogeneous
           sources federate through a chain of datastore wrappers; no new
           scan code per source kind.</li>
-      <li>Doc ids carry the physical byte offset address:
-          <code>events.jsonl#57@4210</code> — so <code>USE KEYS</code> is an
+      <li>Doc ids carry line '#' for humans and physical byte offset '@' address:
+          <code>events.jsonl#57@4210</code> —<br>so <code>USE KEYS</code> is an
           O(1) seek, not a file scan.</li>
-      <li><code>.schema</code> samples a keyspace and emits
-          copy-pasteable example queries — schema inference as UX.</li>
+      <li><code>.schema</code> command samples a keyspace and emits
+          copy-pasteable example SQL++queries —<br>for user friendliness</li>
     </ul>
   </div>
 
   <div id="data-lake" class="step" data-rel-to="hub-data"
        data-rel-x="800" data-rel-y="-250" data-rel-z="150">
     <p class="kicker">data layer</p>
-    <h2>Parquet &amp; Iceberg, cgo-free</h2>
-<pre><code>FROM `events@2026-01-01T00:00:00Z`  <span class="c">-- time travel, no grammar change</span></code></pre>
+    <h2>Parquet &amp; Iceberg support</h2>
+<pre><code>FROM `events@2026-01-01T00:00:00Z`  <span class="c">-- time travel queries</span></code></pre>
     <ul>
-      <li><strong>Pushdown's</strong>: predicates travel as a
-          negation-normal-form tree in a sidecar interface; the residual
-          <code>filter</code> op is always kept, so a partial or absent push
-          is <em>correct</em>, never wrong.</li>
+      <li><strong>Pushdown for performance</strong>: predicates travel as a
+          negation-normal-form tree in a sidecar interface;<br>
+          <code>filter</code> op is always kept for correctness.</li>
       <li>Metadata-only answers: <code>COUNT</code>/<code>MIN</code>/<code>MAX</code>
-          from Parquet footers and Iceberg manifests —
+          from Parquet footers and Iceberg manifests —<br>
           <span class="num">zero</span> data pages read;
           <code>COUNT(*)</code> over a <span class="num">227&nbsp;MB</span>
           public-S3 Parquet answers in <span class="num">~1&nbsp;s</span>.</li>
-      <li>Iceberg reader glue is <span class="num">~90 lines</span>:
-          iceberg-go already resolves pruning, merge-on-read deletes, and
+      <li>iceberg-go library resolves pruning, merge-on-read deletes, and
           field-ID schema evolution — n1k1 just drives the scan.</li>
-      <li>Remote objects read via ranged GETs; projection pushdown reads
+      <li>Remote objects retrieved via ranged GETs;<br?projection pushdown reads
           <span class="num">~0.2%</span> of the bytes on wide tables.</li>
     </ul>
   </div>
@@ -288,23 +286,22 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
   <div id="data-variant" class="step" data-rel-to="hub-data"
        data-rel-x="-800" data-rel-y="900" data-rel-z="150">
     <p class="kicker">data layer</p>
-    <h2>VARIANT: query the JSON projection</h2>
+    <h2>VARIANT data types</h2>
     <ul>
-      <li>VARIANT = JSON's value model + typed scalars (date,
-          timestamp, exact decimal, uuid…), and SQL++ on VARIANT's <em>behave as the JSON
-          projection</em> - no engine changes.
-          <em>Lossy-in-arithmetic, lossless-in-transit.</em></li>
-      <li>VARIANT just rides as []byte with a 'V' prefix byte and encoding:
-          <code>V&lt;len&gt;&lt;VARIANT-metadata&gt;&lt;VARIANT-value&gt;</code> —
+      <li>VARIANT from Parquet = JSON's value model + typed scalars (date,
+          timestamp, exact decimal, uuid…),<br>and SQL++ on VARIANT's <em>behave as the JSON
+          projection</em> - no engine changes.</li>
+      <li>VARIANT handled in n1k1 as yet another []byte with a 'V' prefix byte;<br>encoding:
+          <code>V&lt;len&gt;&lt;VARIANT-metadata&gt;&lt;VARIANT-value&gt;</code> —<br>
           <code>V</code> (0x56) is outside JSON's value-start alphabet, so
           one byte disambiguates.</li>
       <li>Zero-alloc projector: <span class="num">263&nbsp;ns / 0 allocs</span>
           vs arrow-go's <code>MarshalJSON</code> at
           <span class="num">11,858&nbsp;ns / 131 allocs</span> —
-          <span class="num">~45×</span>; MarshalJSON kept as the test oracle.</li>
+          <span class="num">~45×</span>;<br>MarshalJSON remains the test oracle.</li>
       <li>Correctness example: GROUP/DISTINCT must hash the
-          <strong>canonical JSON projection</strong>, never raw
-          <code>V</code> bytes — equal values can differ in encoding.</li>
+          <strong>canonical JSON projection</strong> of the VARIANT,<br>never raw
+          <code>V</code> prefixed bytes, since equal values can differ in encoding.</li>
     </ul>
   </div>
 
@@ -318,35 +315,34 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
    ├─ meta.json                       <span class="c">  (machine-managed state: never</span>
    └─ data.bolt | bleve/              <span class="c">   written back to the catalog)</span></code></pre>
     <ul>
-      <li>A changed index definition hashes to a <strong>new dir</strong> — a
-          rebuild, never in-place corruption; builds with atomic
+      <li>A changed index definition hashes to a <strong>new dir</strong> —<br>
+          which means an index rebuild, never in-place corruption;<br>indexes build with atomic
           rename, orphans are lazily GC'd.</li>
       <li>BBolt for seconary indexes: order-preserving key encoding means
-          <strong>bbolt byte order == N1QL collation order</strong>, so
+          <strong>bbolt byte order == N1QL collation order</strong>,<br>so
           <code>Cursor.Seek</code> prunes real range scans — and the
-          ever-present residual filter catches range boundary imprecision.</li>
-      <li>Covering scans reconstruct the projected doc from index-key bytes, so
+          ever-present filter catches range boundary imprecision.</li>
+      <li>Covering scans reconstruct the projected doc from index-key bytes,<br>so
           no fetch needed.</li>
       <li>FTS is bleve <em>in-process</em> — following cbq planner's
-          <code>FTSIndex</code> operator, minus cbft/cbgt/n1fty/cbauth.
-          Index selection stays cbq's planner: n1k1 has control over what its
-          datastore <em>advertises</em> as the available indexes.</li>
+          <code>FTSIndex</code> operator, minus cbft/cbgt/n1fty/cbauth.<br>
+          Index selection stays cbq's planner: n1k1 advertise the available indexes.</li>
     </ul>
   </div>
 
   <div id="data-fetchwar" class="step leaf" data-rel-to="hub-data"
        data-rel-x="0" data-rel-y="1650" data-rel-z="300" data-scale="0.4">
     <p class="kicker">data layer · fine print</p>
-    <h2>Fetch-path allocations</h2>
+    <h2>Example: a 3-way nested-loop self-join</h2>
     <ul>
-      <li>Consider a 3-way nested-loop self-join that expands to 262K rows:
+      <li>Consider a 3-way nested-loop self-join that expands to 262K rows:<br>
           <span class="num">~931&nbsp;MB</span> allocated with only
-          <span class="num">~3&nbsp;MB</span> live — garbage and GC churn,
+          <span class="num">~3&nbsp;MB</span> live —<br>garbage and GC churn,
           ~71% in the boxed fetch path.</li>
-      <li>Three n1k1 optimizations - native byte fetch, bounded per-request doc
-          cache, scan key-listing cache): from
-          <span class="num">~2.0&nbsp;GB → ~152&nbsp;MB</span> total
-          allocation, GCs from <span class="num">420 → 31</span>.</li>
+      <li>Three n1k1 optimizations<br>- native byte fetch<br>- bounded per-request doc
+          cache<br>- scan key-listing cache:<br>total allocations: from
+          <span class="num">~2.0&nbsp;GB → ~152&nbsp;MB</span><br>
+          GC's: from <span class="num">420 → 31</span>.</li>
     </ul>
   </div>
 
@@ -362,31 +358,31 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
     <div class="bignum">4</div>
     <p class="kicker">4 · the execution engine</p>
     <h1>Everything is <code>[]byte</code></h1>
-    <p class="dim">garbage avoidance is an architectural foundation, not a tuning pass</p>
+    <p class="dim">garbage avoidance by avoiding boxed values</p>
   </div>
 
   <div id="engine-val" class="step" data-rel-to="hub-engine"
        data-rel-x="-800" data-rel-y="-250" data-rel-z="150">
     <p class="kicker">engine</p>
-    <h2>The byte lane</h2>
+    <h2>The []byte lane</h2>
 <pre><code>type Val []byte     <span class="c">// every value, in every operator</span>
-vals[5]             <span class="c">// hot fields promoted to positional registers</span>
-buf = buf[:0]       <span class="c">// recycle; reslice, don't reallocate</span></code></pre>
+vals[5]             <span class="c">// hot fields promoted to positional registers as an array lookup</span>
+buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</span></code></pre>
     <ul>
-      <li>No <code>interface{}</code>, no <code>map[string]interface{}</code>;
-          jsonparser returns slices <em>into</em> the document's existing bytes.</li>
-      <li><strong>Push-based</strong> — hand-off is a function call
-          (fusable/inlinable), not a channel or an iterator:</li>
+      <li>No <code>interface{}</code></li>
+      <li>No <code>map[string]interface{}</code></li>
+      <li>jsonparser returns slices <em>into</em> a JSON document's existing []byte.</li>
+      <li><strong>Push-based</strong> — hand-off between ops and expressions is a function call
+          (fusable/inlinable),<br>not a go channel or an iterator's Next():</li>
     </ul>
-<pre class="diagram"><code>scan ─▶ filter ─▶ project ─▶ yield(vals)   <span class="c">-- plain calls, fused/inlined</span>
+<pre class="diagram"><code>scan ─▶ filter ─▶ project ─▶ yield(vals)   <span class="c">-- plain function callbacks, optionally fused &amp; inlined</span>
   │        │         │
-  └────────┴─────────┴────▶ yieldErr(err)  <span class="c">-- one error lane: no per-row</span>
-                                           <span class="c">-- "if err != nil" anywhere</span></code></pre>
+  └────────┴─────────┴────▶ yieldErr(err)  <span class="c">-- one error lane;</span>
+                                           <span class="c">-- no per-row checking of "if err != nil" anywhere</span></code></pre>
     <ul>
-      <li>Results: allocs/op are <strong>flat no matter # of records processed</strong> —
-          scan <span class="num">6</span>, +filter <span class="num">18</span>,
-          +project <span class="num">37</span>, identical whether 1K rows vs 1M rows.
-          Raw scan ≈ <span class="num">500M rows/s</span>.</li>
+      <li>Results: allocs/op are <strong>flat no matter # of records processed</strong><br>—
+          identical whether 1K rows vs 1M rows processed.</li>
+      <li>Raw scan throughput≈ <span class="num">500M rows/s</span>.</li>
     </ul>
   </div>
 
@@ -402,14 +398,14 @@ buf = buf[:0]       <span class="c">// recycle; reslice, don't reallocate</span>
     </div>
     <ul>
       <li>Expressions convert to a native byte-lane form when every operand
-          is supported; <strong>one unsupported operand anywhere falls the
+          is supported;<br><strong>one unsupported operand anywhere falls the
           whole expression back</strong> to cbq's boxed
           <code>Evaluate()</code>.</li>
-      <li>cbq's fallback is never removed — it is <strong>the correctness
+      <li>cbq's fallback Evaluate() is always available —<br>it is <strong>the correctness
           oracle</strong>: every native op is differential-tested
           byte-identical against cbq's answers.</li>
-      <li>Porting is mechanical: cbq's ~357 scalar expression types collapse
-          into four propagation classes (each a reusable harness) over ~6
+      <li>Porting is mechanical: cbq's ~357 scalar expression types collapse<br>
+          into four propagation classes (each a reused harness) over ~6
           value-layer primitives.</li>
     </ul>
   </div>
@@ -417,19 +413,17 @@ buf = buf[:0]       <span class="c">// recycle; reslice, don't reallocate</span>
   <div id="engine-spill" class="step" data-rel-to="hub-engine"
        data-rel-x="-800" data-rel-y="900" data-rel-z="150">
     <p class="kicker">engine</p>
-    <h2>One spill substrate, many operators</h2>
+    <h2>Operators share one spill substrate</h2>
     <ul>
       <li><code>rhmap</code>: robinhood maps - a recyclable
-          <code>map[[]byte][]byte</code> that spills to mmap'd temp files —
-          serving hash join, DISTINCT, GROUP BY, INTERSECT, EXCEPT.</li>
+          <code>map[[]byte][]byte</code><br>that spills to mmap'd temp files —
+          serving hash join, DISTINCT, GROUP BY, INTERSECT, EXCEPT, etc.</li>
       <li>Set ops reuse the hash join's probe map (left values, left counts,
-          probe counts) — INTERSECT/EXCEPT DISTINCT need no extra DISTINCT
+          probe counts) —<br>INTERSECT/EXCEPT DISTINCT need no extra DISTINCT
           operator.</li>
-      <li>ORDER BY / LIMIT is a max-heap popped in reverse — no final sort;
+      <li>ORDER BY / LIMIT is a max-heap popped in reverse —<br>no final sort;
           the heap spills too.</li>
-      <li>Sessions reuse spill state across queries (pools cleared, not just
-          parked): <span class="num">~2.3×</span> throughput on a
-          single-file query mix.</li>
+      <li>Sessions reuse spill state across queries.</li>
     </ul>
   </div>
 
