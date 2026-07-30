@@ -60,6 +60,13 @@ _Last reviewed: 2026-07-23._
 - [ ] IndexScan2/3 pushdowns: indexProjection / indexOrder / indexGroupAggs.
 - [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL).
 - [ ] GROUP BY ROLLUP / CUBE / GROUPING SETS (cbq-fork grammar does not support).
+- [ ] Large IN-list hash membership (perf; LARGE RHS only): implement cbq's `expression.InlistContext`
+      on GlueContext (a `map[*In]*InlistHash` + a before-rows `EnableInlistHash` walk over the boxed
+      predicate) so a big `IN [...]` or uncorrelated `IN (SELECT ...)` probes O(1)/row instead of a
+      linear array scan. Uncorrelated `IN (SELECT ...)` RE-EXECUTION is already fixed (result memo,
+      glue/subquery.go); this is only worth it when the RHS set is large (cbq's threshold is 16 elems).
+      cbq's machinery is ready (expression/coll_in.go, gated on `!IsCorrelated()`); the real work is the
+      opt-in hook, since n1k1 runs its own engine, not cbq's Filter/Join operators.
 
 ## Conformance (SQL++ suite corpus)
 - [ ] Raise the TestSuiteCases pass rate.
