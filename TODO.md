@@ -72,6 +72,15 @@ _Last reviewed: 2026-07-23._
       usable on a live corpus before the incremental path lands. Cursor-store unification (an index
       as a cursor consumer) is a follow-on -- start with the index owning its own watermarks. See
       docs/design/DESIGN-indexing.md.
+- [ ] Builtin-queries versioning (full story). The `--queries builtin:<name>@<version>?<params>`
+      ref syntax + a name/version REGISTRY are shipped (cmd/n1k1/queries_ref.go `builtinVersions`),
+      so a pinned ref (`builtin:census@1`) validates and an unknown name/version errors. Still TODO
+      for incompatible-across-versions safety: (1) STAMP the resolved builtin version into any
+      durable artifact a builtin produces (esp. a census cursor -- "built with census@1") so a
+      later, incompatible version can DETECT + refuse/rebase a stale artifact instead of silently
+      folding mismatched data; (2) document each version's schema; (3) a deprecation/default-version
+      policy as versions accrue. Ties into `registry:` (remote precanned queries -- signing/pinning;
+      see tmp/naming.md).
 - [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL).
 - [ ] GROUP BY ROLLUP / CUBE / GROUPING SETS (cbq-fork grammar does not support).
 - [ ] Large IN-list hash membership (perf; LARGE RHS only): implement cbq's `expression.InlistContext`

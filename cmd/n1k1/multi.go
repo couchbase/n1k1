@@ -300,6 +300,11 @@ func (c *cli) cmdMultiRun(arg string) {
 		c.failed = true
 		return
 	}
+	// A `--queries builtin:<name>` entity resolves to a native builtin, not *.sql++ on
+	// disk, so it's routed before the pack path (which would try to read it as a dir).
+	if c.runBuiltinQueries(args) {
+		return
+	}
 	dets, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)

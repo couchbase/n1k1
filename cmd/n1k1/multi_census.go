@@ -126,17 +126,22 @@ func (c *cli) cmdMultiCensus(arg string) {
 		return
 	}
 
-	res, err := sess.Census(keyspace, glue.CensusOptions{
+	c.emitCensus(sess, keyspace, glue.CensusOptions{
 		TypeField: typeField, TimeField: timeField, Depth: depth, Exclude: exclude,
 	})
+}
+
+// emitCensus runs a census of keyspace under opts and prints it: NDJSON rows (one
+// census cell per line, each with its read-time coverage of its record-type) plus a
+// summary line. Shared by `.multi run --queries builtin:census` and the (soon-retired)
+// `.multi census` verb.
+func (c *cli) emitCensus(sess *glue.Session, keyspace string, opts glue.CensusOptions) {
+	res, err := sess.Census(keyspace, opts)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .multi census: %v\n", c.prog, err)
+		fmt.Fprintf(c.stderr, "%s: census: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
-
-	// NDJSON: one census row per line (line-oriented for head/jq), each carrying its
-	// read-time coverage of its record-type.
 	type rowOut struct {
 		Type      string  `json:"type"`
 		Path      string  `json:"path"`
