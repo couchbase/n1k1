@@ -134,9 +134,12 @@ TIPS (get the best out of a collection)
     runs standalone (its own scan). To keep an array query fused, project the array and unnest it in
     a downstream node: use "WHERE ANY c IN s.items SATISFIES c.type='x' END" (fused), not
     "UNNEST s.items AS c WHERE c.type='x'" (standalone).
-  - A JS UDF call ANYWHERE in a query (even in the SELECT list) BOXES the whole query -- it forfeits
-    index pruning and caps the compile level. Keep UDFs OUT of the wide-scan tier: apply them in a
-    downstream ".multi compose" rollup over an already-materialized pack_<node> temp keyspace.
+  - A JS UDF (or any boxed expr) caps the compile level and runs via cbq per row; WHERE it sits decides
+    the rest. In the SELECT list it boxes ONLY that column -- the scan still FUSES and index-prunes on the
+    WHERE literal (a per-row cost on woken rows, not a scan cost). In the GATING predicate it forfeits index
+    pruning UNLESS a native literal rides alongside as a top-level AND conjunct ("... AND msg LIKE '%lit%'
+    AND udf(x)=y" still prunes on '%lit%'). Move UDFs to a downstream ".multi compose" rollup over a
+    materialized pack_<node> keyspace only when the per-row cost matters.
   - For grep -A/-B/-C style CONTEXT (the matching line + surrounding lines), use a sliding-window
     match flag (see CONTEXT below) -- and PARTITION BY _meta.` + "`path`" + ` on a multi-file keyspace, or
     context LEAKS across rotated files.
