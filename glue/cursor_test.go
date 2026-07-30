@@ -259,10 +259,9 @@ func joinLines(lines []string) string {
 	return out
 }
 
-// TestReconcilePlanAndLoadPack pins the Phase-3 GitOps primitives: LoadPack (file
-// vs dir), SpecHash sensitivity, and PlanReconcile's create/update/destroy/
-// unchanged partition incl. the managed-only prune gate.
-func TestReconcilePlanAndLoadPack(t *testing.T) {
+// TestLoadPack pins LoadPack: a single *.sql++ FILE and a DIR of them both load
+// into MultiQueryEntry lists (the source a cursor / run compiles).
+func TestLoadPack(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "d.sql++")
 	if err := os.WriteFile(f, []byte("-- label: d\nSELECT 1 AS n"), 0o644); err != nil {
@@ -273,49 +272,6 @@ func TestReconcilePlanAndLoadPack(t *testing.T) {
 	}
 	if es, err := LoadPack(dir); err != nil || len(es) != 1 {
 		t.Fatalf("LoadPack(dir): %v len=%d", err, len(es))
-	}
-
-	// SpecHash is the DELTA IDENTITY only (pack+mode+bind+id-field) — NOT metadata,
-	// so a retag/reword never changes it (see the metadata-drift path).
-	base := SpecHash("p@1", "append", "", "id")
-	if base != SpecHash("p@1", "append", "", "id") {
-		t.Fatal("SpecHash not stable")
-	}
-	for _, h := range []string{
-		SpecHash("p@2", "append", "", "id"),  // pack changed
-		SpecHash("p@1", "diff", "", "id"),    // mode changed
-		SpecHash("p@1", "append", "m", "id"), // bind changed
-		SpecHash("p@1", "append", "", "key"), // id-field changed
-	} {
-		if h == base {
-			t.Fatal("SpecHash insensitive to an identity change")
-		}
-	}
-
-	desired := map[string]string{"a": "ha", "b": "hb", "c": "hc"}
-	live := map[string]*CursorState{
-		"b": {Name: "b", SpecHash: "hb", Managed: true},  // unchanged
-		"c": {Name: "c", SpecHash: "OLD", Managed: true}, // drifted -> update
-		"d": {Name: "d", SpecHash: "x", Managed: true},   // managed, undeclared -> prune
-		"e": {Name: "e", SpecHash: "y", Managed: false},  // imperative -> never pruned
-	}
-	p := PlanReconcile(desired, live, true)
-	eq := func(got []string, want ...string) bool {
-		if len(got) != len(want) {
-			return false
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				return false
-			}
-		}
-		return true
-	}
-	if !eq(p.Create, "a") || !eq(p.Update, "c") || !eq(p.Unchanged, "b") || !eq(p.Destroy, "d") {
-		t.Fatalf("plan(prune): %+v", p)
-	}
-	if p2 := PlanReconcile(desired, live, false); len(p2.Destroy) != 0 {
-		t.Fatalf("plan(no prune): destroy should be empty, got %v", p2.Destroy)
 	}
 }
 

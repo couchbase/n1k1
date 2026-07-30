@@ -88,18 +88,8 @@ type CursorState struct {
 	CensusRecords   int64            `json:"census_records,omitempty"`
 	CensusVersion   int              `json:"census_version,omitempty"` // "census:N" token; bumps on drift
 
-	// Metadata (k8s labels-vs-annotations split): Labels are for selection/
-	// grouping; Annotations is free-form provenance the client attaches.
-	Description string            `json:"description,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Annotations json.RawMessage   `json:"annotations,omitempty"`
-
-	// GitOps reconcile (Phase 3): SpecHash fingerprints the declared configuration
-	// (pack content + policy) so `apply` tells an unchanged cursor (preserve its
-	// position) from a drifted one; Managed marks a cursor created/adopted by
-	// `apply` (only managed cursors are eligible for `--prune`).
-	SpecHash string `json:"spec_hash,omitempty"`
-	Managed  bool   `json:"managed,omitempty"`
+	// Description is a free-form note set at create time (--desc).
+	Description string `json:"description,omitempty"`
 
 	// Bookkeeping surfaced by `show`.
 	Created       string `json:"created,omitempty"`
@@ -443,62 +433,6 @@ func LoadPack(path string) ([]MultiQueryEntry, error) {
 	return []MultiQueryEntry{e}, nil
 }
 
-// SpecHash is the reconcile fingerprint of a cursor's DELTA IDENTITY — the pack
-// content (packID), delta mode, binding, and id-field. It deliberately EXCLUDES
-// description / labels / annotations: per DESIGN-cep.md the delta-identity is
-// "(query+binding SHA, source-fingerprint)", and "a retag/reword is a no-op for
-// state". So a metadata-only edit leaves SpecHash unchanged (the committed
-// position is never re-baselined by a comment change); `apply` refreshes such
-// metadata in place separately (see the metadata-drift pass).
-func SpecHash(packID, mode, bind, idField string) string {
-	h := sha256.New()
-	for _, s := range []string{packID, mode, bind, idField} {
-		h.Write([]byte(s))
-		h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))[:12]
-}
-
-// ReconcilePlan is the create/update/destroy/unchanged partition a GitOps `plan`
-// computes and `apply` executes (each list holds cursor names, sorted).
-type ReconcilePlan struct {
-	Create    []string `json:"create"`
-	Update    []string `json:"update"`
-	Destroy   []string `json:"destroy"`
-	Unchanged []string `json:"unchanged"`
-}
-
-// PlanReconcile diffs the declared cursors (name -> SpecHash) against the live
-// store. A declared name absent from live => create; present with a different
-// SpecHash => update; equal => unchanged (preserve position). A live cursor absent
-// from `desired` is a destroy candidate, but only surfaces when prune is set AND
-// the cursor is Managed (so an imperative `.multi cursor create` is never pruned).
-func PlanReconcile(desired map[string]string, live map[string]*CursorState, prune bool) ReconcilePlan {
-	var p ReconcilePlan
-	for name, hash := range desired {
-		switch cur := live[name]; {
-		case cur == nil:
-			p.Create = append(p.Create, name)
-		case cur.SpecHash == hash:
-			p.Unchanged = append(p.Unchanged, name)
-		default:
-			p.Update = append(p.Update, name)
-		}
-	}
-	if prune {
-		for name, st := range live {
-			if _, ok := desired[name]; !ok && st.Managed {
-				p.Destroy = append(p.Destroy, name)
-			}
-		}
-	}
-	sort.Strings(p.Create)
-	sort.Strings(p.Update)
-	sort.Strings(p.Destroy)
-	sort.Strings(p.Unchanged)
-	return p
-}
-
 // PackID returns a stable "<name>@<sha>" identity for a pack: name is the given
 // label, sha a short hash over each entry's id + normalized SQL (order-
 // independent), so an unchanged pack keeps its id and any edit changes it.
@@ -512,7 +446,7 @@ func PackID(name string, dets []MultiQueryEntry) string {
 	return name + "@" + hex.EncodeToString(h[:])[:8]
 }
 
-// normalizePackSQL canonicalizes a statement for identity hashing (PackID/SpecHash):
+// normalizePackSQL canonicalizes a statement for identity hashing (PackID):
 // trailing per-line whitespace is stripped and blank lines dropped, so a cosmetic
 // reformat — blank lines between a comment preamble and the SELECT, trailing spaces —
 // doesn't change the pack id and churn spec_hash in a GitOps diff (ISSUE-05 #4). A
