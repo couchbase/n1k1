@@ -22,13 +22,13 @@ import (
 // multi-query optimization (DESIGN-prepare.md, "Predicate index (the scale
 // trick)"): a filter-index node feeding a SPARSE fan-out.
 //
-// A plain "broadcast" (op_broadcast.go) evaluates ALL K detector predicates on
-// EVERY row -- O(K x rows). This op instead indexes each detector by a cheap
-// REQUIRED literal (a substring the detector's full predicate cannot be true
+// A plain "broadcast" (op_broadcast.go) evaluates ALL K query predicates on
+// EVERY row -- O(K x rows). This op instead indexes each query by a cheap
+// REQUIRED literal (a substring the query's full predicate cannot be true
 // without). Per row it runs ONE Aho-Corasick pass over the raw row bytes to find
-// which required literals are present, then wakes ONLY the detectors keyed to a
-// present literal (plus a small "always-wake" set of detectors from which no
-// required literal could be safely extracted). With thousands of detectors keyed
+// which required literals are present, then wakes ONLY the queries keyed to a
+// present literal (plus a small "always-wake" set of queries from which no
+// required literal could be safely extracted). With thousands of queries keyed
 // to distinct literals and rows each mentioning a handful, this turns O(K x
 // rows) into ~O(hits x rows).
 //
@@ -42,7 +42,7 @@ import (
 // provable (see PrefilterLiteral).
 //
 // The Aho-Corasick pass runs over the whole raw row bytes (base.Val slots), not
-// per-field: if a detector requires contains(field,"panic") and the row is true,
+// per-field: if a query requires contains(field,"panic") and the row is true,
 // then "panic" is in the serialized row, so presence-in-row is necessary. A
 // literal that happens to appear in a different field merely over-wakes (safe).
 //
@@ -60,7 +60,7 @@ func OpBroadcastIndexed(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVal
 // params are named WITHOUT the "lz" prefix so every line is copied verbatim by
 // the gen-compiler (mirroring BroadcastExec / MergeScanExec).
 //
-// Params layout is IDENTICAL to OpBroadcast (Params[0] = []detector, each a
+// Params layout is IDENTICAL to OpBroadcast (Params[0] = []query, each a
 // []interface{}{tag, predExpr, projExprs}); the build helper BroadcastIndexed
 // assembles it. The child scan's Labels drive predicate/projection resolution;
 // o.Labels are the stable labelResults schema ([<tag>, <evidence...>]).
@@ -71,19 +71,19 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		childLabels = o.Children[0].Labels
 	}
 
-	// Setup (once): build each detector's predicate/projection funcs AND extract
+	// Setup (once): build each query's predicate/projection funcs AND extract
 	// its required prefilter literal (or mark it always-wake). Garbage here is
 	// fine; the hot loop below is not.
-	specs := broadcastDetectorSpecs(o.Params)
+	specs := broadcastQuerySpecs(o.Params)
 
-	detectors := make([]broadcastDetector, 0, len(specs))
+	queries := make([]broadcastQuery, 0, len(specs))
 
 	// litIDs maps a distinct required literal string to its Aho-Corasick pattern
-	// id; litDetectors[id] lists the detectors keyed to that literal. alwaysWake
-	// lists detectors with NO safely-extractable literal (evaluated every row).
+	// id; litQueries[id] lists the queries keyed to that literal. alwaysWake
+	// lists queries with NO safely-extractable literal (evaluated every row).
 	litIDs := map[string]int{}
 	var literals []string
-	var litDetectors [][]int
+	var litQueries [][]int
 	var alwaysWake []int
 
 	for i, spec := range specs {
@@ -91,8 +91,8 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 
 		projFunc := MakeProjectFunc(vars, childLabels, spec.proj, pathNext, "proj"+strconv.Itoa(i))
 
-		di := len(detectors)
-		detectors = append(detectors, broadcastDetector{
+		di := len(queries)
+		queries = append(queries, broadcastQuery{
 			tagVal:   base.Val(strconv.Quote(spec.tag)),
 			predFunc: predFunc,
 			projFunc: projFunc,
@@ -110,9 +110,9 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			id = len(literals)
 			litIDs[lit] = id
 			literals = append(literals, lit)
-			litDetectors = append(litDetectors, nil)
+			litQueries = append(litQueries, nil)
 		}
-		litDetectors[id] = append(litDetectors[id], di)
+		litQueries[id] = append(litQueries[id], di)
 	}
 
 	// Build the Aho-Corasick automaton over the distinct required literals + a
@@ -121,21 +121,21 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	matched := ac.NewMatchSet()
 
 	// Stats: RowsIn (shared rows fanned), LabelResultsOut (tagged labelResults), and
-	// PredEvals -- the sparsity signal: how many FULL detector predicates were
+	// PredEvals -- the sparsity signal: how many FULL query predicates were
 	// evaluated (woken + always-wake), vs a plain broadcast's K-per-row. Live,
 	// interpreter-only (genCompiler:hide).
-	stats := StatsFromVars(vars)                                       // <== genCompiler:hide
-	statsBase := o.StatsBase                                           // <== genCompiler:hide
-	StatsCounterZero(stats, statsBase+StatBroadcastIndexedRowsIn)      // <== genCompiler:hide
+	stats := StatsFromVars(vars)                                           // <== genCompiler:hide
+	statsBase := o.StatsBase                                               // <== genCompiler:hide
+	StatsCounterZero(stats, statsBase+StatBroadcastIndexedRowsIn)          // <== genCompiler:hide
 	StatsCounterZero(stats, statsBase+StatBroadcastIndexedLabelResultsOut) // <== genCompiler:hide
-	StatsCounterZero(stats, statsBase+StatBroadcastIndexedPredEvals)   // <== genCompiler:hide
+	StatsCounterZero(stats, statsBase+StatBroadcastIndexedPredEvals)       // <== genCompiler:hide
 
 	// Per row: (1) one AC pass over the row bytes -> the present literal ids; (2)
-	// evaluate ONLY the detectors those literals wake, plus the always-wake set;
-	// (3) on a truthy full predicate, project into the detector's REUSED buffer
-	// (tag first) and yield -- exactly as OpBroadcast does. Because each detector
+	// evaluate ONLY the queries those literals wake, plus the always-wake set;
+	// (3) on a truthy full predicate, project into the query's REUSED buffer
+	// (tag first) and yield -- exactly as OpBroadcast does. Because each query
 	// is keyed to at most ONE literal, the woken lists are disjoint (no dedup
-	// needed), and always-wake detectors have no literal (disjoint from woken).
+	// needed), and always-wake queries have no literal (disjoint from woken).
 	childYield := func(vals base.Vals) {
 		StatsCounterBump(stats, statsBase+StatBroadcastIndexedRowsIn) // stats: live // <== genCompiler:hide
 
@@ -146,10 +146,10 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			acState = ac.Advance(acState, v, matched)
 		}
 
-		// Woken detectors: those keyed to a present literal.
+		// Woken queries: those keyed to a present literal.
 		for _, litID := range matched.IDs() {
-			for _, di := range litDetectors[litID] {
-				d := &detectors[di]
+			for _, di := range litQueries[litID] {
+				d := &queries[di]
 
 				StatsCounterBump(stats, statsBase+StatBroadcastIndexedPredEvals) // stats: live // <== genCompiler:hide
 				bcBumpWoken(d)                                                   // stats: live // <== genCompiler:hide
@@ -168,10 +168,10 @@ func BroadcastIndexedExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 			}
 		}
 
-		// Always-wake detectors: no required literal was provable, so they are
+		// Always-wake queries: no required literal was provable, so they are
 		// evaluated on every row (the safe fallback that preserves correctness).
 		for _, di := range alwaysWake {
-			d := &detectors[di]
+			d := &queries[di]
 
 			StatsCounterBump(stats, statsBase+StatBroadcastIndexedPredEvals) // stats: live // <== genCompiler:hide
 			bcBumpWoken(d)                                                   // stats: live // <== genCompiler:hide
@@ -200,8 +200,8 @@ const regexMetaChars = `.*+?()[]{}|^$\`
 
 // PrefilterLiteral returns a REQUIRED plain-substring literal of pred -- one that
 // MUST appear in the row bytes whenever pred is true -- or ("", false) if none is
-// provable (=> the detector must always-wake). Exported so the glue-level corpus
-// lint ("detect lint") can report, per detector, whether its predicate is
+// provable (=> the query must always-wake). Exported so the glue-level corpus
+// lint ("detect lint") can report, per query, whether its predicate is
 // index-pruned by a necessary literal or is always-wake. This is the correctness heart of
 // the predicate index: it extracts ONLY when the literal is a necessary
 // condition (never under-wake). Supported necessary forms:
@@ -211,7 +211,7 @@ const regexMetaChars = `.*+?()[]{}|^$\`
 //     equals the string CONST, so CONST's bytes appear in the row.
 //   - ["regexp_contains"|"regexp_like", <field>, ["json","\"PAT\""]] -- ONLY if
 //     PAT is a plain literal (no regex metacharacters); then PAT is required.
-//   - ["and", C1, C2, ...] -- the detector requires ALL conjuncts, so requiring
+//   - ["and", C1, C2, ...] -- the query requires ALL conjuncts, so requiring
 //     the FIRST extractable conjunct's literal is necessary.
 //
 // Anything else (or, comparisons, non-string constants, unrecognized) yields no
@@ -322,20 +322,20 @@ func jsonStringLiteral(node interface{}) (string, bool) {
 }
 
 // BroadcastIndexed is the build helper: it assembles an OpBroadcastIndexed op
-// from a scan + a detector corpus (mirroring BroadcastRoute / BroadcastCSE). It
-// carries the SAME detector-spec Params shape as a plain "broadcast", so the two
+// from a scan + a query pack (mirroring BroadcastRoute / BroadcastCSE). It
+// carries the SAME query-spec Params shape as a plain "broadcast", so the two
 // are drop-in interchangeable -- the prefilter extraction + Aho-Corasick index
 // are built at run time in BroadcastIndexedExec's setup, keeping this a pure
 // plan-shape helper.
 //
 //   - scan: the shared-scan child *base.Op (its Labels drive resolution).
-//   - detectors: the corpus (TargetSource is ignored here; the caller routes).
+//   - queries: the corpus (TargetSource is ignored here; the caller routes).
 //   - labelResultsLabels: the uniform labelResults schema ([tag, evidence...]).
-func BroadcastIndexed(scan *base.Op, detectors []Detector,
+func BroadcastIndexed(scan *base.Op, queries []BroadcastQuery,
 	labelResultsLabels base.Labels) *base.Op {
-	detParams := make([]interface{}, 0, len(detectors))
-	for _, d := range detectors {
-		// The existing broadcast detector spec: []interface{}{tag, pred, proj}.
+	detParams := make([]interface{}, 0, len(queries))
+	for _, d := range queries {
+		// The existing broadcast query spec: []interface{}{tag, pred, proj}.
 		detParams = append(detParams, []interface{}{d.Tag, d.Pred, d.Proj})
 	}
 

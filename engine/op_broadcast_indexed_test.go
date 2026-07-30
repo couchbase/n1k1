@@ -52,25 +52,25 @@ func labelResultsByTag(t *testing.T, root *base.Op) map[string][][]string {
 
 // TestOpBroadcastIndexedEquivalence is THE invariant guard: the predicate-index
 // op must produce labelResults BYTE-IDENTICAL (per tag, in row order) to a plain
-// "broadcast" over the same detectors + scan. The corpus deliberately mixes:
+// "broadcast" over the same queries + scan. The corpus deliberately mixes:
 //
-//   - detectors with distinct RARE literals (contains / regexp plain literal),
-//   - detectors SHARING a literal (an eq-const and a regexp both keyed "ERROR"),
-//   - a detector with NO extractable prefilter (bare gt) -> always-wake,
-//   - an OVER-WAKE detector (its literal appears but the full AND predicate then
+//   - queries with distinct RARE literals (contains / regexp plain literal),
+//   - queries SHARING a literal (an eq-const and a regexp both keyed "ERROR"),
+//   - a query with NO extractable prefilter (bare gt) -> always-wake,
+//   - an OVER-WAKE query (its literal appears but the full AND predicate then
 //     fails) -> the full predicate must re-check and drop it,
-//   - a regex-with-metacharacters detector -> always-wake (no literal extracted).
+//   - a regex-with-metacharacters query -> always-wake (no literal extracted).
 func TestOpBroadcastIndexedEquivalence(t *testing.T) {
 	labelResults := base.Labels{"tag", "ev"}
 	proj := []interface{}{lp(".", "line")}
 
-	dets := []Detector{
+	dets := []BroadcastQuery{
 		// Distinct rare literals.
 		{Tag: "panic", Pred: []interface{}{"contains", lp(".", "line"), jsonLit("panic")}, Proj: proj},
 		{Tag: "oom", Pred: []interface{}{"contains", lp(".", "line"), jsonLit("OutOfMemory")}, Proj: proj},
 		// regexp with a PLAIN literal pattern -> literal "segfault".
 		{Tag: "segfault", Pred: []interface{}{"regexp_contains", lp(".", "line"), jsonLit("segfault")}, Proj: proj},
-		// Two detectors SHARING the literal "ERROR" (an eq const + a plain regexp).
+		// Two queries SHARING the literal "ERROR" (an eq const + a plain regexp).
 		{Tag: "err_eq", Pred: []interface{}{"eq", lp(".", "level"), jsonLit("ERROR")}, Proj: proj},
 		{Tag: "err_re", Pred: []interface{}{"regexp_contains", lp(".", "line"), jsonLit("ERROR")}, Proj: proj},
 		// Always-wake: a bare gt has no extractable literal.
@@ -114,11 +114,11 @@ func TestOpBroadcastIndexedEquivalence(t *testing.T) {
 			len(want["panic"]), len(want["err_eq"]), len(want["hot"]))
 	}
 	if len(want["diskflood"]) != 0 {
-		t.Fatalf("over-wake detector 'diskflood' must yield 0 labelResults (full pred fails), got %d", len(want["diskflood"]))
+		t.Fatalf("over-wake query 'diskflood' must yield 0 labelResults (full pred fails), got %d", len(want["diskflood"]))
 	}
 }
 
-// TestOpBroadcastIndexedSparsity proves the whole point: with K detectors each
+// TestOpBroadcastIndexedSparsity proves the whole point: with K queries each
 // keyed to a DISTINCT literal and rows that each contain exactly ONE such
 // literal, the indexed op evaluates ~= (1 matched + always-wake) FULL predicates
 // per row, NOT K. The PredEvals stat is the instrument.
@@ -129,16 +129,16 @@ func TestOpBroadcastIndexedSparsity(t *testing.T) {
 	labelResults := base.Labels{"tag", "ev"}
 	proj := []interface{}{lp(".", "line")}
 
-	dets := make([]Detector, 0, k+1)
+	dets := make([]BroadcastQuery, 0, k+1)
 	for j := 0; j < k; j++ {
-		dets = append(dets, Detector{
+		dets = append(dets, BroadcastQuery{
 			Tag:  "tok" + strconv.Itoa(j),
 			Pred: []interface{}{"contains", lp(".", "line"), jsonLit(tokLit(j))},
 			Proj: proj,
 		})
 	}
-	// One always-wake detector (bare gt, no extractable literal).
-	dets = append(dets, Detector{
+	// One always-wake query (bare gt, no extractable literal).
+	dets = append(dets, BroadcastQuery{
 		Tag:  "alwaysA",
 		Pred: []interface{}{"gt", lp(".", "n"), jsonLit2(-1)},
 		Proj: proj,
@@ -169,8 +169,8 @@ func TestOpBroadcastIndexedSparsity(t *testing.T) {
 	}
 	rowsIn, _ := stats.Get("0:RowsIn")
 
-	// Each row wakes exactly its one matching token detector + the always-wake
-	// detector => (1 + alwaysWake) full-predicate evaluations per row.
+	// Each row wakes exactly its one matching token query + the always-wake
+	// query => (1 + alwaysWake) full-predicate evaluations per row.
 	wantEvals := int64(n * (1 + alwaysWake))
 	if predEvals != wantEvals {
 		t.Fatalf("indexed PredEvals=%d, want %d (=%d rows x (1 match + %d always-wake))",
@@ -194,8 +194,8 @@ func TestOpBroadcastIndexedSparsity(t *testing.T) {
 // jsonLit2 builds a ["json","<int>"] numeric constant node.
 func jsonLit2(i int) []interface{} { return []interface{}{"json", strconv.Itoa(i)} }
 
-// detParamsOf renders detectors into the broadcast Params[0] detector-spec shape.
-func detParamsOf(dets []Detector) []interface{} {
+// detParamsOf renders queries into the broadcast Params[0] query-spec shape.
+func detParamsOf(dets []BroadcastQuery) []interface{} {
 	out := make([]interface{}, 0, len(dets))
 	for _, d := range dets {
 		out = append(out, []interface{}{d.Tag, d.Pred, d.Proj})
@@ -229,7 +229,7 @@ func makeLogData(n int) string {
 }
 
 // BenchmarkBroadcastIndexed contrasts the predicate-index op against a plain
-// broadcast at LARGE K: K detectors each keyed to a distinct literal, over N rows
+// broadcast at LARGE K: K queries each keyed to a distinct literal, over N rows
 // where each row contains ~1 of those literals. The indexed op does one
 // Aho-Corasick pass + ~O(1) predicate evals/row; the broadcast does O(K). The gap
 // should widen with K.
@@ -247,9 +247,9 @@ func BenchmarkBroadcastIndexed(b *testing.B) {
 	const n = 2000
 
 	for _, k := range []int{64, 256, 1000} {
-		dets := make([]Detector, 0, k)
+		dets := make([]BroadcastQuery, 0, k)
 		for j := 0; j < k; j++ {
-			dets = append(dets, Detector{
+			dets = append(dets, BroadcastQuery{
 				Tag:  "tok" + strconv.Itoa(j),
 				Pred: []interface{}{"contains", lp(".", "line"), jsonLit(tokLit(j))},
 				Proj: proj,

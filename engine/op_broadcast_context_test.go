@@ -120,7 +120,7 @@ func runContextBroadcast(t *testing.T, rows []ctxRow, exts ...[]interface{}) map
 
 // TestOpBroadcastContextGrep drives K extractors (grep -C1, -B2, -A2) over ONE shared
 // sorted scan and checks each tag's emitted rows equal the brute-force grep reference --
-// so the shared fan-out is byte-equivalent to running each detector alone. It spans two
+// so the shared fan-out is byte-equivalent to running each query alone. It spans two
 // partitions to prove context never leaks across them.
 func TestOpBroadcastContextGrep(t *testing.T) {
 	var rows []ctxRow

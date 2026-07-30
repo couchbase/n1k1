@@ -49,7 +49,7 @@ func TestStatsRunningAggsUnionRace(t *testing.T) {
 	sess.OnStats = func(s *base.Stats) {
 		atomic.AddInt64(&fires, 1)
 		s.RunningAggsRange(func(r *base.RunningAggRow) {
-			// Touch the row's fields to force real reads the detector can catch.
+			// Touch the row's fields to force real reads the query can catch.
 			_ = r.Op
 			for _, a := range r.Aggs {
 				_ = len(a)

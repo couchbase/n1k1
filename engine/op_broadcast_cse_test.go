@@ -49,10 +49,10 @@ func lineScanOp(n int) *base.Op {
 }
 
 // plainBroadcast builds a flat (non-CSE) broadcast over scan for the SAME
-// detectors, so a test can diff its labelResults stream against the CSE'd plan.
-func plainBroadcast(scan *base.Op, detectors []Detector, labelResultsLabels base.Labels) *base.Op {
-	detParams := make([]interface{}, 0, len(detectors))
-	for _, d := range detectors {
+// queries, so a test can diff its labelResults stream against the CSE'd plan.
+func plainBroadcast(scan *base.Op, queries []BroadcastQuery, labelResultsLabels base.Labels) *base.Op {
+	detParams := make([]interface{}, 0, len(queries))
+	for _, d := range queries {
 		detParams = append(detParams, []interface{}{d.Tag, d.Pred, d.Proj})
 	}
 	return &base.Op{
@@ -64,17 +64,17 @@ func plainBroadcast(scan *base.Op, detectors []Detector, labelResultsLabels base
 }
 
 // TestBroadcastCSEEquivalence is the CORE gate: a CSE'd plan must yield labelResults
-// BYTE-IDENTICAL to the same detectors run through a plain broadcast. Because a
-// single broadcast fans detectors out in order over one scan (no union-all
+// BYTE-IDENTICAL to the same queries run through a plain broadcast. Because a
+// single broadcast fans queries out in order over one scan (no union-all
 // concurrency), the whole tagged labelResults stream is order-stable, so the two
 // [][]string streams compare exactly.
 //
 // The corpus deliberately exercises the four cases the transform must handle:
 //
-//	(a) a sub-predicate G = (a > 5) shared by several detectors' predicates;
+//	(a) a sub-predicate G = (a > 5) shared by several queries' predicates;
 //	(b) an UNSHARED predicate (a < 3), which must NOT be hoisted;
 //	(c) a sub-expr P = regexp_contains(line,"panic") shared between one
-//	    detector's PREDICATE and its PROJECTION;
+//	    query's PREDICATE and its PROJECTION;
 //	(d) a NESTED shared subtree N = not(G), itself shared, that CONTAINS the
 //	    also-shared G.
 func TestBroadcastCSEEquivalence(t *testing.T) {
@@ -88,16 +88,16 @@ func TestBroadcastCSEEquivalence(t *testing.T) {
 
 	labelResultsLabels := base.Labels{"tag", "ev"}
 
-	detectors := []Detector{
+	queries := []BroadcastQuery{
 		// (a) G shared across three predicates.
 		{Tag: "g1", Pred: []interface{}{"and", G, P}, Proj: []interface{}{lp(".", "a")}},
 		{Tag: "g2", Pred: G, Proj: []interface{}{lp(".", "a")}},
 		{Tag: "g3", Pred: []interface{}{"and", G, small}, Proj: []interface{}{lp(".", "a")}},
 		// (b) unshared predicate.
 		{Tag: "u1", Pred: small, Proj: []interface{}{lp(".", "a")}},
-		// (c) P shared between this detector's PRED and its PROJ.
+		// (c) P shared between this query's PRED and its PROJ.
 		{Tag: "c1", Pred: P, Proj: []interface{}{P}},
-		// (d) N = not(G) shared across two detectors (and contains shared G).
+		// (d) N = not(G) shared across two queries (and contains shared G).
 		{Tag: "n1", Pred: N, Proj: []interface{}{lp(".", "a")}},
 		{Tag: "n2", Pred: []interface{}{"and", N, P}, Proj: []interface{}{lp(".", "a")}},
 	}
@@ -107,8 +107,8 @@ func TestBroadcastCSEEquivalence(t *testing.T) {
 
 	// NOTE: BroadcastCSE applies per source group; a router (BroadcastRoute)
 	// would split the corpus by TargetSource first, then wrap each group here.
-	cse := BroadcastCSE(scanA, detectors, labelResultsLabels)
-	plain := plainBroadcast(scanB, detectors, labelResultsLabels)
+	cse := BroadcastCSE(scanA, queries, labelResultsLabels)
+	plain := plainBroadcast(scanB, queries, labelResultsLabels)
 
 	gotCSE := collectRows(t, cse, broadcastVars())
 	gotPlain := collectRows(t, plain, broadcastVars())
@@ -133,14 +133,14 @@ func TestBroadcastCSEStructural(t *testing.T) {
 	// Corpus: G shared (2x), P shared (2x). The bare field read lp(".","a")
 	// recurs many times and the constant ["json","5"] recurs too, but both are
 	// TRIVIAL and must never be hoisted.
-	detectors := []Detector{
+	queries := []BroadcastQuery{
 		{Tag: "d1", Pred: G, Proj: []interface{}{lp(".", "a")}},
 		{Tag: "d2", Pred: []interface{}{"and", G, P}, Proj: []interface{}{lp(".", "a")}},
 		{Tag: "d3", Pred: P, Proj: []interface{}{lp(".", "a")}},
 	}
 
 	scan := lineScanOp(5)
-	root := BroadcastCSE(scan, detectors, labelResultsLabels)
+	root := BroadcastCSE(scan, queries, labelResultsLabels)
 
 	if root.Kind != "broadcast" {
 		t.Fatalf("root Kind=%q, want broadcast", root.Kind)
@@ -173,7 +173,7 @@ func TestBroadcastCSEStructural(t *testing.T) {
 	}
 
 	// Zero-sharing corpus: no precompute project, plain broadcast over scan.
-	lone := []Detector{
+	lone := []BroadcastQuery{
 		{Tag: "x1", Pred: G, Proj: []interface{}{lp(".", "a")}},
 		{Tag: "x2", Pred: []interface{}{"lt", lp(".", "a"), []interface{}{"json", "3"}},
 			Proj: []interface{}{lp(".", "line")}},
@@ -189,23 +189,23 @@ func TestBroadcastCSEStructural(t *testing.T) {
 	}
 }
 
-// BenchmarkBroadcastCSE shows the CSE win: K detectors that ALL share one
+// BenchmarkBroadcastCSE shows the CSE win: K queries that ALL share one
 // EXPENSIVE sub-predicate -- regexp_contains(line,"panic") (native for a
-// constant pattern) -- ANDed with a cheap per-detector term (a > i). Under a
+// constant pattern) -- ANDed with a cheap per-query term (a > i). Under a
 // plain broadcast the regexp runs K times per row; under CSE it runs ONCE per
-// row (in the precompute project) and each detector reads a cached slot. The gap
+// row (in the precompute project) and each query reads a cached slot. The gap
 // grows with K.
 func BenchmarkBroadcastCSE(b *testing.B) {
 	const n = 1000
 	labelResultsLabels := base.Labels{"tag", "ev"}
 
-	buildDetectors := func(k int) []Detector {
+	buildQueries := func(k int) []BroadcastQuery {
 		shared := []interface{}{"regexp_contains", lp(".", "line"),
 			[]interface{}{"json", "\"panic\""}}
-		dets := make([]Detector, k)
+		dets := make([]BroadcastQuery, k)
 		for i := 0; i < k; i++ {
 			cheap := []interface{}{"gt", lp(".", "a"), []interface{}{"json", strconv.Itoa(i)}}
-			dets[i] = Detector{
+			dets[i] = BroadcastQuery{
 				Tag:  "d" + strconv.Itoa(i),
 				Pred: []interface{}{"and", shared, cheap},
 				Proj: []interface{}{lp(".", "a")},
@@ -222,7 +222,7 @@ func BenchmarkBroadcastCSE(b *testing.B) {
 	}
 
 	for _, k := range []int{4, 32} {
-		dets := buildDetectors(k)
+		dets := buildQueries(k)
 
 		// Build each plan ONCE (the CSE rewrite is a build-time pass, its garbage
 		// off the hot path); the hot loop only re-runs the shared scan.

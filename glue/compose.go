@@ -25,7 +25,7 @@ package glue
 // ComposeKeyspace), which a downstream node reads with the collision-free table
 // reference `FROM node('<up>')` (compose_node.go — a function ref can't clash with a
 // keyspace name). Each materialized row is {label, result, fingerprint} — result stays
-// nested (navigate x.result.<field>), label enables per-detector GROUP BY, and the
+// nested (navigate x.result.<field>), label enables per-query GROUP BY, and the
 // fingerprint is a lineage handle.
 
 import (

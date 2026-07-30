@@ -16,7 +16,7 @@ package glue
 import "testing"
 
 // skipZeroAllocUnderRace skips a testing.AllocsPerRun-based "0 allocs/row"
-// assertion when the binary is built with -race: the race detector's shadow-
+// assertion when the binary is built with -race: the race query's shadow-
 // memory instrumentation adds allocations to almost any code, so a strict
 // zero-alloc expectation cannot hold under it (this is the -race build; the
 // assertions are still exercised in a normal build). See the !race twin.

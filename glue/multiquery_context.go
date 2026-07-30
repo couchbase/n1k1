@@ -56,7 +56,7 @@ type contextGroupEntry struct {
 	info  contextDetInfo
 }
 
-// analyzeContextDetector parses/plans/converts one entry's SQL and, iff it is the
+// analyzeContextQuery parses/plans/converts one entry's SQL and, iff it is the
 // canonical context idiom, returns its extracted contextDetInfo. A parse/plan/convert
 // failure (or any non-context shape) returns ok=false -- the entry then falls through
 // to analyzeEntry (which surfaces a genuine reject or classifies it fusable /
@@ -117,7 +117,7 @@ type contextDetInfo struct {
 	sig string
 }
 
-// recognizeContextDetector matches the canonical windowed match-flag idiom on a converted
+// recognizeContextQuery matches the canonical windowed match-flag idiom on a converted
 // plan and extracts a contextDetInfo, or ok=false. See the file header for the shape.
 func recognizeContextEntry(top *base.Op, temps []interface{}) (contextDetInfo, bool) {
 	// (1) descend from the top through the outer projection(s) and any PURE outer sort
@@ -494,7 +494,7 @@ func buildContextBroadcast(group []contextDetInfo, tags []string, unified *Conv)
 	// possible (contextPredTree), so the engine op's Aho-Corasick index can extract a
 	// necessary literal and skip the predicate eval on rows that lack it (sparse-match).
 	// Result is each entry's own SELECT projection (IDEA-0025), shaped over the
-	// shared "." scan row by recognizeContextDetector; an entry with no captured
+	// shared "." scan row by recognizeContextQuery; an entry with no captured
 	// projection (e.g. a directly-constructed contextDetInfo) falls back to the whole row.
 	wholeRow := []interface{}{[]interface{}{"labelPath", "."}}
 	exts := make([]interface{}, 0, len(group))
@@ -576,7 +576,7 @@ func contextFusedProjection(outer, inner *base.Op, derivedAlias, scanAlias strin
 // (the @grep_context macro's `SELECT src.*, MAX(...) AS hit`, IDEA-0029). The window
 // aggregate (`near`/`hit`) and any name the star doesn't carry resolve to ok=false -- not
 // reproducible per scan row -- so the caller bails to standalone. Star-passthrough wrappers
-// ABOVE this project preserve names 1:1 (recognizeContextDetector rejects a renaming one),
+// ABOVE this project preserve names 1:1 (recognizeContextQuery rejects a renaming one),
 // so resolving straight against `inner` is faithful.
 func derivedColumnResolver(inner *base.Op, scanAlias string) func(string) (expression.Expression, bool) {
 	m := map[string]expression.Expression{}

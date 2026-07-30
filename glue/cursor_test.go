@@ -87,7 +87,7 @@ func TestCursorAppendDelta(t *testing.T) {
 		f.Close()
 	}
 
-	// A fusable detector: ERROR-severity events.
+	// A fusable query: ERROR-severity events.
 	entry, err := ParseMultiQueryEntry("errs.sql++",
 		"-- label: errs\n"+`SELECT e.n FROM events e WHERE e.sev = "ERROR"`)
 	if err != nil {

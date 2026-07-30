@@ -35,20 +35,20 @@ var (
 
 	// broadcast (shared-scan fan-out): RowsIn counts the SHARED rows fanned in
 	// (scanned + decoded ONCE); LabelResultsOut counts tagged labelResults emitted across
-	// all K detectors. RowsIn stays at N no matter how many detectors run -- that
+	// all K queries. RowsIn stays at N no matter how many queries run -- that
 	// flat decode cost is the whole point of the op.
-	StatBroadcastRowsIn      = base.DefStat("RowsIn", "shared rows fanned in (scanned+decoded once)", "broadcast")
-	StatBroadcastLabelResultsOut = base.DefStat("LabelResultsOut", "tagged labelResults emitted across all detectors", "broadcast")
+	StatBroadcastRowsIn          = base.DefStat("RowsIn", "shared rows fanned in (scanned+decoded once)", "broadcast")
+	StatBroadcastLabelResultsOut = base.DefStat("LabelResultsOut", "tagged labelResults emitted across all queries", "broadcast")
 
 	// broadcast-indexed (the predicate-index sparse fan-out, DESIGN-prepare.md
 	// "Predicate index"): RowsIn counts the shared rows fanned in; LabelResultsOut the
-	// tagged labelResults; PredEvals the FULL detector predicates actually evaluated
+	// tagged labelResults; PredEvals the FULL query predicates actually evaluated
 	// (woken-by-a-present-literal + always-wake). PredEvals is the sparsity signal
 	// -- it stays ~O(hits + always-wake) per row instead of the K-per-row a plain
 	// broadcast pays (see TestOpBroadcastIndexedSparsity).
-	StatBroadcastIndexedRowsIn      = base.DefStat("RowsIn", "shared rows fanned in (scanned+decoded once)", "broadcast-indexed")
-	StatBroadcastIndexedLabelResultsOut = base.DefStat("LabelResultsOut", "tagged labelResults emitted across all detectors", "broadcast-indexed")
-	StatBroadcastIndexedPredEvals   = base.DefStat("PredEvals", "full detector predicates evaluated (woken + always-wake)", "broadcast-indexed")
+	StatBroadcastIndexedRowsIn          = base.DefStat("RowsIn", "shared rows fanned in (scanned+decoded once)", "broadcast-indexed")
+	StatBroadcastIndexedLabelResultsOut = base.DefStat("LabelResultsOut", "tagged labelResults emitted across all queries", "broadcast-indexed")
+	StatBroadcastIndexedPredEvals       = base.DefStat("PredEvals", "full query predicates evaluated (woken + always-wake)", "broadcast-indexed")
 
 	StatGroupRowsIn    = base.DefStat("RowsIn", "input rows the operator consumed", "group", "distinct")
 	StatGroupGroupsOut = base.DefStat("GroupsOut", "distinct groups (or DISTINCT rows) emitted", "group", "distinct")

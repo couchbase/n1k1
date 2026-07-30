@@ -408,14 +408,14 @@ func TestASOFLoweringRawElem0Native(t *testing.T) {
 
 // TestASOFLoweringOuterFilterDifferential is the IDEA-0014 gate: a nearest-preceding
 // argmax with an OUTER WHERE (correlate only a filtered subset of E -- the common
-// real detector, e.g. only error rows) must STILL lower. Before the fix an outer
+// real query, e.g. only error rows) must STILL lower. Before the fix an outer
 // WHERE put a `filter` between the project and the scan, so the recognizer bailed to
 // the O(n^2) correlated path. The filter is now re-applied to the E probe stream, so
 // the lowering fires AND the output stays byte-identical to the correlated baseline.
 func TestASOFLoweringOuterFilterDifferential(t *testing.T) {
 	root := t.TempDir()
 	// E carries a mix of msgs; the outer WHERE keeps only the "boom" rows (mirrors a
-	// detector's `regexp_contains(e.msg, ...)` correlate-only-matching-rows filter).
+	// query's `regexp_contains(e.msg, ...)` correlate-only-matching-rows filter).
 	asofWriteKS(t, root, "elog", "ns_server.error.log",
 		nsLine("2026-05-17T15:36:11.100+02:00", "n1", "boom-100")+ // kept; no preceding R -> [] (empty)
 			nsLine("2026-05-17T15:36:12.500+02:00", "n1", "noise-250")+ // dropped by filter

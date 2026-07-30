@@ -17,22 +17,22 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// Detector describes one filter+project unit of the PREPARE++ detector corpus,
+// BroadcastQuery describes one filter+project unit of the PREPARE++ query pack,
 // already BOUND to the single source it targets. It is the routing-builder's
 // input granularity -- the same "filter + project" MVP that OpBroadcast fans out
 // (see op_broadcast.go), plus one extra field: TargetSource.
 //
-// The caller DECLARES TargetSource. Inferring it from a detector's SQL++ FROM
+// The caller DECLARES TargetSource. Inferring it from a query's SQL++ FROM
 // clause needs cbq parsing and is the future corpus-compiler's job (DESIGN-
 // prepare.md phase 6) that will FEED this builder; BroadcastRoute deliberately
 // does no SQL parsing.
-type Detector struct {
-	// Tag is the detector id, emitted in output slot 0 of every labelResult so a
+type BroadcastQuery struct {
+	// Tag is the query id, emitted in output slot 0 of every labelResult so a
 	// consumer can demultiplex the interleaved labelResults stream.
 	Tag string
 
 	// TargetSource is the id of the ONE source (a key of BroadcastRoute's
-	// sources map) this detector runs against. A detector whose TargetSource is
+	// sources map) this query runs against. A query whose TargetSource is
 	// absent from sources is an orphan: pruned and RETURNED, never silently run
 	// against nothing (which "would yield an empty labelResults table that reads as
 	// clean").
@@ -43,55 +43,55 @@ type Detector struct {
 	Pred []interface{}
 
 	// Proj is the LIST of projection expr-trees (same shape as an OpProject
-	// Params); it becomes det[2] of a broadcast detector spec.
+	// Params); it becomes det[2] of a broadcast query spec.
 	Proj []interface{}
 
-	// Woken, when non-nil, is a live per-detector counter the (interpreter-only)
-	// broadcast-indexed op increments once per row this detector is woken -- the
-	// substrate for the corpus per-detector hit report (woken vs scanned vs matched).
+	// Woken, when non-nil, is a live per-query counter the (interpreter-only)
+	// broadcast-indexed op increments once per row this query is woken -- the
+	// substrate for the corpus per-query hit report (woken vs scanned vs matched).
 	// It rides as the optional det[3] of the spec; nil = don't count (zero overhead).
 	Woken *int64
 }
 
 // BroadcastRoute is the source-routing plan builder: the cheapest, highest-
 // leverage lever of PREPARE++ multi-query optimization (DESIGN-prepare.md,
-// "Source routing (cheap, big)"). It takes a detector corpus + the available
-// sources and produces a routed plan where each detector runs ONLY against its
-// TargetSource -- "a file only fans out to detectors that target it. Prune
+// "Source routing (cheap, big)"). It takes a query pack + the available
+// sources and produces a routed plan where each query runs ONLY against its
+// TargetSource -- "a file only fans out to queries that target it. Prune
 // before any evaluation."
 //
 // Where a flat broadcast over all sources is O(K x rows) in predicate work
 // (BenchmarkBroadcastScaling), routing drops the per-row predicate work ~M-fold
-// for K detectors spread across M sources: a source's rows are only ever
-// evaluated by the detectors that target that source.
+// for K queries spread across M sources: a source's rows are only ever
+// evaluated by the queries that target that source.
 //
 // The routed plan reuses the EXISTING ops -- no new engine op, no intermed /
 // codegen change. It is a "union-all" over one "broadcast" per source-that-has-
-// detectors. Each broadcast shares the uniform labelResults schema (labelResultsLabels,
+// queries. Each broadcast shares the uniform labelResults schema (labelResultsLabels,
 // [tag, evidence...]), so union-all funnels the per-source labelResults into one
 // stream.
 //
 //   - sources: available sources, keyed by id; the value is that source's scan
 //     *base.Op (the broadcast's shared-scan child).
-//   - detectors: the corpus, each already bound to a TargetSource.
+//   - queries: the corpus, each already bound to a TargetSource.
 //   - labelResultsLabels: the uniform labelResults schema shared by every broadcast and
 //     the union-all.
 //
 // Returns:
 //
-//   - routed: the routed plan. nil if NO detector targets a present source
+//   - routed: the routed plan. nil if NO query targets a present source
 //     (empty corpus, or all orphaned) -- an honestly empty plan, not a plan that
 //     "reads as clean". A single contributing source returns that source's
 //     broadcast directly (no needless union-all wrapper).
-//   - orphans: detectors whose TargetSource is absent from sources, in input
+//   - orphans: queries whose TargetSource is absent from sources, in input
 //     order. Surfaced, never hidden -- a binding "must fail loudly, not
 //     silently". The CALLER decides whether an orphan is a hard error.
-func BroadcastRoute(sources map[string]*base.Op, detectors []Detector,
-	labelResultsLabels base.Labels) (routed *base.Op, orphans []Detector) {
-	// Group detectors by TargetSource, preserving input order within a source.
+func BroadcastRoute(sources map[string]*base.Op, queries []BroadcastQuery,
+	labelResultsLabels base.Labels) (routed *base.Op, orphans []BroadcastQuery) {
+	// Group queries by TargetSource, preserving input order within a source.
 	// Orphans (unknown TargetSource) are collected out, in input order.
-	bySource := map[string][]Detector{}
-	for _, d := range detectors {
+	bySource := map[string][]BroadcastQuery{}
+	for _, d := range queries {
 		if _, ok := sources[d.TargetSource]; !ok {
 			orphans = append(orphans, d)
 			continue
@@ -99,7 +99,7 @@ func BroadcastRoute(sources map[string]*base.Op, detectors []Detector,
 		bySource[d.TargetSource] = append(bySource[d.TargetSource], d)
 	}
 
-	// One broadcast per source-that-has-detectors, in sorted-id order so the
+	// One broadcast per source-that-has-queries, in sorted-id order so the
 	// plan is deterministic regardless of Go map iteration order.
 	ids := make([]string, 0, len(bySource))
 	for id := range bySource {
@@ -113,8 +113,8 @@ func BroadcastRoute(sources map[string]*base.Op, detectors []Detector,
 
 		detParams := make([]interface{}, 0, len(dets))
 		for _, d := range dets {
-			// The existing broadcast detector spec: []interface{}{tag, pred, proj}
-			// (see broadcastDetectorSpecs / benchDetectorParams).
+			// The existing broadcast query spec: []interface{}{tag, pred, proj}
+			// (see broadcastQuerySpecs / benchQueryParams).
 			detParams = append(detParams, []interface{}{d.Tag, d.Pred, d.Proj})
 		}
 
@@ -128,7 +128,7 @@ func BroadcastRoute(sources map[string]*base.Op, detectors []Detector,
 
 	switch len(broadcasts) {
 	case 0:
-		// No present source has a detector: empty corpus or all orphaned.
+		// No present source has a query: empty corpus or all orphaned.
 		return nil, orphans
 	case 1:
 		// A single contributing source needs no union-all wrapper.

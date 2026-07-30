@@ -52,7 +52,7 @@ func TestTopoOrder(t *testing.T) {
 	}
 }
 
-// TestComposeDAG is the Phase-4 end-to-end: a primitive detector pack feeds a
+// TestComposeDAG is the Phase-4 end-to-end: a primitive query pack feeds a
 // correlation pack via a materialized pack_<name> keyspace.
 func TestComposeDAG(t *testing.T) {
 	dir := t.TempDir()

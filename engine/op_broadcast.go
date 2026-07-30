@@ -21,30 +21,30 @@ import (
 // PREPARE++ multi-query optimization (DESIGN-prepare.md phase 3, "Shared scan /
 // multi-query optimization").
 //
-// It scans a keyspace ONCE and fans each yielded row to K "detector" pipelines,
-// so K detectors run over one scan + one decode instead of K separate
+// It scans a keyspace ONCE and fans each yielded row to K "query" pipelines,
+// so K queries run over one scan + one decode instead of K separate
 // scan+decode passes. This is the core capability that lets thousands of
-// detectors be applied to a support bundle without rescanning it thousands of
-// times: "scan once, push each row to K detector predicate pipelines ... Beats N
+// queries be applied to a support bundle without rescanning it thousands of
+// times: "scan once, push each row to K query predicate pipelines ... Beats N
 // separate runs (one scan, one decode per row)".
 //
 // Shape:
 //
 //   - Exactly ONE child (o.Children[0]): the shared scan whose rows are fanned.
-//   - o.Params[0] encodes the K detectors. Each detector = { tag, predicate
+//   - o.Params[0] encodes the K queries. Each query = { tag, predicate
 //     expr-tree, projection expr-trees } -- i.e. a "filter + project", the MVP
 //     granularity the design calls "N predicates". General fed sub-pipelines are
 //     future work and deliberately NOT attempted here.
 //
-// Per matching row a detector yields its projected row TAGGED with the
-// detector's id in output slot 0, so a consumer can demultiplex the interleaved
-// labelResults stream by tag. All detectors project into a uniform labelResults schema,
+// Per matching row a query yields its projected row TAGGED with the
+// query's id in output slot 0, so a consumer can demultiplex the interleaved
+// labelResults stream by tag. All queries project into a uniform labelResults schema,
 // so the op's output Labels stay stable: [<tag>, <evidence...>].
 //
 // Zero per-row garbage: the predicate/projection base.ExprFuncs are built ONCE
 // at setup (via MakeExprFunc / MakeProjectFunc, exactly as OpFilter / OpProject
-// do), the input row is shared across all detectors (native, no re-decode / no
-// boxing), and each detector reuses its own output buffer across rows. The only
+// do), the input row is shared across all queries (native, no re-decode / no
+// boxing), and each query reuses its own output buffer across rows. The only
 // allocations happen in setup.
 //
 // Like OpMergeScan (DESIGN-merging.md), this op is interpreter-oriented for now:
@@ -58,16 +58,16 @@ func OpBroadcast(o *base.Op, lzVars *base.Vars, lzYieldVals base.YieldVals,
 	BroadcastExec(o, lzVars, lzYieldVals, lzYieldErr, path, pathNext) // !lz
 }
 
-// broadcastDetector holds one detector's setup-built, reusable machinery: its
+// broadcastQuery holds one query's setup-built, reusable machinery: its
 // tag value (a precomputed JSON string placed in output slot 0), its predicate
-// ExprFunc, its projection ProjectFunc, and a per-detector output buffer reused
+// ExprFunc, its projection ProjectFunc, and a per-query output buffer reused
 // across rows. Nothing here is allocated per row.
-type broadcastDetector struct {
+type broadcastQuery struct {
 	tagVal   base.Val
 	predFunc base.ExprFunc
 	projFunc base.ProjectFunc
 	outReuse base.Vals
-	woken    *int64 // optional per-detector woken counter (see Detector.Woken); nil = off
+	woken    *int64 // optional per-query woken counter (see BroadcastQuery.Woken); nil = off
 }
 
 // BroadcastExec holds the actual (non-lazy) fan-out logic. Its params are
@@ -76,9 +76,9 @@ type broadcastDetector struct {
 //
 // Params layout:
 //
-//	Params[0] []interface{}  -- the K detectors. Each element is itself a
+//	Params[0] []interface{}  -- the K queries. Each element is itself a
 //	                            []interface{}{ tag, predExpr, projExprs }:
-//	                              tag       string        -- detector id (output slot 0)
+//	                              tag       string        -- query id (output slot 0)
 //	                              predExpr  []interface{} -- predicate expr-tree
 //	                                                         (an ExprCatalog tree,
 //	                                                         e.g. ["gt", ["labelPath",
@@ -97,17 +97,17 @@ func BroadcastExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 		childLabels = o.Children[0].Labels
 	}
 
-	// Setup (once, before any row): build each detector's predicate ExprFunc and
+	// Setup (once, before any row): build each query's predicate ExprFunc and
 	// projection ProjectFunc. Garbage here is fine; the hot loop below is not.
-	specs := broadcastDetectorSpecs(o.Params)
+	specs := broadcastQuerySpecs(o.Params)
 
-	detectors := make([]broadcastDetector, 0, len(specs))
+	queries := make([]broadcastQuery, 0, len(specs))
 	for i, spec := range specs {
 		predFunc := MakeExprFunc(vars, childLabels, spec.pred, pathNext, "pred"+strconv.Itoa(i))
 
 		projFunc := MakeProjectFunc(vars, childLabels, spec.proj, pathNext, "proj"+strconv.Itoa(i))
 
-		detectors = append(detectors, broadcastDetector{
+		queries = append(queries, broadcastQuery{
 			tagVal:   base.Val(strconv.Quote(spec.tag)),
 			predFunc: predFunc,
 			projFunc: projFunc,
@@ -117,21 +117,21 @@ func BroadcastExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	// Stats counters update live (per row) into the shared array so the CLI
 	// display animates; they are genCompiler:hide'd -> interpreter-only (the
 	// compiled path collects no stats -- see DESIGN-stats.md's KNOWN LIMITATION).
-	stats := StatsFromVars(vars)                                // <== genCompiler:hide
-	statsBase := o.StatsBase                                    // <== genCompiler:hide
-	StatsCounterZero(stats, statsBase+StatBroadcastRowsIn)      // <== genCompiler:hide
+	stats := StatsFromVars(vars)                                    // <== genCompiler:hide
+	statsBase := o.StatsBase                                        // <== genCompiler:hide
+	StatsCounterZero(stats, statsBase+StatBroadcastRowsIn)          // <== genCompiler:hide
 	StatsCounterZero(stats, statsBase+StatBroadcastLabelResultsOut) // <== genCompiler:hide
 
-	// Per row (in the shared scan's yield callback): evaluate every detector's
+	// Per row (in the shared scan's yield callback): evaluate every query's
 	// predicate against the SAME native row; on a truthy predicate, project into
-	// the detector's REUSED buffer -- tag first -- and yield the tagged labelResult.
+	// the query's REUSED buffer -- tag first -- and yield the tagged labelResult.
 	// MISSING / NULL / false predicates are non-truthy (base.ValTruthy), so those
 	// rows are dropped exactly as OpFilter drops them.
 	childYield := func(vals base.Vals) {
 		StatsCounterBump(stats, statsBase+StatBroadcastRowsIn) // stats: live // <== genCompiler:hide
 
-		for i := range detectors {
-			d := &detectors[i]
+		for i := range queries {
+			d := &queries[i]
 
 			predVal := d.predFunc(vals, yieldErr)
 
@@ -151,28 +151,28 @@ func BroadcastExec(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	ExecOp(o.Children[0], vars, childYield, yieldErr, pathNext, "0")
 }
 
-// bcBumpWoken increments a detector's optional woken counter (nil = off). It exists
+// bcBumpWoken increments a query's optional woken counter (nil = off). It exists
 // as a ONE-LINE call so the gen-compiler's per-line `genCompiler:hide` strips it
 // cleanly at the call site -- a multi-line `if` block would survive gofmt as several
 // lines and leave a dangling brace in the compiled copy.
-func bcBumpWoken(d *broadcastDetector) {
+func bcBumpWoken(d *broadcastQuery) {
 	if d.woken != nil {
 		*d.woken++
 	}
 }
 
-// broadcastDetectorSpec is the parsed, pre-setup description of one detector.
-type broadcastDetectorSpec struct {
+// broadcastQuerySpec is the parsed, pre-setup description of one query.
+type broadcastQuerySpec struct {
 	tag   string
 	pred  []interface{}
 	proj  []interface{}
-	woken *int64 // optional per-detector woken counter (det[3]); nil when absent
+	woken *int64 // optional per-query woken counter (det[3]); nil when absent
 }
 
-// broadcastDetectorSpecs parses o.Params[0] into per-detector specs. A malformed
+// broadcastQuerySpecs parses o.Params[0] into per-query specs. A malformed
 // entry is a programming error at this engine layer (glue builds these), so it is
 // simply skipped rather than half-decoded.
-func broadcastDetectorSpecs(params []interface{}) []broadcastDetectorSpec {
+func broadcastQuerySpecs(params []interface{}) []broadcastQuerySpec {
 	if len(params) == 0 || params[0] == nil {
 		return nil
 	}
@@ -182,7 +182,7 @@ func broadcastDetectorSpecs(params []interface{}) []broadcastDetectorSpec {
 		return nil
 	}
 
-	specs := make([]broadcastDetectorSpec, 0, len(raw))
+	specs := make([]broadcastQuerySpec, 0, len(raw))
 	for _, r := range raw {
 		det, ok := r.([]interface{})
 		if !ok || len(det) < 3 {
@@ -198,13 +198,13 @@ func broadcastDetectorSpecs(params []interface{}) []broadcastDetectorSpec {
 		}
 
 		// Optional det[3]: a live *int64 the caller wants incremented once per row this
-		// detector is woken (per-detector observability, e.g. the corpus hit report).
+		// query is woken (per-query observability, e.g. the corpus hit report).
 		var woken *int64
 		if len(det) >= 4 {
 			woken, _ = det[3].(*int64)
 		}
 
-		specs = append(specs, broadcastDetectorSpec{tag: tag, pred: pred, proj: proj, woken: woken})
+		specs = append(specs, broadcastQuerySpec{tag: tag, pred: pred, proj: proj, woken: woken})
 	}
 
 	return specs

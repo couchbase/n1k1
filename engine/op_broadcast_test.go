@@ -20,9 +20,9 @@ import (
 	"github.com/couchbase/n1k1/base"
 )
 
-// BenchmarkBroadcastScaling sweeps K (detectors) to show HOW the shared-scan win
+// BenchmarkBroadcastScaling sweeps K (queries) to show HOW the shared-scan win
 // scales: broadcast = 1 scan + K predicates, vs separate = K scans + K predicates.
-// The gap is the (K-1) scans broadcast removes; because the per-detector predicate
+// The gap is the (K-1) scans broadcast removes; because the per-query predicate
 // work is O(K x rows) in BOTH, broadcast's own cost still grows linearly in K --
 // the evidence for whether a predicate index (Phase 4) is the next lever. Narrow
 // rows here are the CHEAPEST scan (worst case for the win); a real plugin-extracted
@@ -42,7 +42,7 @@ func BenchmarkBroadcastScaling(b *testing.B) {
 	}
 
 	for _, k := range []int{1, 4, 16, 64, 256} {
-		detParams := benchDetectorParams(k)
+		detParams := benchQueryParams(k)
 
 		b.Run(fmt.Sprintf("broadcast/K=%d", k), func(b *testing.B) {
 			bc := &base.Op{Kind: "broadcast", Labels: base.Labels{"tag", "a"},
@@ -110,9 +110,9 @@ func collectRows(t *testing.T, root *base.Op, vars *base.Vars) [][]string {
 	return out
 }
 
-// broadcastTestDetector describes one detector for the test: a tag, a predicate
+// broadcastTestQuery describes one query for the test: a tag, a predicate
 // expr-tree, and a single projection expr-tree (uniform labelResults schema).
-type broadcastTestDetector struct {
+type broadcastTestQuery struct {
 	tag  string
 	pred []interface{}
 	proj []interface{} // one expr-tree
@@ -127,23 +127,23 @@ func lp(label string, path ...string) []interface{} {
 	return t
 }
 
-// TestOpBroadcastEquivalence proves that running K detectors through ONE
+// TestOpBroadcastEquivalence proves that running K queries through ONE
 // broadcast over a single scan yields, per tag, EXACTLY the rows that running
-// each detector as a separate scan -> filter -> project pipeline yields. It
-// covers a detector matching ALL rows, one matching NONE, one matching SOME
+// each query as a separate scan -> filter -> project pipeline yields. It
+// covers a query matching ALL rows, one matching NONE, one matching SOME
 // (a > threshold), and one whose predicate reads a MISSING field (which must be
 // non-truthy and match nothing, exactly like OpFilter drops MISSING).
 func TestOpBroadcastEquivalence(t *testing.T) {
 	const n = 20
 
-	dets := []broadcastTestDetector{
+	dets := []broadcastTestQuery{
 		{tag: "all", pred: []interface{}{"json", "true"}, proj: lp(".", "a")},
 		{tag: "none", pred: []interface{}{"json", "false"}, proj: lp(".", "a")},
 		{tag: "some", pred: []interface{}{"gt", lp(".", "a"), []interface{}{"json", "12"}}, proj: lp(".", "a")},
 		{tag: "missing", pred: lp(".", "nope"), proj: lp(".", "a")},
 	}
 
-	// Build the broadcast op: Params[0] = []detector, each = {tag, pred, [proj]}.
+	// Build the broadcast op: Params[0] = []query, each = {tag, pred, [proj]}.
 	var detParams []interface{}
 	for _, d := range dets {
 		detParams = append(detParams, []interface{}{
@@ -172,7 +172,7 @@ func TestOpBroadcastEquivalence(t *testing.T) {
 		got[tag] = append(got[tag], row[1])
 	}
 
-	// Oracle: each detector as its own scan -> filter -> project pipeline.
+	// Oracle: each query as its own scan -> filter -> project pipeline.
 	for _, d := range dets {
 		oracle := &base.Op{
 			Kind:   "project",
@@ -192,7 +192,7 @@ func TestOpBroadcastEquivalence(t *testing.T) {
 		}
 
 		if !reflect.DeepEqual(got[d.tag], want) {
-			t.Fatalf("detector %q: broadcast labelResults %v != separate-pipeline %v",
+			t.Fatalf("query %q: broadcast labelResults %v != separate-pipeline %v",
 				d.tag, got[d.tag], want)
 		}
 	}
@@ -213,7 +213,7 @@ func TestOpBroadcastEquivalence(t *testing.T) {
 }
 
 // TestOpBroadcastScansOnce proves the whole point of the op: broadcasting K
-// detectors decodes each row ONCE (the shared scan's RowsOut == N and the
+// queries decodes each row ONCE (the shared scan's RowsOut == N and the
 // broadcast's RowsIn == N), whereas K separate pipelines decode K*N rows.
 func TestOpBroadcastScansOnce(t *testing.T) {
 	const n = 50
@@ -255,8 +255,8 @@ func TestOpBroadcastScansOnce(t *testing.T) {
 
 // -----------------------------------------------------
 
-// benchDetectorParams builds k detectors (a > i, projecting a) for benchmarks.
-func benchDetectorParams(k int) []interface{} {
+// benchQueryParams builds k queries (a > i, projecting a) for benchmarks.
+func benchQueryParams(k int) []interface{} {
 	var detParams []interface{}
 	for i := 0; i < k; i++ {
 		detParams = append(detParams, []interface{}{
@@ -268,8 +268,8 @@ func benchDetectorParams(k int) []interface{} {
 	return detParams
 }
 
-// BenchmarkBroadcastVsSeparate contrasts K detectors fanned out over ONE scan
-// (broadcast) with the same K detectors run as K independent scan+filter+project
+// BenchmarkBroadcastVsSeparate contrasts K queries fanned out over ONE scan
+// (broadcast) with the same K queries run as K independent scan+filter+project
 // pipelines. The broadcast decodes each of the N rows once; the separate runs
 // decode K*N rows -- the win the op exists to capture.
 func BenchmarkBroadcastVsSeparate(b *testing.B) {
@@ -285,7 +285,7 @@ func BenchmarkBroadcastVsSeparate(b *testing.B) {
 		}
 	}
 
-	detParams := benchDetectorParams(k)
+	detParams := benchQueryParams(k)
 
 	sink := func(base.Vals) {}
 	noErr := func(err error) {

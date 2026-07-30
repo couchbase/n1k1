@@ -16,8 +16,8 @@ package glue
 // `.multi doctor` support (DESIGN-census.md Phase 2): the pack↔census JOIN — the
 // piece a stateless engine structurally can't ship, because it needs both the
 // corpus's key space (the census) AND the standing questions asked of it (the
-// pack). The first, baseline-free check is "a detector references a field the
-// corpus doesn't have" — which catches a birth-in-error (a detector aimed at a
+// pack). The first, baseline-free check is "a query references a field the
+// corpus doesn't have" — which catches a birth-in-error (a query aimed at a
 // field that never existed) that a yield alarm never can (no cliff).
 //
 // The referenced-field set MUST be planner-sourced, never a text heuristic: a text

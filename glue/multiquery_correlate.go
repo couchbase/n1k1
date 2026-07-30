@@ -31,7 +31,7 @@ import (
 	"github.com/couchbase/query/algebra"
 )
 
-// analyzeCorrelationDetector recognizes a temporal-correlation entry (a projected
+// analyzeCorrelationQuery recognizes a temporal-correlation entry (a projected
 // correlated argmax subquery, the ASOF shape) purely from its parsed algebra -- no plan
 // or convert needed, and independent of whether it is ASOF-lowerable (that needs sorted-
 // source metadata). It returns the sharing SIGNATURE: the outer (left/probe) keyspace, the

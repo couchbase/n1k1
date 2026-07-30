@@ -22,7 +22,7 @@ import (
 // IsReserved reports whether word is a SQL++ reserved keyword that can't be used as
 // a bare identifier -- a field, alias, or keyspace name -- and so must be backticked
 // (e.g. `level`). It is the proactive companion to the reactive reserved-word hint
-// (cmd/n1k1 reservedWordHint): an author or an agent building detectors can check a
+// (cmd/n1k1 reservedWordHint): an author or an agent building queries can check a
 // name up front instead of hitting the parse error.
 //
 // The answer comes from cbq's OWN parser -- it parses `SELECT 1 AS <word>` and looks

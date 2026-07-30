@@ -23,7 +23,7 @@ import (
 // sorted substrate).
 //
 // It fans ONE already-sorted, partition-grouped input stream to K "context extractors",
-// so K grep -A/-B/-C style detectors share a single scan AND a single sort (the dominant
+// so K grep -A/-B/-C style queries share a single scan AND a single sort (the dominant
 // cost on GB logs) instead of each re-scanning + re-sorting the keyspace. Each extractor
 // emits, per matching row, that row plus surrounding CONTEXT lines -- the evidence-
 // gathering idiom that a windowed match-flag expresses in SQL++

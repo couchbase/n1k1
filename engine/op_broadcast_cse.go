@@ -21,13 +21,13 @@ import (
 
 // BroadcastCSE is the corpus common-subexpression-elimination plan builder --
 // the next PREPARE++ multi-query-optimization lever after source routing
-// (DESIGN-prepare.md, "Corpus CSE": detectors share sub-predicates like
+// (DESIGN-prepare.md, "Corpus CSE": queries share sub-predicates like
 // level="ERROR" or line LIKE '%panic%', and "a global common-subexpression pass
 // over the corpus computes each shared term once per row, not once per
-// detector").
+// query").
 //
-// In a flat "broadcast" (op_broadcast.go) every detector's predicate/projection
-// ExprFuncs run INDEPENDENTLY per row, so a sub-expression shared by K detectors
+// In a flat "broadcast" (op_broadcast.go) every query's predicate/projection
+// ExprFuncs run INDEPENDENTLY per row, so a sub-expression shared by K queries
 // -- e.g. regexp_contains(line,"panic") -- is re-evaluated K times per row.
 // BroadcastCSE removes that redundancy WITHOUT touching the broadcast op: it is
 // PURE plan composition (mirroring BroadcastRoute), reusing only the existing
@@ -40,7 +40,7 @@ import (
 //     row through (label ".") AND appends one synthetic column per shared
 //     sub-expression (labels "^cse0", "^cse1", ...), so each shared term is
 //     evaluated ONCE per row (in the project's reused output buffer).
-//   - Every detector's Pred / Proj is rewritten so each occurrence of a shared
+//   - Every query's Pred / Proj is rewritten so each occurrence of a shared
 //     sub-expression becomes a cheap slot read ["labelPath","^cseN"] instead of
 //     recomputing the whole term. Bare field reads (["labelPath",".","a"]) are
 //     unchanged -- they still navigate the passed-through "." slot.
@@ -59,25 +59,25 @@ import (
 // If NO candidate is shared, BroadcastCSE returns a plain broadcast over scan
 // (no precompute project) -- zero overhead when nothing is shared.
 //
-// Composition: BroadcastCSE applies WITHIN one source's detector group. It
+// Composition: BroadcastCSE applies WITHIN one source's query group. It
 // composes with BroadcastRoute (which splits the corpus by TargetSource): a
 // caller runs BroadcastRoute to route, then wraps each per-source group with
 // BroadcastCSE over that source's scan. This builder does the CSE for one such
 // group; wiring the two together is the caller's (corpus-compiler's) job.
 //
 //   - scan: the shared-scan child *base.Op (its Labels are typically ["."]).
-//   - detectors: the group's corpus (TargetSource is ignored here; the caller
+//   - queries: the group's corpus (TargetSource is ignored here; the caller
 //     has already routed).
 //   - labelResultsLabels: the uniform labelResults schema of the returned broadcast.
-func BroadcastCSE(scan *base.Op, detectors []Detector,
+func BroadcastCSE(scan *base.Op, queries []BroadcastQuery,
 	labelResultsLabels base.Labels) *base.Op {
-	// (1) Count every sub-expression-tree occurring in every detector's Pred and
+	// (1) Count every sub-expression-tree occurring in every query's Pred and
 	// Proj, keyed by a deterministic canonical serialization.
 	counts := map[string]int{}
 	trees := map[string][]interface{}{} // canonical key -> a representative tree
-	for i := range detectors {
-		cseCount(detectors[i].Pred, counts, trees)
-		cseCount(detectors[i].Proj, counts, trees)
+	for i := range queries {
+		cseCount(queries[i].Pred, counts, trees)
+		cseCount(queries[i].Proj, counts, trees)
 	}
 
 	// (2) Select candidates: occurs >= 2 AND non-trivial (head is an operation,
@@ -93,7 +93,7 @@ func BroadcastCSE(scan *base.Op, detectors []Detector,
 
 	// No sharing worth hoisting: a plain broadcast over scan, no precompute.
 	if len(keys) == 0 {
-		return cseBroadcast(scan, scan.Labels, detectors, labelResultsLabels)
+		return cseBroadcast(scan, scan.Labels, queries, labelResultsLabels)
 	}
 
 	// Assign a synthetic "^cseN" label to each candidate.
@@ -119,11 +119,11 @@ func BroadcastCSE(scan *base.Op, detectors []Detector,
 		Children: []*base.Op{scan},
 	}
 
-	// (4) Rewrite each detector so shared candidate subtrees read their "^cseN"
+	// (4) Rewrite each query so shared candidate subtrees read their "^cseN"
 	// slot; other subtrees (incl. bare field reads) are structurally unchanged.
-	rewritten := make([]Detector, len(detectors))
-	for i := range detectors {
-		d := detectors[i]
+	rewritten := make([]BroadcastQuery, len(queries))
+	for i := range queries {
+		d := queries[i]
 		d.Pred, _ = cseRewrite(d.Pred, cseLabels).([]interface{})
 		d.Proj, _ = cseRewrite(d.Proj, cseLabels).([]interface{})
 		rewritten[i] = d
@@ -133,17 +133,17 @@ func BroadcastCSE(scan *base.Op, detectors []Detector,
 	return cseBroadcast(precompute, projLabels, rewritten, labelResultsLabels)
 }
 
-// cseBroadcast assembles a "broadcast" op over child with the given detectors.
+// cseBroadcast assembles a "broadcast" op over child with the given queries.
 // childLabels is documentary here (BroadcastExec reads child.Labels itself), but
-// keeps the call site parallel to how the rewritten detectors resolve.
+// keeps the call site parallel to how the rewritten queries resolve.
 func cseBroadcast(child *base.Op, childLabels base.Labels,
-	detectors []Detector, labelResultsLabels base.Labels) *base.Op {
+	queries []BroadcastQuery, labelResultsLabels base.Labels) *base.Op {
 	_ = childLabels
 
-	detParams := make([]interface{}, 0, len(detectors))
-	for _, d := range detectors {
-		// The broadcast detector spec: []interface{}{tag, pred, proj[, woken]}. The
-		// optional 4th element is a live per-detector woken counter (nil = omitted).
+	detParams := make([]interface{}, 0, len(queries))
+	for _, d := range queries {
+		// The broadcast query spec: []interface{}{tag, pred, proj[, woken]}. The
+		// optional 4th element is a live per-query woken counter (nil = omitted).
 		det := []interface{}{d.Tag, d.Pred, d.Proj}
 		if d.Woken != nil {
 			det = append(det, d.Woken)

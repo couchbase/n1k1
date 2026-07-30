@@ -18,7 +18,7 @@ package glue
 // optimization (MQO) plan over shared scans. It is the glue-level FEEDER for the
 // engine's MQO substrate (engine/op_broadcast*.go): where those hand-built
 // helpers (BroadcastCSE / BroadcastIndexed / BroadcastRoute) consume already-
-// bound engine.Detector structs, MultiQueryCompile derives those structs from real
+// bound engine.BroadcastQuery structs, MultiQueryCompile derives those structs from real
 // SQL++ -- parse -> plan -> convert -> recognize -> normalize -> group -> compose.
 //
 // An "entry" is a stock SELECT over a single keyspace: `SELECT ... FROM <ks>
@@ -131,7 +131,7 @@ import (
 	"github.com/couchbase/n1k1/engine"
 )
 
-// RejectedDetector reports an entry whose parse/plan/convert FAILED (a genuinely
+// RejectedQuery reports an entry whose parse/plan/convert FAILED (a genuinely
 // broken query), with a human-readable Reason. Surfaced (never silently dropped) and
 // NOT run. Distinct from a Standalone entry, which converts fine but is not the
 // fusable shape -- that one still runs and produces labelResults.
@@ -170,7 +170,7 @@ type CompiledMultiQueryEntries struct {
 	EntryKeyspace map[string]string
 
 	// wokenByTag holds one live *int64 per FUSED entry (by Label), wired into the
-	// broadcast op's engine.Detector.Woken so it counts the rows that woke each
+	// broadcast op's engine.BroadcastQuery.Woken so it counts the rows that woke each
 	// entry; RunReport reads them back (IDEA-0015-followup). Standalone absent.
 	wokenByTag map[string]*int64
 
@@ -204,7 +204,7 @@ type MultiQueryRunReport struct {
 	// scan fanned in (== the broadcast-indexed op's RowsIn). Fused keyspaces only.
 	ScannedByKeyspace map[string]int64
 
-	// WokenByDetector maps a FUSED entry's Label to how many rows woke it (its
+	// WokenByQuery maps a FUSED entry's Label to how many rows woke it (its
 	// predicate was evaluated) -- the predicate index's effect per entry
 	// (IDEA-0015-followup): woken<<scanned means the literal is rare/absent, woken
 	// with 0 matched means the predicate ran but never held. Fused entries only.
@@ -323,13 +323,13 @@ func (s *Session) MultiQueryCompile(dets []MultiQueryEntry) (*CompiledMultiQuery
 		}
 
 		dets := byKeyspace[ks]
-		edets := make([]engine.Detector, 0, len(dets))
+		edets := make([]engine.BroadcastQuery, 0, len(dets))
 		for _, fd := range dets {
 			// A live per-entry woken counter, wired into the broadcast op and read
 			// back by RunReport (IDEA-0015-followup).
 			w := new(int64)
 			wokenByTag[fd.label] = w
-			edets = append(edets, engine.Detector{
+			edets = append(edets, engine.BroadcastQuery{
 				Tag:  fd.label, // engine's generic per-entry id (glue's `label`).
 				Pred: fd.pred,
 				// Result shaped to the entry's SELECT projection (IDEA-0004):
@@ -394,7 +394,7 @@ type entryInfo struct {
 	keyspaceName string        // keyspace.QualifiedName() -- the grouping key.
 	keyspacer    interface{}   // the plan scan op (a keyspacer) for the shared scan.
 	pred         []interface{} // predicate expr-tree, field refs rooted at ".".
-	proj         []interface{} // result projection (engine.Detector.Proj), rooted at ".".
+	proj         []interface{} // result projection (engine.BroadcastQuery.Proj), rooted at ".".
 }
 
 // analyzeEntry parses/plans/converts one entry's SQL++ and classifies it
@@ -554,7 +554,7 @@ func projectionHasSubquery(project *base.Op) bool {
 	return false
 }
 
-// corpusFusedProjection derives the fused-result projection (engine.Detector.Proj)
+// corpusFusedProjection derives the fused-result projection (engine.BroadcastQuery.Proj)
 // from an entry's converted `project` op, so a FUSED entry's result shape
 // matches the same SELECT run STANDALONE (IDEA-0004). The engine's projFunc emits one
 // output column per Proj term after the label; the labelResults schema carries a single
@@ -800,7 +800,7 @@ type aliasToSelf struct {
 // what OpBroadcastIndexed consumes, so re-kinding it to "broadcast-indexed" yields
 // "CSE precompute + Aho-Corasick predicate index" with no new engine op. See
 // engine/op_broadcast_cse.go and engine/op_broadcast_indexed.go.
-func broadcastCSEIndexed(scan *base.Op, dets []engine.Detector,
+func broadcastCSEIndexed(scan *base.Op, dets []engine.BroadcastQuery,
 	labelResultsLabels base.Labels) *base.Op {
 	op := engine.BroadcastCSE(scan, dets, labelResultsLabels)
 	op.Kind = "broadcast-indexed"

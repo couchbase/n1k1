@@ -16,7 +16,7 @@ package glue
 // Session-scoped materialization (IDEA-0027): CREATE TEMP KEYSPACE <name> AS
 // <select> runs the SELECT once, captures its result rows in memory, and registers
 // them as a queryable keyspace that LATER statements in the SAME session can
-// `SELECT ... FROM <name>` -- so a staged/hierarchical detector pipeline (scan the
+// `SELECT ... FROM <name>` -- so a staged/hierarchical query pipeline (scan the
 // GB bundle -> keep the small labelResults -> correlate them) stays in one session and
 // one SQL++ dialect, no shell-out to jsonl files (the layout trap of the manual
 // approach) and no re-parse across processes.

@@ -228,7 +228,7 @@ func (s *CursorStore) snapPath(name string) string {
 }
 
 // SnapshotEntry is one row of a diff-mode snapshot: the labelResult's Doc (so a
-// later diff can emit `before`) tagged with the detector Label that produced it.
+// later diff can emit `before`) tagged with the query Label that produced it.
 type SnapshotEntry struct {
 	Label string          `json:"label,omitempty"`
 	Doc   json.RawMessage `json:"doc"`
@@ -471,11 +471,11 @@ func normalizePackSQL(s string) string {
 
 // ChangeEvent is one Debezium-style change (DESIGN-cep.md § Delta strategies):
 // an insert has After, a delete has Before, an update has both. Id is the doc's
-// identity; Label is the detector whose current/prior view produced it.
+// identity; Label is the query whose current/prior view produced it.
 type ChangeEvent struct {
 	Op     string          // "insert" | "update" | "delete"
 	Id     string          // the doc identity (from the id field)
-	Label  string          // the detector that matched
+	Label  string          // the query that matched
 	Before json.RawMessage // prior doc (update / delete)
 	After  json.RawMessage // current doc (insert / update)
 }
@@ -483,9 +483,9 @@ type ChangeEvent struct {
 // SnapshotFromResults keys a run's labelResults by doc identity for diffing: the
 // value of the `idField` field in each result (default "id"). A result missing a
 // usable id can't be diffed (no stable identity) and is counted in `skipped`
-// rather than silently dropped. Rows are keyed by (label, id) so two detectors
+// rather than silently dropped. Rows are keyed by (label, id) so two queries
 // that both match the same doc keep independent change streams; the reported Id
-// stays the bare doc identity. On a same-key collision within one detector, the
+// stays the bare doc identity. On a same-key collision within one query, the
 // last row wins.
 func SnapshotFromResults(lrs []LabelResult, idField string) (snap map[string]SnapshotEntry, skipped int) {
 	if idField == "" {

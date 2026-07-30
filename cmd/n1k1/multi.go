@@ -406,7 +406,7 @@ func mergeStatsLine(m *base.MergeStats) string {
 	return b.String()
 }
 
-// reportDetectorHits prints the per-entry hit stats (IDEA-0015): for each entry,
+// reportQueryHits prints the per-entry hit stats (IDEA-0015): for each entry,
 // how many labelResults it matched and -- for a fused entry -- how many rows its
 // keyspace scanned. The point is a debuggable 0-labelResults run: an entry that matched
 // 0 gets an annotation distinguishing "the keyspace scanned ~0 rows" (a whole-file
