@@ -424,11 +424,12 @@ func memIndexOpen(ks *memKeyspace, def *indexDef) (*memIndex, error) {
 }
 
 // memCachePath is where a built index blob is cached, beside the catalog under
-// the datastore's sidecar. defHash already encodes the index definition, so a
-// changed def lands on a different path (and stale ones are simply ignored).
+// the sidecar (relocatable via --index-store, so a read-only data root is fine).
+// defHash already encodes the index definition, so a changed def lands on a
+// different path (and stale ones are simply ignored).
 func memCachePath(root, ns, ks, defHash string) string {
 	name := segSanitize(ns) + "__" + segSanitize(ks) + "__" + defHash + ".idx"
-	return filepath.Join(root, sidecarDir, "cache", name)
+	return filepath.Join(sidecarRootFor(root), sidecarDir, "cache", name)
 }
 
 func segSanitize(s string) string {

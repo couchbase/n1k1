@@ -640,10 +640,10 @@ func ftsSlotFor(dir string) *ftsSlot {
 // on ks. Cached per bleve dir; a stale source signature triggers a rebuild.
 func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*ftsIndex, error) {
 	ns := ks.Namespace().Name()
-	instDir := filepath.Join(ks.sds.root, sidecarDir, ns, ks.Name(), "idx",
+	instDir := filepath.Join(sidecarRootFor(ks.sds.root), sidecarDir, ns, ks.Name(), "idx",
 		fmt.Sprintf("%s__fts__%s", fsSafe(def.Name), def.defHash()))
 	bleveDir := filepath.Join(instDir, "bleve")
-	srcDir := filepath.Join(ks.sds.root, ns, ks.Name())
+	srcDir := filepath.Join(ks.sds.root, ns, ks.Name()) // source records: always the data root
 
 	slot := ftsSlotFor(bleveDir)
 

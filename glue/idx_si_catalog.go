@@ -50,6 +50,30 @@ func SetSidecarName(name string) {
 // SidecarName returns the current sidecar directory name.
 func SidecarName() string { return sidecarDir }
 
+// indexStoreRoot, when non-empty, relocates the sidecar (catalog.json + built indexes
+// + freshness state) OUT of the data root -- so a READ-ONLY corpus can still be indexed
+// (n1k1 never writes inside a bundle it doesn't own; the same rule as the cursor store,
+// ISSUE-03/ISSUE-12). Only the SIDECAR moves; source records are always read from the
+// data root itself. The CLI sets it from --index-store. Default "" keeps the sidecar at
+// <dataRoot>/<sidecar> (backward-compatible). Set once at startup, before any query.
+var indexStoreRoot = ""
+
+// SetIndexStore relocates the sidecar root (see indexStoreRoot). A blank dir keeps the
+// default (sidecar under the data root).
+func SetIndexStore(dir string) { indexStoreRoot = dir }
+
+// IndexStore returns the current sidecar-root override ("" = under the data root).
+func IndexStore() string { return indexStoreRoot }
+
+// sidecarRootFor returns the base directory the sidecar (<base>/<sidecar>/...) lives
+// under for a data root: the --index-store override when set, else the data root itself.
+func sidecarRootFor(dataRoot string) string {
+	if indexStoreRoot != "" {
+		return indexStoreRoot
+	}
+	return dataRoot
+}
+
 // catalog is the parsed .n1k1/catalog.json (index half only for v1).
 type catalog struct {
 	Indexes []*indexDef `json:"indexes"`
@@ -64,7 +88,7 @@ type catalog struct {
 // read independently of the index defs so a malformed index entry doesn't hide
 // the (simple) formats string.
 func CatalogFormats(dataRoot string) (string, error) {
-	raw, err := os.ReadFile(filepath.Join(dataRoot, sidecarDir, "catalog.json"))
+	raw, err := os.ReadFile(filepath.Join(sidecarRootFor(dataRoot), sidecarDir, "catalog.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -85,7 +109,7 @@ func CatalogFormats(dataRoot string) (string, error) {
 // content (indexes, unknown keys) by round-tripping through a generic map. A blank
 // formats removes the field.
 func CatalogSetFormats(dataRoot, formats string) error {
-	dir := filepath.Join(dataRoot, sidecarDir)
+	dir := filepath.Join(sidecarRootFor(dataRoot), sidecarDir)
 	path := filepath.Join(dir, "catalog.json")
 	top := map[string]json.RawMessage{}
 	if raw, err := os.ReadFile(path); err == nil {
@@ -165,7 +189,7 @@ var ftsMappingAnalyze func(raw []byte) (dynamic bool, fields map[string]bool, er
 // (nil, nil) when no sidecar exists -- the common "no metadata, behave as today"
 // case -- so callers can treat a missing catalog as "no secondary indexes".
 func loadCatalog(dataRoot string) (*catalog, error) {
-	path := filepath.Join(dataRoot, sidecarDir, "catalog.json")
+	path := filepath.Join(sidecarRootFor(dataRoot), sidecarDir, "catalog.json")
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -367,7 +391,7 @@ func CatalogAddIndexes(dataRoot string, fragmentJSON []byte) ([]string, error) {
 		}
 	}
 
-	path := filepath.Join(dataRoot, sidecarDir, "catalog.json")
+	path := filepath.Join(sidecarRootFor(dataRoot), sidecarDir, "catalog.json")
 
 	// Read the existing catalog. Guard against clobbering non-index top-level
 	// sections a future catalog might carry (v1 has only "indexes").

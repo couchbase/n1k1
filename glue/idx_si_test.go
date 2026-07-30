@@ -403,3 +403,66 @@ func TestFTSMappingParse(t *testing.T) {
 		}
 	}
 }
+
+// TestIndexStoreRelocatesSidecar guards the ISSUE-12 §3 fix: --index-store (SetIndexStore)
+// puts the index sidecar -- catalog.json AND the built bbolt artifacts -- OUTSIDE the data
+// root, so a READ-ONLY datastore can still be indexed and n1k1 never writes inside the
+// bundle. The data root holds only source records (no sidecar); the store holds the catalog
+// and receives the built index; the query resolves against the relocated catalog.
+func TestIndexStoreRelocatesSidecar(t *testing.T) {
+	// Data root: a keyspace of records, NO sidecar (as if it's read-only / not ours).
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "default", "beers")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	docs := []string{
+		`{"name":"low","abv":4.0}`, `{"name":"mid","abv":5.5}`,
+		`{"name":"ipa1","abv":7.0}`, `{"name":"ipa2","abv":8.2}`, `{"name":"big","abv":10.0}`,
+	}
+	for i, d := range docs {
+		if err := os.WriteFile(filepath.Join(ksDir, fmt.Sprintf("b%d.json", i)), []byte(d), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A SEPARATE, writable index store holds the catalog (+ will receive the built index).
+	store := t.TempDir()
+	catDir := filepath.Join(store, sidecarDir)
+	if err := os.MkdirAll(catDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(catDir, "catalog.json"),
+		[]byte(`{"indexes":[{"name":"beers_by_abv","keyspace":"beers","keys":["abv"]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prevStore := indexStoreRoot
+	SetIndexStore(store)
+	t.Cleanup(func() { SetIndexStore(prevStore) })
+	prevMode := SecondaryIndexMode
+	SecondaryIndexMode = "eager" // build all indexes at open, so the artifact is deterministic
+	t.Cleanup(func() { SecondaryIndexMode = prevMode })
+
+	sess, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := EagerBuildSecondaryIndexes(sess.Store.Datastore, nil); err != nil {
+		t.Fatalf("eager build: %v", err)
+	}
+	res, err := sess.Run("SELECT b.name FROM beers b WHERE b.abv >= 7")
+	if err != nil || len(res.Rows) != 3 {
+		t.Fatalf("query: err=%v rows=%d want 3 (index over the relocated catalog)", err, len(res.Rows))
+	}
+
+	// The bbolt artifact must live UNDER THE STORE, not the data root.
+	bolts, _ := filepath.Glob(filepath.Join(store, sidecarDir, "*", "*", "idx", "*", "data.bolt"))
+	if len(bolts) == 0 {
+		t.Errorf("expected the SI bolt built under the index store; found none under %s", store)
+	}
+	// ...and the data root must stay CLEAN (no sidecar written into a read-only bundle).
+	if _, err := os.Stat(filepath.Join(root, sidecarDir)); !os.IsNotExist(err) {
+		t.Errorf("data root must stay clean; found a %q sidecar there (stat err=%v)", sidecarDir, err)
+	}
+}

@@ -773,10 +773,10 @@ func indexSlotFor(dbPath string) *indexSlot {
 // unconditionally (the .reindex escape hatch for the coarse-mtime freshness).
 func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*secondaryIndex, error) {
 	ns := ks.Namespace().Name()
-	instDir := filepath.Join(ks.sds.root, sidecarDir, ns, ks.Name(), "idx",
+	instDir := filepath.Join(sidecarRootFor(ks.sds.root), sidecarDir, ns, ks.Name(), "idx",
 		fmt.Sprintf("%s__si__%s", fsSafe(def.Name), def.defHash()))
 	dbPath := filepath.Join(instDir, "data.bolt")
-	srcDir := filepath.Join(ks.sds.root, ns, ks.Name())
+	srcDir := filepath.Join(ks.sds.root, ns, ks.Name()) // source records: always the data root
 
 	slot := indexSlotFor(dbPath)
 

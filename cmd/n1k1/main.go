@@ -79,6 +79,9 @@ func main() {
 		indexFlag   = flag.String("index", "lazy", "use catalog (secondary/FTS) indexes: "+
 			"lazy (default; build each on first use) | eager (build all up front)"+
 			" | off (ignore the catalog; always full-scan)")
+		indexStoreFlag = flag.String("index-store", "", "directory for the index sidecar "+
+			"(catalog.json + built indexes); default is <datastore>/"+"."+prog+". Set this to index a "+
+			"READ-ONLY datastore, so n1k1 never writes inside the bundle")
 		variantFidelity = flag.Bool("variant-fidelity", false,
 			"Parquet VARIANT scan carries typed-scalar fidelity (V-carrier) instead of the "+
 				"Phase-0 JSON projection; a lone VARIANT column reads via the zero-copy borrow path")
@@ -146,6 +149,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s: bad -index %q (want eager|lazy|off)\n", prog, *indexFlag)
 		os.Exit(2)
 	}
+
+	// -index-store relocates the index sidecar (catalog.json + built indexes) out of
+	// the datastore bundle, so a READ-ONLY datastore can still be indexed. Empty keeps
+	// the sidecar under the datastore dir. Set before any store open / catalog read.
+	glue.SetIndexStore(*indexStoreFlag)
 
 	// -meta controls per-file metadata injection (_meta).
 	mm, merr := records.ParseMetaMode(*metaFlag)
