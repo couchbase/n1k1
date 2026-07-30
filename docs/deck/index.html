@@ -205,8 +205,8 @@ SQL++ ─▶│ parser ─▶ planner ─▶ plan tree ┼───▶│ conv.g
           carrying an explicit bit-exactness predicate that
           latches off and re-folds when violated.</li>
       <li><strong>Not RAM-bound</strong>: hash tables, sort buffers and
-          window partitions spill dynamically<br>to temp files as needed (mmap'd
-          <code>rhmap/store</code>);<br>Example: GROUP BY 64K keys runs only
+          window partitions spill dynamically<br>to temp files as needed (mmap'd via
+          <code><a href="https://github.com/couchbase/rhmap">github.com/couchbase/rhmap</a></code>'s store);<br>Example: GROUP BY 64K keys runs only
           <span class="num">~6%</span> slower with disk spill than 1K keys in memory.</li>
     </ul>
   </div>
@@ -218,8 +218,8 @@ SQL++ ─▶│ parser ─▶ planner ─▶ plan tree ┼───▶│ conv.g
     <p>Common JSON slice-and-dice tasks, each shown side-by-side in SQL++
        versus<br>SQL (Postgres, DuckDB), JavaScript, Python, MongoDB, and jq syntax —
        <br>generated from one YAML source, published with per-recipe permalinks.</p>
-    <p><code>couchbase.github.io/n1k1</code><br>SQL++ online playground at
-       <code>…/play/</code> (wasm powered, 100% client-side)</p>
+    <p><code><a href="https://couchbase.github.io/n1k1">couchbase.github.io/n1k1</a></code><br>SQL++ online playground at
+       <code><a href="https://couchbase.github.io/n1k1/play">couchbase.github.io/n1k1/play</a></code> (WASM powered, 100% client-side)</p>
   </div>
 
   <div id="up-sqlpp" class="step camera"
@@ -357,7 +357,7 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
        data-x="9300" data-y="0" data-z="0" data-scale="5">
     <div class="bignum">4</div>
     <p class="kicker">4 · the execution engine</p>
-    <h1>Everything is <code>[]byte</code></h1>
+    <h1>n1k1 favors <code>[]byte</code>'s</h1>
     <p class="dim">garbage avoidance by avoiding boxed values</p>
   </div>
 
@@ -415,7 +415,7 @@ buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</sp
     <p class="kicker">engine</p>
     <h2>Operators share one spill substrate</h2>
     <ul>
-      <li><code>rhmap</code>: robinhood maps - a recyclable
+      <li><code><a href="https://github.com/couchbase/rhmap">github.com/couchbase/rhmap</a></code>: robinhood maps - a recyclable
           <code>map[[]byte][]byte</code><br>that spills to mmap'd temp files —
           serving hash join, DISTINCT, GROUP BY, INTERSECT, EXCEPT, etc.</li>
       <li>Set ops reuse the hash join's probe map (left values, left counts,
@@ -500,13 +500,16 @@ n := len(fields)                 <span class="c">// early-bound: known at plan t
           translator</strong>:<br>each lazy line of code becomes a
           printf of itself;<br>early-bound lines execute at codegen time.</li>
     </ul>
-<pre class="diagram"><code>           engine/*.go            <span class="c">-- ONE source</span>
-            │        │
-     go build        intermed_build  <span class="c">("lz" lines → printf's)</span>
-            ▼        ▼
- mode 1: ExecOp      intermed/ ─▶ mode 2: emit the fused Go for one specific plan
- interprets any
- plan, immediately</code></pre>
+<pre class="diagram"><code>            engine/*.go            <span class="c">-- ONE source</span>
+             │       │
+      go build       intermed_build  <span class="c">("lz" lines → printf's)</span>
+             │       │
+             ▼       ▼
+ mode 1: ExecOp      mode 2: the emitted, fused Go code for one specific SQL++ plan
+ in n1k1 binary      │
+ interprets any      ▼
+ plan immediately    go compiler ───▶ executable binary for one specific SQL++ plan
+</code></pre>
     <ul>
       <li>Lineage: Futamura projections / LMS (Rompf &amp; Odersky),<br>
           LegoBase (Klonatos &amp; Koch, VLDB'14) —<br>with operator fusion and
@@ -529,7 +532,8 @@ n := len(fields)                 <span class="c">// early-bound: known at plan t
     </ul>
 <pre class="diagram"><code>child  = the compiled query.go binary ── drives the whole plan;
  ▲ ▼     the DatastorePipe provides: Scan / Fetch / IndexScan / Meta;
-parent = has cbq + the data, and serves the leaves of the plan via DatastorePipes</code></pre>
+parent = n1k1, which has cbq + datasource access, and
+               which streams data for the leaves of the plan to the child via DatastorePipes</code></pre>
   </div>
 
   <div id="comp-honest" class="step" data-rel-to="hub-compiler"
@@ -565,21 +569,20 @@ parent = has cbq + the data, and serves the leaves of the plan via DatastorePipe
        data-x="-3100" data-y="4800" data-z="0" data-scale="5">
     <div class="bignum">6</div>
     <p class="kicker">6 · many queries, one scan</p>
-    <h1>MQO (multi-query optimization), temporal joins &amp;<br>CEP (complex event processing)</h1>
-    <p class="dim">driven by a git repo of SQL++ queries as a 'git-ops' driven workload</p>
+    <h1>Shared scans:<br>MQO (multi-query optimizations),<br>K-way ASOF (temporal) joins &amp;<br>CEP (complex event processing)</h1>
   </div>
 
   <div id="multi-fusion" class="step" data-rel-to="hub-multi"
        data-rel-x="-1400" data-rel-y="350" data-rel-z="150">
     <p class="kicker">multi-query</p>
-    <h2>Multi-Query fusion</h2>
+    <h2>Multi-Query Optimizations</h2>
 <pre class="diagram"><code>*.sql++ ×1000 ─▶ QueriesCompile ─▶ union-all( fused SQL++ detectors… )
    <span class="c">(in git)</span>                         ▲ <span class="c">each woken only on its literal hits</span>
                                    broadcast-indexed( scan )
                                     ▲ <span class="c">Aho–Corasick over each row</span>
                                    one shared pass of the bundle</code></pre>
     <ul>
-      <li><strong>Broadcast</strong> —<br>one shared scan feeds all consumers:<br>
+      <li><strong>Broadcast</strong> —<br>one shared scan feeds all SQL++ consumers:<br>
           up to <span class="num">~6.3×</span> fewer allocs at K=256;<br>
           <strong>CSE</strong> (common subexpression elimination) across SQL++ queries —
           <span class="num">~2.5×</span> at K=32 sharing one regexp.</li>
@@ -588,10 +591,11 @@ parent = has cbq + the data, and serves the leaves of the plan via DatastorePipe
           <span class="num">~60×</span> at K=1000. Invariant: <em>the
           literal must be necessary (absent ⇒ predicate false),<br>so
           over-wake is safe and under-wake never happens</em> — guarded by
-          byte-identical differential testing.</li>
+          byte-identical differential testing.<br>
+          <code>WHERE ticket.status = "open" AND ...other expressions...</code></li>
       <li><strong>Late binding to files</strong> — fusion keys on
           <em>logical</em> keyspace identity:<br>preprocess the SQL++ queries once,
-          change logical-to-physical bindings as needed.</li>
+          assign logical-to-physical bindings at runtime as needed.</li>
     </ul>
   </div>
 
@@ -604,12 +608,12 @@ parent = has cbq + the data, and serves the leaves of the plan via DatastorePipe
              ORDER BY r.ts DESC LIMIT 1) <span class="c">-- …argmax idiom</span>
   FROM events e</code></pre>
     <ul>
-      <li>A post-plan rewrite recognizes the stock correlated-argmax idiom<br>
+      <li>A post-plan rewrite by n1k1 recognizes the stock correlated-argmax idiom<br>
           and lowers it to a streaming K-way merge-join:<br>
           <span class="num">O(N+M)</span> replaces O(N×M),
           <span class="num">~19×</span> lower RSS memory.<br>
           The rewrite is semantics-preserving.</li>
-      <li>Flink's watermark model, applied offline: per-file sortedness
+      <li>Flink's watermark model, applied offline:<br>per-file sortedness
           metadata (<code>strict|near|none</code> + a
           <code>disorder_bound</code>)<br>picks concatenate / min-heap /
           watermarked merge —<br>and output monotonicity is checked at one
