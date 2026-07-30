@@ -951,7 +951,7 @@ func (cc *CompiledMultiQueryEntries) runStream(onLabelResult func(LabelResult) e
 	// exprStr/exprTree are registered once in this package's init() (expr.go), not lazily
 	// here -- lazy check-then-set races the shared map under concurrent Runs.
 
-	tmpDir, vars := MakeVars("", "n1k1corpus")
+	tmpDir, vars := MakeVars("", "n1k1queries")
 	defer os.RemoveAll(tmpDir)
 
 	vars.Ctx.Pipe = s.Pipe

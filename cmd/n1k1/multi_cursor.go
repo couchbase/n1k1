@@ -513,7 +513,7 @@ func (c *cli) cursorCreate(arg string) {
 	c.printJSON(struct {
 		Created  string `json:"created"`
 		OK       bool   `json:"ok"`
-		Pack     string `json:"pack"`
+		Pack     string `json:"queries"`
 		Compiles string `json:"compiles"`
 		Mode     string `json:"mode"`
 		From     string `json:"from"`
@@ -834,7 +834,7 @@ func (c *cli) cursorList(arg string) {
 	}
 	type listRow struct {
 		Cursor    string      `json:"cursor"`
-		Pack      string      `json:"pack"`
+		Pack      string      `json:"queries"`
 		Mode      string      `json:"mode"`
 		Committed interface{} `json:"committed"`
 		Advances  int         `json:"total_advances"`
