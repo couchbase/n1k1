@@ -31,6 +31,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -59,6 +60,7 @@ type cursorArgs struct {
 	mode          string   // --mode append|diff, create-only (default: append)
 	idField       string   // --id-field <name>, create-only diff (default: id)
 	quiet         bool     // --quiet, advance-only (ack only, no labelResults echo)
+	force         bool     // --force, advance --to only (commit a rewinding/unknown position anyway)
 	positions     bool     // --positions, show-only (full position map, not a summary)
 	only          []string // --only <node,...>, compose-only (emit rows for just these)
 	terminal      bool     // --terminal, compose-only (emit rows for leaf nodes only)
@@ -171,6 +173,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.idField = val
 		case "quiet":
 			a.quiet = !hasEq || val == "true" || val == "1"
+		case "force":
+			a.force = !hasEq || val == "true" || val == "1"
 		case "positions":
 			a.positions = !hasEq || val == "true" || val == "1"
 		case "only":
@@ -274,6 +278,13 @@ type cursorEnvelope struct {
 	Count        int         `json:"count"`
 	LabelResults []cursorRow `json:"labelResults,omitempty"`
 	Error        *cursorErr  `json:"error,omitempty"`
+
+	// ISSUE-13: an explicit `advance --to` that would silently rewind an append
+	// cursor is refused (status=error) unless --force; either way the affected
+	// containers are disclosed here — never a silent 456→1 wipe.
+	Dropped []string `json:"dropped,omitempty"` // held (offset>0) but absent from --to -> would reset to byte 0
+	Rewound []string `json:"rewound,omitempty"` // --to offset < committed -> would re-deliver
+	Unknown []string `json:"unknown,omitempty"` // --to names a container the datastore lacks
 }
 
 // printJSON emits v as the single response envelope: indented at a TTY (the
@@ -330,23 +341,62 @@ func fingerprint(label string, result json.RawMessage) string {
 	return hex.EncodeToString(h.Sum(nil))[:6]
 }
 
+// encodeWater renders a water position as an OPAQUE token safe to pass back on argv.
+// ISSUE-13: the raw JSON `{"c":n}` has quotes that `.multi`'s quote-aware tokenizer
+// strips, so `advance --to {peek.to}` failed to round-trip. base64url has no quotes or
+// spaces, so it survives argv verbatim. Deterministic (json sorts map keys).
 func encodeWater(w map[string]int64) string {
 	if len(w) == 0 {
 		return ""
 	}
-	b, _ := json.Marshal(w) // encoding/json sorts map keys -> deterministic token
-	return string(b)
+	b, _ := json.Marshal(w)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// decodeWater accepts the opaque base64url token encodeWater emits (the round-trip
+// path) OR raw JSON `{"c":n}` (a hand-written --to-file, back-compat).
 func decodeWater(s string) (map[string]int64, error) {
 	m := map[string]int64{}
-	if strings.TrimSpace(s) == "" {
+	s = strings.TrimSpace(s)
+	if s == "" {
 		return m, nil
+	}
+	if !strings.HasPrefix(s, "{") { // opaque token -> decode to the JSON first
+		if raw, err := base64.RawURLEncoding.DecodeString(s); err == nil {
+			s = string(raw)
+		}
 	}
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
 		return nil, fmt.Errorf("--to %q is not a valid position token: %v", s, err)
 	}
 	return m, nil
+}
+
+// validateWater compares a requested advance --to position against the committed
+// watermark and the datastore head (every container the scan visited). It returns the
+// containers that would be dropped (held at offset>0 but absent from the request ->
+// reset to 0), rewound (request offset < committed), or unknown (named but not in the
+// datastore). All three are silent-double-count / typo hazards for an append cursor.
+func validateWater(committed, requested, datastore map[string]int64) (dropped, rewound, unknown []string) {
+	for k, off := range committed {
+		if off > 0 {
+			if _, ok := requested[k]; !ok {
+				dropped = append(dropped, k)
+			}
+		}
+	}
+	for k, off := range requested {
+		if c, ok := committed[k]; ok && off < c {
+			rewound = append(rewound, k)
+		}
+		if _, ok := datastore[k]; !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(dropped)
+	sort.Strings(rewound)
+	sort.Strings(unknown)
+	return dropped, rewound, unknown
 }
 
 func waterEqual(a, b map[string]int64) bool {
@@ -693,6 +743,32 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 			return
 		}
 		newWater = w
+
+		// ISSUE-13: an explicit position REPLACES the watermark wholesale. Validate it
+		// against the committed position + the datastore head (res.NewWater visited every
+		// container) before committing: a held container dropped from the position resets
+		// to byte 0 and re-delivers its whole history (double-counting, not an error); a
+		// smaller offset rewinds; an unknown container is almost certainly a typo. Refuse
+		// unless --force, and disclose the affected containers either way.
+		dropped, rewound, unknown := validateWater(committed, newWater, res.NewWater)
+		if len(dropped)+len(rewound)+len(unknown) > 0 {
+			if !a.force {
+				env := cursorEnvelope{
+					Cursor: a.name, Pack: st.PackID, Status: "error",
+					From: encodeWater(committed), To: encodeWater(committed),
+					Dropped: dropped, Rewound: rewound, Unknown: unknown,
+					Error: &cursorErr{Kind: "unsafe-position", Message: fmt.Sprintf(
+						"--to would rewind this append cursor (dropped=%d rewound=%d unknown=%d); "+
+							"a dropped/rewound container re-delivers its history. Re-run with --force to commit anyway.",
+						len(dropped), len(rewound), len(unknown))},
+				}
+				c.printJSON(env)
+				c.failed = true
+				return
+			}
+			// forced: proceed, but the rewind is disclosed in the envelope below.
+			env.Dropped, env.Rewound, env.Unknown = dropped, rewound, unknown
+		}
 	}
 	moved := !waterEqual(committed, newWater)
 
@@ -1017,11 +1093,15 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        / description); precedence is CLI flag > front-matter > default. A
                        front-matter key create does not consume is listed in "ignored".
   peek   NAME          the pending delta; does NOT move the cursor (re-peek is safe).
-  advance NAME [--to <pos> | --to-file <path>] [--quiet]
+  advance NAME [--to <pos> | --to-file <path>] [--quiet] [--force]
                        commit (get + move). Echoes the delta unless --quiet.
                        --to <pos> commits the exact position peek reported (two-step);
-                       --to-file reads that token from a file (positions can be large —
-                       an append position is a per-container map — so keep it off argv).
+                       the token is OPAQUE (survives argv verbatim). --to-file reads it
+                       from a file (positions can be large — an append position is a
+                       per-container map). A --to that would REWIND an append cursor
+                       (drop a held container, rewind an offset, or name a container the
+                       datastore lacks) is refused (error kind "unsafe-position", the
+                       containers disclosed) — pass --force to commit it anyway.
   list                 the cursors in the store.
   show   NAME [--positions]
                        one cursor's committed position + metadata (description);

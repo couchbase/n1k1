@@ -288,6 +288,85 @@ func TestMultiCursorCreateFrontMatter(t *testing.T) {
 	}
 }
 
+// TestMultiCursorAdvanceToSafety guards ISSUE-13: (1) peek's `to` token must survive
+// being fed back to `advance --to` through .multi's quote-aware tokenizer (it is an
+// opaque base64 token, no quotes to strip); (2) an explicit --to that would silently
+// rewind an append cursor (drop a held container, or name one the datastore lacks) is
+// REFUSED with the watermark intact, unless --force, and the affected containers are
+// disclosed either way.
+func TestMultiCursorAdvanceToSafety(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "a.jsonl"), []byte(`{"n":1}`+"\n"+`{"n":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "b.jsonl"), []byte(`{"n":3}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := writeMultiQueryEntries(t, map[string]string{"all": "-- label: all\nSELECT e.n FROM events e"})
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	run := func(cmd string) map[string]interface{} {
+		out.Reset()
+		errb.Reset()
+		c.failed = false
+		c.cmdMulti("cursor " + cmd + " --cursor-store " + store)
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+
+	if e := run("create AT --queries " + pack + " --from start"); e["ok"] != true {
+		t.Fatalf("create: %v (stderr %s)", e, errb.String())
+	}
+
+	// (1) round-trip: peek.to fed back verbatim to advance --to (through the tokenizer).
+	to, _ := run("peek AT")["to"].(string)
+	if to == "" {
+		t.Fatal("peek produced no 'to' token")
+	}
+	if strings.ContainsAny(to, `{}" `) {
+		t.Errorf("peek.to is not an opaque token (has JSON chars that argv strips): %q", to)
+	}
+	if e := run("advance AT --to " + to + " --quiet"); e["status"] != "advanced" {
+		t.Fatalf("round-trip advance --to failed: %v (err %v)", e["status"], e["error"])
+	}
+
+	// (2) an unsafe --to (drops the held a.jsonl, names a nonexistent file) is refused.
+	bogus := encodeWater(map[string]int64{"nope.jsonl": 999})
+	e := run("advance AT --to " + bogus)
+	if e["status"] != "error" {
+		t.Fatalf("unsafe --to: want error, got %v", e)
+	}
+	if kind := e["error"].(map[string]interface{})["kind"]; kind != "unsafe-position" {
+		t.Errorf("unsafe --to: want kind=unsafe-position, got %v", kind)
+	}
+	if unknown, _ := e["unknown"].([]interface{}); len(unknown) != 1 || unknown[0] != "nope.jsonl" {
+		t.Errorf("unsafe --to: want unknown=[nope.jsonl], got %v", e["unknown"])
+	}
+	// watermark must be intact after the refusal (no silent 456->1 wipe).
+	b, _ := os.ReadFile(filepath.Join(store, "AT.json"))
+	var sc map[string]interface{}
+	json.Unmarshal(b, &sc)
+	if w, _ := sc["water"].(map[string]interface{}); len(w) < 2 {
+		t.Errorf("refused advance still mutated the watermark: %v", sc["water"])
+	}
+
+	// (3) --force commits the unsafe position AND discloses what it did.
+	e = run("advance AT --to " + bogus + " --force")
+	if e["status"] != "advanced" {
+		t.Fatalf("--force: want advanced, got %v", e)
+	}
+	if dropped, _ := e["dropped"].([]interface{}); len(dropped) == 0 {
+		t.Errorf("--force: expected disclosed 'dropped' containers, got %v", e)
+	}
+}
+
 // TestMultiCursorDiffLoop drives the Phase-2 diff loop over a MUTABLE keyspace:
 // create --mode diff --from now (baseline), peek (empty), mutate the state, peek
 // (insert+update+delete), advance (commit new snapshot, snap:0→snap:1), peek
