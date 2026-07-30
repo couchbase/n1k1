@@ -77,7 +77,7 @@ func TestMultiCursorAppendLoop(t *testing.T) {
 	}
 
 	// create --from start: replay everything on the first peek.
-	if env := run("create errs --pack " + pack + " --from start"); env["ok"] != true {
+	if env := run("create errs --queries " + pack + " --from start"); env["ok"] != true {
 		t.Fatalf("create: not ok: %v", env)
 	}
 
@@ -194,13 +194,13 @@ func TestMultiCursorCreateGuards(t *testing.T) {
 	}
 
 	out.Reset()
-	c.cmdMulti("cursor create c1 --pack " + pack + " --cursor-store " + store)
+	c.cmdMulti("cursor create c1 --queries " + pack + " --cursor-store " + store)
 	if env()["ok"] != true {
 		t.Fatalf("create c1: want ok, got %s", out.String())
 	}
 
 	out.Reset()
-	c.cmdMulti("cursor create c1 --pack " + pack + " --cursor-store " + store) // duplicate
+	c.cmdMulti("cursor create c1 --queries " + pack + " --cursor-store " + store) // duplicate
 	if e := env(); e["status"] != "error" || e["error"].(map[string]interface{})["kind"] != "exists" {
 		t.Fatalf("create duplicate: want error/exists, got %s", out.String())
 	}
@@ -248,7 +248,7 @@ func TestMultiCursorDiffLoop(t *testing.T) {
 	}
 
 	// create diff --from now: baseline snapshot = current state.
-	env := run("create incs --pack " + pack + " --mode diff --from now")
+	env := run("create incs --queries " + pack + " --mode diff --from now")
 	if env["ok"] != true || env["mode"] != "diff" || env["from"] != "snap:0" {
 		t.Fatalf("create diff: %v", env)
 	}

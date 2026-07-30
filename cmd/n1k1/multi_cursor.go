@@ -17,7 +17,7 @@ package main
 // A cursor lives under `.multi` because it is meaningless without a query pack.
 // Verbs:
 //
-//	create NAME --pack <dir> [--bind <m>] [--from now|start] [--desc ...]
+//	create NAME --queries <dir> [--bind <m>] [--from now|start] [--desc ...]
 //	                          bind + validate (compile + probe binding); no rows.
 //	peek   NAME               pending delta; does NOT move the committed position.
 //	advance NAME [--to <pos>] [--quiet]
@@ -45,10 +45,10 @@ import (
 
 // cursorArgs is the parsed flag set for the cursor verbs: a positional NAME plus
 // the per-verb flags. Unlike parseMultiArgs it does NOT require --queries (a
-// peek/advance is addressed by cursor name; --pack is create-only).
+// peek/advance is addressed by cursor name; --queries is create-only).
 type cursorArgs struct {
 	name          string   // the cursor NAME (first positional)
-	pack          []string // --pack <dir> (repeatable / comma-list), create-only
+	pack          []string // --queries <dir> (repeatable / comma-list), create-only
 	bind          string   // --bind <manifest>
 	to            string   // --to <pos>, advance-only (the opaque position token)
 	toFile        string   // --to-file <path>, advance-only (read --to from a file: large positions)
@@ -99,9 +99,9 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			key, val, hasEq = t[:eq], t[eq+1:], true
 		}
 		switch strings.TrimLeft(key, "-") {
-		case "pack", "queries":
+		case "queries":
 			if !hasEq {
-				if err := need(&i, &val, "--pack"); err != nil {
+				if err := need(&i, &val, "--queries"); err != nil {
 					return a, err
 				}
 			}
@@ -138,14 +138,14 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 				}
 			}
 			a.from = val
-		case "desc", "description":
+		case "desc":
 			if !hasEq {
 				if err := need(&i, &val, "--desc"); err != nil {
 					return a, err
 				}
 			}
 			a.desc = val
-		case "cursor-store", "store":
+		case "cursor-store":
 			if !hasEq {
 				if err := need(&i, &val, "--cursor-store"); err != nil {
 					return a, err
@@ -159,7 +159,7 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 				}
 			}
 			a.mode = val
-		case "id-field", "id":
+		case "id-field":
 			if !hasEq {
 				if err := need(&i, &val, "--id-field"); err != nil {
 					return a, err
@@ -168,7 +168,7 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.idField = val
 		case "quiet":
 			a.quiet = !hasEq || val == "true" || val == "1"
-		case "positions", "verbose":
+		case "positions":
 			a.positions = !hasEq || val == "true" || val == "1"
 		case "only":
 			if !hasEq {
@@ -227,10 +227,24 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 				}
 			}
 		default:
+			if repl, ok := renamedCursorFlag[strings.TrimLeft(key, "-")]; ok {
+				return a, fmt.Errorf("flag %q was removed; use %s", key, repl)
+			}
 			return a, fmt.Errorf("unknown flag %q", t)
 		}
 	}
 	return a, nil
+}
+
+// renamedCursorFlag maps a removed flag/alias (bare, no leading dashes) to its
+// canonical replacement, so the hard cut errors with a pointer, not a bare
+// "unknown flag" (naming overhaul Phase 1b).
+var renamedCursorFlag = map[string]string{
+	"pack":        "--queries",
+	"store":       "--cursor-store",
+	"description": "--desc",
+	"id":          "--id-field",
+	"verbose":     "--positions",
 }
 
 // cmdMultiCursor dispatches `.multi cursor <verb>`.
@@ -243,12 +257,16 @@ func (c *cli) cmdMultiCursor(arg string) {
 		c.cursorPeekAdvance(rest, false)
 	case "advance":
 		c.cursorPeekAdvance(rest, true)
-	case "list", "ls":
+	case "list":
 		c.cursorList(rest)
 	case "show":
 		c.cursorShow(rest)
-	case "rm", "remove", "delete":
+	case "rm":
 		c.cursorRemove(rest)
+	case "ls", "remove", "delete":
+		canon := map[string]string{"ls": "list", "remove": "rm", "delete": "rm"}[strings.ToLower(verb)]
+		fmt.Fprintf(c.stderr, "cursor verb %q was removed; use %q\n", verb, canon)
+		c.failed = true
 	case "plan", "apply":
 		fmt.Fprintf(c.stderr, "cursor %q was removed (the GitOps reconcile) -- manage cursors with "+
 			"create/rm, or peek/advance to run them; a declarative reconcile returns with a serve/monitor runtime\n", verb)
@@ -409,7 +427,7 @@ func (c *cli) cursorCreate(arg string) {
 		return
 	}
 	if len(a.pack) == 0 {
-		c.cursorFail(a.name, "bad-args", fmt.Errorf("--pack <dir> is required for create"))
+		c.cursorFail(a.name, "bad-args", fmt.Errorf("--queries <dir> is required for create"))
 		return
 	}
 	store, err := c.cursorStore(a.store)
@@ -540,7 +558,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	if err != nil {
 		if err == glue.ErrCursorNotExist {
 			c.cursorFail(a.name, "no-such-cursor",
-				fmt.Errorf("no cursor %q (create it: .multi cursor create %s --pack <dir>)", a.name, a.name))
+				fmt.Errorf("no cursor %q (create it: .multi cursor create %s --queries <dir>)", a.name, a.name))
 			return
 		}
 		c.cursorFail(a.name, "state-read", err)
@@ -939,7 +957,7 @@ func (c *cli) cursorHelp() {
 
 const cursorHelpText = `.multi cursor <verb> — CEP named cursors (a durable "what's new since I last looked")
 
-  create NAME --pack <dir> [--bind <m>] [--from now|start] [--mode append|diff]
+  create NAME --queries <dir> [--bind <m>] [--from now|start] [--mode append|diff]
               [--id-field <name>] [--desc <t>]
   create NAME --mode census --keyspace <ks> [--bind <m>] [--type-field <f>]
               [--time-field <f>] [--depth 1|2] [--exclude a,b] [--from now|start]
