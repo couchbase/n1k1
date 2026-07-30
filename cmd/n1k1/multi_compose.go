@@ -13,9 +13,11 @@
 
 package main
 
-// `.multi compose --queries <dir>` — run a DAG of queries (DESIGN-cep.md Phase 4).
-// Each *.sql++ file in <dir> is one node (name = file stem); a node declares upstream
-// deps via `-- needs: a, b` front-matter and reads them as `FROM node('a')`. Nodes
+// `.multi compose --queries <dir>...` — run a DAG of queries (DESIGN-cep.md Phase 4).
+// Each *.sql++ file in the dir(s) is one node (name = label/stem); a node declares
+// upstream deps via `-- needs: a, b` front-matter and reads them as `FROM node('a')`.
+// Several --queries dirs merge into one DAG (ISSUE-16), so a rollup dir can draw on a
+// shared tier-1 dir without symlinking. Nodes
 // run in topological order; each node's labelResults are materialized so a downstream
 // node reads them via `FROM node('<name>')`. Output is one JSON envelope: the topo
 // order + every node's labelResults.
@@ -31,16 +33,23 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// buildComposeNodes reads a compose dir: one *.sql++ file => one DAG node (name =
-// stem, deps from `needs:` front-matter, pack = the single file).
-func buildComposeNodes(dir string) ([]glue.ComposeNode, error) {
-	files, err := filepath.Glob(filepath.Join(dir, "*.sql++"))
-	if err != nil {
-		return nil, err
+// buildComposeNodes reads one or more compose dirs: each *.sql++ file => one DAG node
+// (name = front-matter label or stem, deps from `needs:` front-matter). Multiple dirs
+// (ISSUE-16) let a DAG draw its nodes from several trees — e.g. the shared tier-1
+// queries dir plus the roll-up dir — without symlinking files into one directory. A
+// duplicate node label across dirs is an error (ambiguous).
+func buildComposeNodes(dirs []string) ([]glue.ComposeNode, error) {
+	var files []string
+	for _, dir := range dirs {
+		fs, err := filepath.Glob(filepath.Join(dir, "*.sql++"))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, fs...)
 	}
 	sort.Strings(files)
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no *.sql++ files in %q", dir)
+		return nil, fmt.Errorf("no *.sql++ files in %s", strings.Join(dirs, ", "))
 	}
 	seen := map[string]bool{}
 	var nodes []glue.ComposeNode
@@ -82,14 +91,13 @@ func (c *cli) cmdMultiCompose(arg string) {
 		c.failed = true
 		return
 	}
-	if len(a.pack) != 1 {
-		fmt.Fprintf(c.stderr, "%s: .multi compose: exactly one --queries <dir> is required "+
-			"(a directory of *.sql++ nodes)\n", c.prog)
+	if len(a.pack) == 0 {
+		fmt.Fprintf(c.stderr, "%s: .multi compose: at least one --queries <dir> is required "+
+			"(a directory of *.sql++ nodes; several dirs merge into one DAG)\n", c.prog)
 		c.failed = true
 		return
 	}
-	dir := a.pack[0]
-	nodes, err := buildComposeNodes(dir)
+	nodes, err := buildComposeNodes(a.pack)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi compose: %v\n", c.prog, err)
 		c.failed = true

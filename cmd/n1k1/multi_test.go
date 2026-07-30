@@ -36,6 +36,45 @@ func writeMultiQueryEntries(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// TestMultiQueriesTagsSelector guards ISSUE-16: --queries-tags / --queries-not-tags
+// select a subset of a pack by front-matter tag, report the selection, and fail LOUD
+// (never silently run zero) when a tag matches nothing.
+func TestMultiQueriesTagsSelector(t *testing.T) {
+	root := newLogsBundle(t)
+	pack := writeMultiQueryEntries(t, map[string]string{
+		"a": "-- label: a\n-- tags: [\"tier1\",\"base\"]\nSELECT * FROM logs l WHERE l.sev = \"ERROR\"",
+		"b": "-- label: b\n-- tags: [\"tier1\"]\nSELECT * FROM logs l WHERE l.sev = \"WARN\"",
+		"c": "-- label: c\n-- tags: [\"roll\"]\nSELECT COUNT(*) AS n FROM logs l",
+	})
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("lint --queries " + pack + " --queries-tags tier1")
+	if c.failed || !strings.Contains(errb.String(), "selected 2 of 3") {
+		t.Errorf("--queries-tags tier1: want 'selected 2 of 3', failed=%v stderr=%s", c.failed, errb.String())
+	}
+
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("lint --queries " + pack + " --queries-not-tags roll")
+	if !strings.Contains(errb.String(), "selected 2 of 3") {
+		t.Errorf("--queries-not-tags roll: want 'selected 2 of 3', stderr=%s", errb.String())
+	}
+
+	// a tag that matches nothing must fail loudly and list the available tags.
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("lint --queries " + pack + " --queries-tags nope")
+	if !c.failed {
+		t.Errorf("--queries-tags nope should fail (not silently run zero)")
+	}
+	if !strings.Contains(errb.String(), "available tags") {
+		t.Errorf("zero-match should list available tags, stderr=%s", errb.String())
+	}
+}
+
 // newLogsBundle builds a <root>/default/logs datastore of a few log docs and returns
 // the root (the bundle dir a .multi command opens as c.dir).
 func newLogsBundle(t *testing.T) string {

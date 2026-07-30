@@ -99,11 +99,13 @@ func (c *cli) cmdMulti(arg string) {
 // a directory of *.sql++ files), an optional bind manifest path (run/lint), and the
 // --update boolean (test).
 type multiArgs struct {
-	queries []string
-	bind    string
-	update  bool // .multi test: record produced labelResults back into each entry's @expect
-	sql     bool // .multi explain: render the pretty SQL++ + provenance view instead of the op tree
-	census  bool // .multi lint: census-aware lint (data-driven field-existence check; was `.multi doctor`)
+	queries        []string
+	queriesTags    []string // --queries-tags: keep only entries whose front-matter tags include ANY of these
+	queriesNotTags []string // --queries-not-tags: drop entries whose tags include ANY of these
+	bind           string
+	update         bool // .multi test: record produced labelResults back into each entry's @expect
+	sql            bool // .multi explain: render the pretty SQL++ + provenance view instead of the op tree
+	census         bool // .multi lint: census-aware lint (data-driven field-existence check; was `.multi doctor`)
 }
 
 // parseMultiArgs parses `--queries <dir>... [--bind <file>] [--update]` (also accepting
@@ -135,6 +137,23 @@ func parseMultiArgs(arg string) (multiArgs, error) {
 					a.queries = append(a.queries, d)
 				}
 			}
+		case "queries-tags", "queries-not-tags":
+			if !hasEq {
+				i++
+				if i >= len(toks) {
+					return a, fmt.Errorf("--%s needs a tag list", strings.TrimLeft(key, "-"))
+				}
+				val = toks[i]
+			}
+			for _, tg := range strings.Split(val, ",") {
+				if tg = strings.TrimSpace(tg); tg != "" {
+					if strings.TrimLeft(key, "-") == "queries-tags" {
+						a.queriesTags = append(a.queriesTags, tg)
+					} else {
+						a.queriesNotTags = append(a.queriesNotTags, tg)
+					}
+				}
+			}
 		case "bind":
 			if !hasEq {
 				i++
@@ -155,7 +174,8 @@ func parseMultiArgs(arg string) (multiArgs, error) {
 			// field-existence check). bare `--census`, or `--census=true|false`.
 			a.census = !hasEq || val == "true" || val == "1"
 		default:
-			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--bind <manifest>] [--update] [--sql] [--census])", t)
+			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--queries-tags a,b] "+
+				"[--queries-not-tags a,b] [--bind <manifest>] [--update] [--sql] [--census])", t)
 		}
 	}
 	if len(a.queries) == 0 {
@@ -170,6 +190,66 @@ func parseMultiArgs(arg string) (multiArgs, error) {
 // concatenate into one pack (IDEA-0034).
 func loadMultiQueryEntries(dirs []string) ([]glue.MultiQueryEntry, error) {
 	return glue.LoadMultiQueryEntriesDirs(dirs)
+}
+
+// selectByTags restricts a loaded pack to the entries whose front-matter `tags:` match
+// the --queries-tags / --queries-not-tags selectors (ISSUE-16): keep an entry if it has
+// ANY --queries-tags tag (when given) and NO --queries-not-tags tag. It reports the
+// selection to stderr ("selected N of M ...") so a subset is never invisible. A selector
+// that matches NOTHING is a hard error (ok=false) naming the available tags — a typo'd
+// tag must fail loudly, not silently run zero queries (ISSUE-07 zero-yield).
+func (c *cli) selectByTags(entries []glue.MultiQueryEntry, tags, notTags []string) ([]glue.MultiQueryEntry, bool) {
+	if len(tags) == 0 && len(notTags) == 0 {
+		return entries, true
+	}
+	want := map[string]bool{}
+	for _, t := range tags {
+		want[t] = true
+	}
+	block := map[string]bool{}
+	for _, t := range notTags {
+		block[t] = true
+	}
+	hasAny := func(e glue.MultiQueryEntry, m map[string]bool) bool {
+		for _, tg := range e.Tags {
+			if m[tg] {
+				return true
+			}
+		}
+		return false
+	}
+	kept := make([]glue.MultiQueryEntry, 0, len(entries))
+	for _, e := range entries {
+		if len(want) > 0 && !hasAny(e, want) {
+			continue
+		}
+		if len(block) > 0 && hasAny(e, block) {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	sel := "tags: " + strings.Join(tags, ",")
+	if len(notTags) > 0 {
+		sel += "; not: " + strings.Join(notTags, ",")
+	}
+	fmt.Fprintf(c.stderr, "%sselected %d of %d queries (%s)\n", c.icon("🔎 "), len(kept), len(entries), sel)
+	if len(kept) == 0 {
+		avail := map[string]bool{}
+		for _, e := range entries {
+			for _, tg := range e.Tags {
+				avail[tg] = true
+			}
+		}
+		at := make([]string, 0, len(avail))
+		for tg := range avail {
+			at = append(at, tg)
+		}
+		sort.Strings(at)
+		fmt.Fprintf(c.stderr, "%s: no queries match (%s); available tags: %s\n",
+			c.prog, sel, strings.Join(at, ", "))
+		return nil, false
+	}
+	return kept, true
 }
 
 // loadBinding reads a per-bundle manifest into a glue.Binding. Two minimal formats:
@@ -250,6 +330,11 @@ func (c *cli) cmdMultiList(arg string) {
 		c.failed = true
 		return
 	}
+	entries, ok := c.selectByTags(entries, args.queriesTags, args.queriesNotTags)
+	if !ok {
+		c.failed = true
+		return
+	}
 	// LoadMultiQueryEntries returns entries sorted by path (deterministic); sort by label with path
 	// as the tiebreak so the inventory reads in label order regardless of file naming.
 	sort.SliceStable(entries, func(i, j int) bool {
@@ -310,6 +395,11 @@ func (c *cli) cmdMultiRun(arg string) {
 	dets, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	dets, ok := c.selectByTags(dets, args.queriesTags, args.queriesNotTags)
+	if !ok {
 		c.failed = true
 		return
 	}
@@ -544,6 +634,11 @@ func (c *cli) cmdMultiLint(arg string) {
 		c.failed = true
 		return
 	}
+	dets, ok := c.selectByTags(dets, args.queriesTags, args.queriesNotTags)
+	if !ok {
+		c.failed = true
+		return
+	}
 	sess, binding, err := c.multiSession(args.bind)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi lint: %v\n", c.prog, err)
@@ -632,6 +727,11 @@ func (c *cli) cmdMultiExplain(arg string) {
 	dets, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	dets, ok := c.selectByTags(dets, args.queriesTags, args.queriesNotTags)
+	if !ok {
 		c.failed = true
 		return
 	}
@@ -1011,6 +1111,11 @@ func (c *cli) cmdMultiTest(arg string) {
 	entries, err := loadMultiQueryEntries(args.queries)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi test: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	entries, ok := c.selectByTags(entries, args.queriesTags, args.queriesNotTags)
+	if !ok {
 		c.failed = true
 		return
 	}

@@ -111,6 +111,57 @@ func TestMultiCompose(t *testing.T) {
 // TestMultiComposeSelection covers ISSUE-02 #3/#4: --queries is rejected, and
 // --terminal / --only gate which nodes emit their (potentially huge) labelResults
 // while every node still reports a count.
+// TestMultiComposeMultiDir guards ISSUE-16: several --queries dirs merge into one DAG,
+// so a rollup dir can `-- needs:` a node from a shared tier-1 dir without symlinking.
+func TestMultiComposeMultiDir(t *testing.T) {
+	root := t.TempDir()
+	logs := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logs, "logs.jsonl"),
+		[]byte(`{"sev":"ERROR"}`+"\n"+`{"sev":"ERROR"}`+"\n"+`{"sev":"INFO"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tier1 := t.TempDir()
+	rollups := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tier1, "errs.sql++"),
+		[]byte("-- label: errs\n"+`SELECT l.sev FROM logs l WHERE l.sev = "ERROR"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rollups, "count.sql++"),
+		[]byte("-- label: count\n-- needs: errs\n"+`SELECT COUNT(*) AS n FROM node('errs') e`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	c.cmdMulti("compose --queries " + tier1 + " --queries " + rollups)
+	if c.failed {
+		t.Fatalf("multi-dir compose failed: %s", errb.String())
+	}
+	var env struct {
+		Order []string `json:"order"`
+		Nodes []struct {
+			Node         string `json:"node"`
+			LabelResults []struct {
+				Result json.RawMessage `json:"result"`
+			} `json:"labelResults"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env); err != nil {
+		t.Fatalf("bad JSON %q: %v (stderr %s)", out.String(), err, errb.String())
+	}
+	if strings.Join(env.Order, ",") != "errs,count" {
+		t.Fatalf("order across dirs: want errs,count, got %v", env.Order)
+	}
+	for _, n := range env.Nodes {
+		if n.Node == "count" && (len(n.LabelResults) != 1 || string(n.LabelResults[0].Result) != `{"n":2}`) {
+			t.Fatalf("count node (rollup reading tier-1 node across dirs): got %v", n.LabelResults)
+		}
+	}
+}
+
 func TestMultiComposeSelection(t *testing.T) {
 	root := t.TempDir()
 	logs := filepath.Join(root, "default", "logs")
