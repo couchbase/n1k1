@@ -44,6 +44,7 @@ type censusCursorEnv struct {
 	// LEAVING: the accumulated census keeps what a fresh scan can no longer prove.
 	Rotated   []string   `json:"rotated,omitempty"`
 	Truncated []string   `json:"truncated,omitempty"`
+	Rewritten []string   `json:"rewritten,omitempty"`
 	Error     *cursorErr `json:"error,omitempty"`
 }
 
@@ -96,8 +97,10 @@ func (c *cli) cursorCensusCreate(a cursorArgs) {
 		Builtin:         a.builtinVersion, // e.g. "census@1" -- for future version-compat checks
 		CensusTypeField: a.censusType, CensusTimeField: a.censusTime,
 		CensusDepth: a.censusDepth, CensusExclude: a.censusExclude,
-		Water: res.NewWater, CensusTotals: map[string]int64{},
-		Description: a.desc, Created: now, Updated: now,
+		Water:        res.NewWater,
+		WaterFP:      glue.WaterFPMerge(res.NewWater, res.Observed, res.ObservedFP, nil, nil),
+		CensusTotals: map[string]int64{},
+		Description:  a.desc, Created: now, Updated: now,
 	}
 	if !fromNow { // default: seed the accumulated census with all history
 		st.Census = res.Rows
@@ -144,7 +147,7 @@ func (c *cli) cursorCensusPeekAdvance(a cursorArgs, st *glue.CursorState, store 
 
 	opts := glue.CensusOptions{
 		TypeField: st.CensusTypeField, TimeField: st.CensusTimeField,
-		Depth: st.CensusDepth, Exclude: st.CensusExclude, Since: st.Water,
+		Depth: st.CensusDepth, Exclude: st.CensusExclude, Since: st.Water, SinceFP: st.WaterFP,
 	}
 	window, cerr := sess.Census(st.Keyspace, opts)
 	if cerr != nil {
@@ -158,7 +161,7 @@ func (c *cli) cursorCensusPeekAdvance(a cursorArgs, st *glue.CursorState, store 
 	changed := len(drift) > 0
 	env.WindowRecords = window.Records
 	env.Count = len(drift)
-	env.Rotated, env.Truncated = window.Rotated, window.Truncated
+	env.Rotated, env.Truncated, env.Rewritten = window.Rotated, window.Truncated, window.Rewritten
 
 	if !advance {
 		env.Advanced = false
@@ -179,6 +182,7 @@ func (c *cli) cursorCensusPeekAdvance(a cursorArgs, st *glue.CursorState, store 
 	st.CensusTotals = merged.TypeTotals
 	st.CensusRecords = merged.Records
 	st.Water = window.NewWater
+	st.WaterFP = glue.WaterFPMerge(window.NewWater, window.Observed, window.ObservedFP, opts.Since, st.WaterFP)
 	st.Updated = time.Now().UTC().Format(time.RFC3339)
 	st.LastCount = len(drift)
 	if changed {

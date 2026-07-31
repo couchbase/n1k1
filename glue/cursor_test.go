@@ -100,7 +100,7 @@ func TestCursorAppendDelta(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenSession: %v", err)
 		}
-		r, err := sess.RunCursorPack(dets, since)
+		r, err := sess.RunCursorPack(dets, since, nil)
 		if err != nil {
 			t.Fatalf("RunCursorPack: %v", err)
 		}

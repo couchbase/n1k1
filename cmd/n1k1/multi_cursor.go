@@ -353,9 +353,13 @@ type cursorEnvelope struct {
 	// records below the old offset are skipped, since the watermark never rewinds).
 	// Disclosure, not failure: a census/doctor can correlate a count drop with the
 	// evidence leaving. `advance --prune-rotated` drops the rotated entries from the
-	// committed position (PrunedRotated acks how many).
+	// committed position (PrunedRotated acks how many). Rewritten = the committed
+	// boundary-record fingerprint (water_fp) no longer matches the record at that
+	// offset — the file was replaced in place WITHOUT shrinking, the violation a
+	// size check cannot see.
 	Rotated       []string `json:"rotated,omitempty"`
 	Truncated     []string `json:"truncated,omitempty"`
+	Rewritten     []string `json:"rewritten,omitempty"`
 	PrunedRotated int      `json:"pruned_rotated,omitempty"`
 
 	// ISSUE-17: the query file can be edited after create; `pack` is the baseline
@@ -665,14 +669,16 @@ func (c *cli) cursorCreate(arg string) {
 
 	if mode == "append" {
 		// Validate by compiling + running once; --from now yields the current head.
-		res, rerr := sess.RunCursorPack(dets, nil)
+		res, rerr := sess.RunCursorPack(dets, nil, nil)
 		if rerr != nil {
 			c.cursorFail(a.name, "compile", rerr)
 			return
 		}
 		st.Water = res.NewWater
+		st.WaterFP = glue.WaterFPMerge(st.Water, res.Observed, res.ObservedFP, nil, nil)
 		if fromStart {
 			st.Water = map[string]int64{} // replay everything on the first peek
+			st.WaterFP = nil
 		}
 		fromTok = encodeWater(st.Water)
 	} else { // diff
@@ -912,7 +918,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	}
 
 	committed := st.Water
-	res, err := sess.RunCursorPack(dets, committed)
+	res, err := sess.RunCursorPack(dets, committed, st.WaterFP)
 	if err != nil {
 		env := cursorEnvelope{Cursor: a.name, Pack: st.Queries, Status: "error",
 			From: encodeWater(committed), To: encodeWater(committed),
@@ -928,10 +934,11 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		From:        encodeWater(committed),
 		Count:       len(rows),
 		CommittedID: committedID(st), // the CURRENTLY-committed position (peek: unchanged)
-		// Source-side append violations (rotation/truncation) are DISCLOSED on every
-		// peek/advance — evidence leaving the corpus is an event, never silent.
+		// Source-side append violations (rotation/truncation/rewrite) are DISCLOSED on
+		// every peek/advance — evidence leaving the corpus is an event, never silent.
 		Rotated:   res.Rotated,
 		Truncated: res.Truncated,
+		Rewritten: res.Rewritten,
 	}
 	if drifted {
 		env.QueriesCurrent = currentID
@@ -962,15 +969,20 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	// truncated container to its CURRENT extent: rewritten content below the old
 	// offset is not re-delivered, and future appends deliver again. Rotation does
 	// NOT refuse: nothing mis-delivers, disclosure (+ --prune-rotated) suffices.
-	if len(res.Truncated) > 0 && !a.acceptTrunc {
+	if (len(res.Truncated) > 0 || len(res.Rewritten) > 0) && !a.acceptTrunc {
+		kind := "source-truncated"
+		if len(res.Rewritten) > 0 {
+			kind = "source-rewritten" // fingerprint mismatch: replaced in place, size unchanged
+		}
 		env.Status = "error"
 		env.To = encodeWater(committed)
-		env.Error = &cursorErr{Kind: "source-truncated", Message: fmt.Sprintf(
-			"%d committed container(s) were truncated/rewritten below their watermark (see \"truncated\"); "+
-				"the source violated append-only, and records below the old offset are being skipped. "+
-				"Re-run with --accept-truncation to acknowledge the loss and re-baseline each at its "+
-				"current extent (no re-delivery of rewritten content; future appends deliver again).",
-			len(res.Truncated))}
+		env.Error = &cursorErr{Kind: kind, Message: fmt.Sprintf(
+			"%d committed container(s) violated append-only (%d truncated, %d rewritten in place -- "+
+				"see \"truncated\"/\"rewritten\"); the committed position no longer describes them, and "+
+				"records below each old offset are being skipped. Re-run with --accept-truncation to "+
+				"acknowledge the discontinuity and re-baseline each at its current content (no "+
+				"re-delivery of rewritten content; future appends deliver again).",
+			len(res.Truncated)+len(res.Rewritten), len(res.Truncated), len(res.Rewritten))}
 		c.printJSON(env)
 		c.failed = true
 		return
@@ -1051,6 +1063,10 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	moved := !waterEqual(committed, newWater)
 
 	st.Water = newWater
+	// Commit the boundary-record fingerprints beside the water: observed-this-scan
+	// where the offset matches, carried forward where it didn't move, and BACKFILLED
+	// opportunistically for a legacy sidecar (no flag day — the hash_scheme pattern).
+	st.WaterFP = glue.WaterFPMerge(newWater, res.Observed, res.ObservedFP, committed, st.WaterFP)
 	st.Queries = currentID                 // ISSUE-17: adopt the current query as the baseline (no-op if unchanged; re-baselines an --allow-drift advance so it isn't permanently "drifted")
 	st.HashScheme = glue.QueriesHashScheme // migrate an old-scheme sidecar forward
 	st.Updated = time.Now().UTC().Format(time.RFC3339)
@@ -1552,9 +1568,13 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        committed containers no longer observed (file deleted, or now
                        empty), "truncated" those rewritten SHORTER than the committed
                        offset (their records below it are skipped -- the watermark
-                       never rewinds, so nothing double-delivers). Evidence leaving
-                       the corpus is an event, never silent; a field that reads 0
-                       NOW may still exist in an accumulated census.
+                       never rewinds, so nothing double-delivers), and "rewritten"
+                       those replaced in place WITHOUT shrinking -- caught by the
+                       boundary-record fingerprint (water_fp: the hash of the record
+                       at each committed offset, kept beside the position; the one
+                       violation a size check cannot see). Evidence leaving the
+                       corpus is an event, never silent; a field that reads 0 NOW
+                       may still exist in an accumulated census.
   advance NAME [--to <pos> | --to-file <path>] [--quiet] [--force]
                [--prune-rotated] [--accept-truncation]
                        commit (get + move). Echoes the delta unless --quiet.
@@ -1562,14 +1582,16 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        committed position (acked as "pruned_rotated"; without it the
                        position map holds every container ever seen). Cost: if a
                        same-named file later reappears, it replays from byte 0.
-                       A TRUNCATED container REFUSES the advance (error kind
-                       "source-truncated", position untouched): the source violated
-                       append-only, and committing past it would entrench the loss —
-                       the container even stays dead until the file regrows past its
-                       old offset. --accept-truncation acknowledges the discontinuity
-                       (the --allow-drift shape) and re-baselines each truncated
-                       container at its CURRENT extent: rewritten content below the
-                       old offset is not re-delivered; future appends deliver again.
+                       A TRUNCATED or REWRITTEN container REFUSES the advance (error
+                       kind "source-truncated" / "source-rewritten", position
+                       untouched): the source violated append-only, and committing
+                       past it would entrench the loss — a truncated container even
+                       stays dead until the file regrows past its old offset.
+                       --accept-truncation acknowledges the discontinuity (the
+                       --allow-drift shape) and re-baselines each violating
+                       container at its CURRENT content: nothing below the old
+                       offset is re-delivered; future appends deliver again, and
+                       the fingerprint re-stamps to the new content.
                        (A census cursor stays disclosure-only: its fold is additive
                        and never rewinds, so blocking it would only lose more.)
                        --to <pos> commits the exact position peek reported (two-step);

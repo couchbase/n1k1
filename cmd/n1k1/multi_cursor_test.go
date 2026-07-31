@@ -652,6 +652,129 @@ func TestMultiCursorRotationDisclosure(t *testing.T) {
 	}
 }
 
+// TestMultiCursorRewriteFingerprint covers the tier-1 prefix fingerprint
+// (DESIGN-cep.md rung 3): a file REWRITTEN in place without shrinking -- the one
+// append violation a size check cannot see -- is detected by the committed
+// boundary-record fingerprint (water_fp: the hash of the record starting at the
+// committed offset), disclosed as "rewritten", refused on advance
+// (kind "source-rewritten"), and acknowledged with --accept-truncation. Also: no
+// false positive on identical bytes, and a legacy sidecar (no water_fp) skips
+// verification until the next advance BACKFILLS it.
+func TestMultiCursorRewriteFingerprint(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aPath := filepath.Join(ks, "a.jsonl")
+	orig := `{"n":1}` + "\n" + `{"n":2}` + "\n"
+	if err := os.WriteFile(aPath, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := writeMultiQueryEntries(t, map[string]string{"all": "-- label: all\nSELECT e.n FROM events e"})
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	env := func() map[string]interface{} {
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+	sidecar := func() map[string]interface{} {
+		b, _ := os.ReadFile(filepath.Join(store, "ROT.json"))
+		var sc map[string]interface{}
+		json.Unmarshal(b, &sc)
+		return sc
+	}
+
+	// Baseline: create --from now captures water AND the boundary fingerprint.
+	out.Reset()
+	c.cmdMulti("cursor create ROT --queries " + pack + " --cursor-store " + store)
+	if env()["ok"] != true {
+		t.Fatalf("create: %s (stderr %s)", out.String(), errb.String())
+	}
+	if fp, _ := sidecar()["water_fp"].(map[string]interface{}); len(fp) != 1 {
+		t.Fatalf("create should seed water_fp: %v", sidecar()["water_fp"])
+	}
+
+	// Identical bytes rewritten (a touch): NO false positive.
+	if err := os.WriteFile(aPath, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	if pv := env(); pv["rewritten"] != nil || pv["status"] != "empty" {
+		t.Fatalf("identical rewrite must not trip the fingerprint: %s", out.String())
+	}
+
+	// Same-LENGTH different content: size says nothing changed; the fingerprint sees it.
+	if err := os.WriteFile(aPath, []byte(`{"n":7}`+"\n"+`{"n":8}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	pv := env()
+	rew, _ := pv["rewritten"].([]interface{})
+	if len(rew) != 1 || !strings.Contains(rew[0].(string), "a.jsonl") {
+		t.Fatalf("in-place rewrite not detected: %s", out.String())
+	}
+	if pv["truncated"] != nil {
+		t.Fatalf("same-length rewrite must not read as truncated: %s", out.String())
+	}
+
+	// advance refuses (source-rewritten, position untouched) until acknowledged.
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ROT --quiet --cursor-store " + store)
+	if ev, _ := env()["error"].(map[string]interface{}); ev == nil || ev["kind"] != "source-rewritten" {
+		t.Fatalf("rewritten advance must refuse with source-rewritten: %s", out.String())
+	}
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ROT --quiet --accept-truncation --cursor-store " + store)
+	if av := env(); av["status"] == "error" || c.failed {
+		t.Fatalf("--accept-truncation should commit past a rewrite: %s", out.String())
+	}
+
+	// The fingerprint re-stamped to the NEW content: peek is clean, appends deliver.
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	if pv = env(); pv["rewritten"] != nil {
+		t.Fatalf("fingerprint should re-stamp on accept: %s", out.String())
+	}
+	f, _ := os.OpenFile(aPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString(`{"n":9}` + "\n")
+	f.Close()
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	if pv = env(); pv["count"] != float64(1) {
+		t.Fatalf("append after acknowledged rewrite must deliver: %s", out.String())
+	}
+
+	// Legacy sidecar (no water_fp): verification skipped, next advance backfills.
+	raw, _ := os.ReadFile(filepath.Join(store, "ROT.json"))
+	var sc map[string]interface{}
+	json.Unmarshal(raw, &sc)
+	delete(sc, "water_fp")
+	nb, _ := json.Marshal(sc)
+	os.WriteFile(filepath.Join(store, "ROT.json"), nb, 0o644)
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	if pv = env(); pv["rewritten"] != nil {
+		t.Fatalf("legacy sidecar must not report rewrites (no fingerprints): %s", out.String())
+	}
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ROT --quiet --cursor-store " + store)
+	if av := env(); av["status"] == "error" || c.failed {
+		t.Fatalf("legacy advance should commit + backfill: %s", out.String())
+	}
+	if fp, _ := sidecar()["water_fp"].(map[string]interface{}); len(fp) != 1 {
+		t.Fatalf("advance should backfill water_fp on a legacy sidecar: %v", sidecar()["water_fp"])
+	}
+}
+
 // TestMultiCursorAdvanceToSafety guards ISSUE-13: (1) peek's `to` token must survive
 // being fed back to `advance --to` through .multi's quote-aware tokenizer (it is an
 // opaque base64 token, no quotes to strip); (2) an explicit --to that would silently

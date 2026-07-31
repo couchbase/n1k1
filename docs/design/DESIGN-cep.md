@@ -264,9 +264,22 @@ at-or-below the watermark. So today:
   refusal. `peek` stays read-only-and-disclosing; a census cursor stays disclosure-only (its fold
   is additive and never rewinds, so blocking it would only lose more). Guard: the truncation act
   of `TestMultiCursorRotationDisclosure`.
-- **Prefix fingerprints** (per-container head hash alongside the offset) would detect
-  rewrite-in-place that preserves length — the one case size alone cannot catch. Heavier; future
-  work, likely arriving with the `git://` provider's content-identity fingerprints.
+- **Prefix fingerprints — ✅ SHIPPED (tier-1 boundary-record)**: `water_fp` stores, beside each
+  committed offset, the hash (FNV-1a 64) of the record that STARTS there — the last record the
+  cursor advanced past. Each scan verifies it (the filter already reads every byte, so the check
+  is a per-container hash of one record; the scan keeps a running COPY of the max record rather
+  than hashing every record, ~10× cheaper); a mismatch — or no record at that offset — is a
+  REWRITE-IN-PLACE that preserved length, the one violation size cannot see. Disclosed as
+  `rewritten:`, refused on advance (kind `source-rewritten`), acknowledged by the same
+  `--accept-truncation`; fingerprints re-stamp on accept and BACKFILL opportunistically on any
+  advance for legacy sidecars (no flag day). Chosen over a full-prefix rolling hash deliberately:
+  the boundary-record check stays cheap under a future seek-to-watermark scan, where full-prefix
+  hashing would force re-reading everything seeking skips. This is also the `git://` stepping
+  stone: a committed position carrying content identity (`water_fp` ≙ SHA-as-position), and
+  `SourceAnomalies`' rotated/truncated/rewritten trio ≙ git's ref-deleted/rewound/history-rewritten,
+  riding the same disclose → refuse → acknowledge cycle. Guards:
+  `TestMultiCursorRewriteFingerprint` (same-length rewrite caught, identical bytes not, legacy
+  backfill), plus the rotation/truncation act unchanged.
 
 ### The `git://` source provider (design)
 

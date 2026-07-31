@@ -36,9 +36,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -106,8 +108,15 @@ type CursorState struct {
 
 	// --- append mode ---
 	// Water is the committed high-water: source-container key -> offset. Empty
-	// means "from the very beginning" (every record is new).
-	Water map[string]int64 `json:"water,omitempty"`
+	// means "from the very beginning" (every record is new). WaterFP is the parallel
+	// boundary-record fingerprint map (container -> hash of the record STARTING at
+	// its committed offset) — the tier-1 prefix fingerprint that detects a file
+	// REWRITTEN in place without shrinking (the violation a size check cannot see).
+	// Optional + parallel (not folded into Water's value type) so legacy sidecars
+	// load unchanged and fingerprints backfill on the next advance. This is the file
+	// shape of git's SHA-as-position: a committed position carrying content identity.
+	Water   map[string]int64  `json:"water,omitempty"`
+	WaterFP map[string]string `json:"water_fp,omitempty"`
 
 	// --- diff mode ---
 	// IdField is the result field whose value keys the snapshot (default "id"); a
@@ -341,15 +350,25 @@ func (s *CursorStore) SaveSnapshot(name string, snap map[string]SnapshotEntry) e
 // track the max position seen per container (the recomputed water). It is
 // installed once per scan at DatastoreScanRecords via GlueContext.scanFilter.
 type RecordScanFilter struct {
-	since map[string]int64 // committed high-water (read-only), container -> offset
-	mu    sync.Mutex
-	seen  map[string]int64 // max position observed this run, container -> offset
+	since   map[string]int64  // committed high-water (read-only), container -> offset
+	sinceFP map[string]string // committed boundary-record fingerprints (read-only), container -> hash; nil = no verification
+	mu      sync.Mutex
+	seen    map[string]int64  // max position observed this run, container -> offset
+	lastDoc map[string][]byte // COPY of the record at the observed max (the next boundary record); hashed once at scan end
+	boundFP map[string]string // hash of the record observed AT the committed offset -- the rewrite check
 }
 
 // NewRecordScanFilter builds a filter for the committed high-water `since` (nil
-// means "from the beginning" -- admit everything).
-func NewRecordScanFilter(since map[string]int64) *RecordScanFilter {
-	return &RecordScanFilter{since: since, seen: map[string]int64{}}
+// means "from the beginning" -- admit everything). sinceFP carries the committed
+// boundary-record fingerprints (CursorState.WaterFP): the hash of the record that
+// STARTS at each container's committed offset. It is the tier-1 "prefix fingerprint"
+// (DESIGN-cep.md): if that one record no longer hashes the same -- or no record
+// starts there at all -- the file was REWRITTEN in place (framing shifted) even
+// though its size never shrank, the one violation a size check cannot see. nil (a
+// legacy sidecar) skips verification; fingerprints backfill on the next advance.
+func NewRecordScanFilter(since map[string]int64, sinceFP map[string]string) *RecordScanFilter {
+	return &RecordScanFilter{since: since, sinceFP: sinceFP,
+		seen: map[string]int64{}, lastDoc: map[string][]byte{}, boundFP: map[string]string{}}
 }
 
 // wrap returns a Source that yields only records past the committed high-water,
@@ -373,13 +392,45 @@ func (f *RecordScanFilter) admit(path string, pos int64) bool {
 }
 
 // observe records the max position seen in a container (new + already-seen), so
-// the recomputed water covers everything currently present.
-func (f *RecordScanFilter) observe(path string, pos int64) {
+// the recomputed water covers everything currently present. It also keeps a COPY of
+// the record at the current max (the boundary record a future scan will verify --
+// copy now, hash once at scan end: hashing every record would cost ~30% of a scan,
+// a memcpy ~1/10th of that) and, when the committed fingerprints ask for it, hashes
+// the one record found AT the committed offset (the rewrite check).
+func (f *RecordScanFilter) observe(path string, pos int64, doc []byte) {
 	f.mu.Lock()
 	if cur, ok := f.seen[path]; !ok || pos > cur {
 		f.seen[path] = pos
+		f.lastDoc[path] = append(f.lastDoc[path][:0], doc...)
+	}
+	if f.sinceFP != nil {
+		if _, want := f.sinceFP[path]; want && pos == f.since[path] {
+			f.boundFP[path] = recordFP(doc)
+		}
 	}
 	f.mu.Unlock()
+}
+
+// FingerprintWater returns the boundary-record fingerprint for each container
+// observed this scan: the hash of the record at its max position -- what
+// CursorState.WaterFP commits so the NEXT scan can verify the prefix survived.
+func (f *RecordScanFilter) FingerprintWater() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]string, len(f.lastDoc))
+	for k, doc := range f.lastDoc {
+		out[k] = recordFP(doc)
+	}
+	return out
+}
+
+// recordFP is the boundary-record hash: FNV-1a 64 over the record's bytes, hex.
+// Not cryptographic -- it guards against rotation/rewrite accidents, not adversaries
+// (an adversary owns the files anyway). Stable across scans of identical bytes.
+func recordFP(doc []byte) string {
+	h := fnv.New64a()
+	h.Write(doc)
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // NewWater merges the committed high-water with what was observed this run: the
@@ -421,9 +472,19 @@ func (f *RecordScanFilter) ObservedWater() map[string]int64 {
 // DESIGN-cep.md): rotated = held in the committed water but NOTHING observed this
 // scan (file deleted/renamed, or now empty); truncated = observed but the extent
 // fell BELOW the committed offset (rewritten shorter — its records below the old
-// offset are being skipped, since the watermark never rewinds). Both are silent
-// evidence loss unless disclosed, which is this method's whole purpose. Sorted.
-func (f *RecordScanFilter) SourceAnomalies() (rotated, truncated []string) {
+// offset are being skipped, since the watermark never rewinds); rewritten = size
+// says nothing shrank, but the committed boundary-record fingerprint no longer
+// matches the record at that offset (or no record starts there) — the file was
+// replaced in place, the case a size check cannot see. All are silent evidence loss
+// unless disclosed, which is this method's whole purpose. Sorted.
+//
+// This trio is the file instance of a generic contract a cursor-followable source
+// owes its committed position — "does the position still describe the source?" —
+// and maps directly onto the planned git:// provider's checks: rotated ≙ ref
+// deleted, truncated ≙ ref rewound, rewritten ≙ history rewritten (cursor SHA no
+// longer an ancestor). The disclose → refuse → acknowledge cycle built here is the
+// one a git ref rewind will ride.
+func (f *RecordScanFilter) SourceAnomalies() (rotated, truncated, rewritten []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for k, w := range f.since {
@@ -433,11 +494,18 @@ func (f *RecordScanFilter) SourceAnomalies() (rotated, truncated []string) {
 			rotated = append(rotated, k)
 		case seen < w:
 			truncated = append(truncated, k)
+		default:
+			if fp, has := f.sinceFP[k]; has {
+				if got, saw := f.boundFP[k]; !saw || got != fp {
+					rewritten = append(rewritten, k)
+				}
+			}
 		}
 	}
 	sort.Strings(rotated)
 	sort.Strings(truncated)
-	return rotated, truncated
+	sort.Strings(rewritten)
+	return rotated, truncated, rewritten
 }
 
 type filteringSource struct {
@@ -455,7 +523,7 @@ func (s *filteringSource) Next(rec *records.Record) (bool, error) {
 		if !hasPos {
 			return true, nil // whole-file unit: no within-file position to filter on
 		}
-		s.f.observe(path, pos)
+		s.f.observe(path, pos, rec.Doc)
 		if s.f.admit(path, pos) {
 			return true, nil
 		}
@@ -471,23 +539,28 @@ func (s *filteringSource) Close() error { return s.inner.Close() }
 type CursorRunResult struct {
 	LabelResults []LabelResult    // the delta only (records past the water)
 	NewWater     map[string]int64 // recomputed high-water (the candidate `to`)
-	// Rotated / Truncated disclose committed containers whose source violated
-	// append-only this scan (see RecordScanFilter.SourceAnomalies) — surfaced in the
-	// peek/advance envelope so evidence loss is an event, never silent. Observed is
-	// the un-merged per-container extent this scan saw (RecordScanFilter.ObservedWater)
-	// — what `advance --accept-truncation` re-baselines a truncated container to.
-	Rotated   []string
-	Truncated []string
-	Observed  map[string]int64
-	Report    *MultiQueryRunReport
+	// Rotated / Truncated / Rewritten disclose committed containers whose source
+	// violated append-only this scan (see RecordScanFilter.SourceAnomalies) — surfaced
+	// in the peek/advance envelope so evidence loss is an event, never silent.
+	// Observed is the un-merged per-container position this scan saw
+	// (RecordScanFilter.ObservedWater) — what `advance --accept-truncation`
+	// re-baselines a truncated container to; ObservedFP the matching boundary-record
+	// fingerprints (RecordScanFilter.FingerprintWater) — what WaterFPMerge commits.
+	Rotated    []string
+	Truncated  []string
+	Rewritten  []string
+	Observed   map[string]int64
+	ObservedFP map[string]string
+	Report     *MultiQueryRunReport
 }
 
 // RunCursorPack compiles and runs the pack `dets` with an `append` scan filter
 // seeded at the committed high-water `since`, returning the delta labelResults and
 // the recomputed high-water. Used by both `peek` (discards the water) and
 // `advance` (commits it).
-func (s *Session) RunCursorPack(dets []MultiQueryEntry, since map[string]int64) (*CursorRunResult, error) {
-	return s.runCursorPack(dets, NewRecordScanFilter(since))
+func (s *Session) RunCursorPack(dets []MultiQueryEntry, since map[string]int64,
+	sinceFP map[string]string) (*CursorRunResult, error) {
+	return s.runCursorPack(dets, NewRecordScanFilter(since, sinceFP))
 }
 
 // RunPackFull compiles and runs the pack `dets` over the FULL current state (no
@@ -516,12 +589,41 @@ func (s *Session) runCursorPack(dets []MultiQueryEntry, filter *RecordScanFilter
 	res := &CursorRunResult{LabelResults: lrs, Report: report}
 	if filter != nil {
 		res.NewWater = filter.NewWater()
-		res.Rotated, res.Truncated = filter.SourceAnomalies()
-		if len(res.Truncated) > 0 {
-			res.Observed = filter.ObservedWater()
-		}
+		res.Rotated, res.Truncated, res.Rewritten = filter.SourceAnomalies()
+		res.Observed = filter.ObservedWater()
+		res.ObservedFP = filter.FingerprintWater()
 	}
 	return res, nil
+}
+
+// WaterFPMerge computes the boundary-record fingerprints to commit alongside a new
+// water: for each committed container, the fingerprint observed this scan when the
+// container's committed offset IS this scan's observed position; else the old
+// fingerprint carried forward when the offset didn't move (an unscanned/rotated
+// container); else absent (an explicit --to offset nobody observed a record at —
+// no fingerprint beats a wrong one). This is also the opportunistic BACKFILL: a
+// legacy sidecar with no fingerprints gains them on its next advance, no flag day
+// (the hash_scheme pattern).
+func WaterFPMerge(newWater, observed map[string]int64, observedFP map[string]string,
+	oldWater map[string]int64, oldFP map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, w := range newWater {
+		if ov, ok := observed[k]; ok && ov == w {
+			if h, ok2 := observedFP[k]; ok2 {
+				out[k] = h
+				continue
+			}
+		}
+		if ow, ok := oldWater[k]; ok && ow == w {
+			if h, ok2 := oldFP[k]; ok2 {
+				out[k] = h
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // LoadPack loads a pack from a path that is EITHER a single *.sql++ file (one

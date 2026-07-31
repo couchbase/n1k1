@@ -54,7 +54,10 @@ type CensusOptions struct {
 	// watermark (the incremental / census-cursor case). nil censuses the whole
 	// keyspace. Either way CensusResult.NewWater reports the extent scanned, so a
 	// window's partial census merges into an accumulated one (the monoid).
-	Since map[string]int64
+	// SinceFP carries the committed boundary-record fingerprints (CursorState.WaterFP)
+	// for rewrite detection; nil skips it.
+	Since   map[string]int64
+	SinceFP map[string]string
 }
 
 // CensusRow is one (type, path, value-type) cell of the census. Coverage is left to
@@ -78,11 +81,15 @@ type CensusResult struct {
 	TypeTotals map[string]int64
 	Records    int64
 	NewWater   map[string]int64
-	// Rotated / Truncated disclose committed containers whose source violated
-	// append-only this scan (RecordScanFilter.SourceAnomalies) -- a census fold over
-	// a rotating corpus must know when evidence left, not just when it arrived.
-	Rotated   []string
-	Truncated []string
+	// Rotated / Truncated / Rewritten disclose committed containers whose source
+	// violated append-only this scan (RecordScanFilter.SourceAnomalies) -- a census
+	// fold over a rotating corpus must know when evidence left, not just when it
+	// arrived. Observed/ObservedFP feed the WaterFP commit (WaterFPMerge).
+	Rotated    []string
+	Truncated  []string
+	Rewritten  []string
+	Observed   map[string]int64
+	ObservedFP map[string]string
 }
 
 type censusCell struct {
@@ -127,7 +134,7 @@ func (s *Session) Census(keyspace string, opts CensusOptions) (*CensusResult, er
 
 	// Filter to records past the watermark (incremental census) and track the extent
 	// scanned. A nil Since admits everything (a full census) and still reports the head.
-	filter := NewRecordScanFilter(opts.Since)
+	filter := NewRecordScanFilter(opts.Since, opts.SinceFP)
 	scan := filter.wrap(src)
 
 	cells := map[string]*censusCell{}
@@ -202,9 +209,10 @@ func (s *Session) Census(keyspace string, opts CensusOptions) (*CensusResult, er
 		}
 		return rows[i].ValType < rows[j].ValType
 	})
-	rotated, truncated := filter.SourceAnomalies()
+	rotated, truncated, rewritten := filter.SourceAnomalies()
 	return &CensusResult{Rows: rows, TypeTotals: typeTotals, Records: total,
-		NewWater: filter.NewWater(), Rotated: rotated, Truncated: truncated}, nil
+		NewWater: filter.NewWater(), Rotated: rotated, Truncated: truncated, Rewritten: rewritten,
+		Observed: filter.ObservedWater(), ObservedFP: filter.FingerprintWater()}, nil
 }
 
 // censusTypeName is jsonTypeName spelled to match SQL++ TYPE_NAME (so a census
