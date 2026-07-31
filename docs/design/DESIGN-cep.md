@@ -210,6 +210,53 @@ New source providers this implies: a **recursive jsonl-dir** source (per-file ap
 membership; n1k1 nearly has it), and a **`git://` source** (next), both wired through the
 late-binding manifest (`sessions → dir("~/.claude/**/*.jsonl")`, `commits → git(worktrees)`).
 
+### "Append-mostly, with whole-file rotation" — field evidence, and what the cursor owes the census
+
+Production confirmation of the sub-stream model's deletion case, from the n1k1-for-ai corpus
+(2026-07): two full census passes twenty minutes apart read 198,589 then 194,527 records (458 → 457
+files) — a session file **rotated away, taking the only two records carrying `attachment.path` with
+it**. `COUNT(*)` for that field is now 0 corpus-wide. Their coinage names the source property
+precisely: **append-mostly, with whole-file rotation.** Three consequences the design must own:
+
+**1. The accumulated census is strictly more informative than any fresh scan — by design, so say so.**
+A fresh scan proves *currently present*; only the committed, incrementally-folded census proves
+*ever existed*. Corollaries: a census **replay** (`rm` + re-create `--from start`, or a consumer's
+`--reset`) is **not idempotent against a rotating corpus** — it silently loses every field whose
+evidence rotated away, so replay should be a last resort and its docs should say it forfeits
+rotated history. And **`doctor` / any "field died" alarm must consult the accumulated census, not
+a rescan**: `last_seen` stopped advancing = *behavior*; the carrying records left the corpus =
+*retention*. Reporting the second as the first is a false finding — the consumer's rule ("check
+committed history before reporting a change in behaviour rather than retention") is the right
+default and Phase-4/doctor work should bake it in.
+
+**2. What the shipped `append` watermark actually does under rotation/truncation (verified in
+`RecordScanFilter`).** `NewWater` max-merges committed and observed offsets, and `admit` skips
+at-or-below the watermark. So today:
+- **Rotated file** → its watermark entry is carried forever (max-merge). Safe — a same-named
+  reappearing file cannot re-deliver from 0 — but **silent**: nothing surfaces "a container in the
+  committed position no longer exists", and the position map never shrinks (the retention bullet
+  above).
+- **Truncated / rewritten-in-place below the watermark** → the watermark **never rewinds**, so
+  nothing double-delivers; instead every record of the new content below the old byte offset is
+  **silently skipped, forever**. No error, no event. The `unsafe-position` guard does not apply —
+  it validates `--to` position *tokens*, not the source changing beneath a committed position.
+- **Appended-then-rotated between peeks** → those records are never delivered. The honest delivery
+  contract is therefore: *at-least-once for records that survive until the next scan; never
+  re-delivered; rotation and truncation losses are currently silent.*
+
+**3. The response ladder** (cheap first):
+- **Surface, don't guess**: `peek`/`advance` can report `rotated: [containers]` (committed water
+  key, nothing observed this scan) and `truncated: [containers]` (observed extent below the
+  committed offset) in the envelope — same disclosure pattern as `dropped/rewound/unknown` on
+  `advance --to`. Turns silent evidence loss into an event a census/doctor can correlate; an
+  explicit `--prune-rotated` could then shrink the position map deliberately.
+- **Fail-loud on truncation** is arguably right for `mode: append`'s contract (the source violated
+  append-only), with an explicit override that re-baselines that container — mirroring
+  `--allow-drift`'s shape: the caller acknowledges the discontinuity.
+- **Prefix fingerprints** (per-container head hash alongside the offset) would detect
+  rewrite-in-place that preserves length — the one case size alone cannot catch. Heavier; future
+  work, likely arriving with the `git://` provider's content-identity fingerprints.
+
 ### The `git://` source provider (design)
 
 A git repo exposed as **queryable, cursor-followable keyspaces** — so `SELECT … FROM commits`, a
