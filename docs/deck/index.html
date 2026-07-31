@@ -230,8 +230,8 @@ SQL++ ─▶│ parser ─▶ planner ─▶ plan tree ┼───▶│ conv.g
 
   <div id="sqlpp-recipes" class="step leaf" data-rel-to="hub-sqlpp"
        data-rel-x="0" data-rel-y="1450" data-rel-z="300" data-scale="0.4">
-    <p class="kicker">sql++ · fine print</p>
-    <h2>ASIDE: a Rosetta Stone compares SQL++ vs others</h2>
+    <p class="kicker">sql++ versus others</p>
+    <h2>SQL++ vs others</h2>
     <p>Common JSON slice-and-dice tasks, each shown side-by-side in SQL++
        versus<br>SQL (Postgres, DuckDB), JavaScript, Python, MongoDB, and jq syntax —
        <br>generated from one YAML source, published with per-recipe permalinks.</p>
@@ -349,7 +349,7 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
 
   <div id="data-fetchwar" class="step leaf" data-rel-to="hub-data"
        data-rel-x="0" data-rel-y="1650" data-rel-z="300" data-scale="0.4">
-    <p class="kicker">data layer · fine print</p>
+    <p class="kicker">data layer · example</p>
     <h2>Example: a 3-way nested-loop self-join</h2>
     <ul>
       <li>Consider a 3-way nested-loop self-join that expands to 262K rows:<br>
@@ -469,7 +469,7 @@ buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</sp
 
   <div id="engine-col" class="step leaf" data-rel-to="hub-engine"
        data-rel-x="0" data-rel-y="1650" data-rel-z="300" data-scale="0.4">
-    <p class="kicker">engine · fine print</p>
+    <p class="kicker">engine · hybrid</p>
     <h2>hybrid: row &amp; columnar - they're the same lane</h2>
 <pre class="diagram"><code>row batch:  Vals = [ "alice", 42, {"x":1} ]            <span class="c">← one row, 3 cols</span>
 col batch:  Vals = [ ["alice","bob"], [42,43], […] ]   <span class="c">← many rows</span></code></pre>
@@ -586,12 +586,12 @@ parent = n1k1, which has cbq + datasource access, and
        data-x="-3100" data-y="4800" data-z="0" data-scale="5">
     <div class="bignum">6</div>
     <p class="kicker">6 · many queries, one scan</p>
-    <h1>Shared scans:<br>MQO (multi-query optimizations),<br>K-way ASOF (temporal) joins &amp;<br>CEP (complex event processing)</h1>
+    <h1>Shared scans and stateful cursors</h1>
   </div>
 
   <div id="multi-fusion" class="step" data-rel-to="hub-multi"
        data-rel-x="-1400" data-rel-y="350" data-rel-z="150">
-    <p class="kicker">multi-query</p>
+    <p class="kicker">shared scans</p>
     <h2>Multi-Query Optimizations</h2>
 <pre class="diagram"><code>*.sql++ ×1000 ─▶ QueriesCompile ─▶ union-all( fused SQL++ detectors… )
    <span class="c">(in git)</span>                         ▲ <span class="c">each woken only on its literal hits</span>
@@ -618,7 +618,7 @@ parent = n1k1, which has cbq + datasource access, and
 
   <div id="multi-asof" class="step" data-rel-to="hub-multi"
        data-rel-x="0" data-rel-y="350" data-rel-z="150">
-    <p class="kicker">multi-query · temporal</p>
+    <p class="kicker">shared scans · temporal</p>
     <h2>K-way ASOF merge joins without an ASOF keyword</h2>
 <pre><code>SELECT e.*, (SELECT r.val FROM readings r
              WHERE r.ts &lt;= e.ts          <span class="c">-- nearest-preceding…</span>
@@ -641,7 +641,7 @@ parent = n1k1, which has cbq + datasource access, and
 
   <div id="multi-cep" class="step" data-rel-to="hub-multi"
        data-rel-x="1400" data-rel-y="350" data-rel-z="150">
-    <p class="kicker">multi-query · change feeds</p>
+    <p class="kicker">shared scans · cursors</p>
     <h2>CEP (complex event processing) with cursors</h2>
 <pre><code>.multi cursor peek    AWS-incidents   <span class="c">-- the delta; cursor NOT moved</span>
 .multi cursor advance AWS-incidents   <span class="c">-- move + return the delta passed</span></code></pre>
@@ -662,7 +662,7 @@ parent = n1k1, which has cbq + datasource access, and
 
   <div id="multi-lint" class="step leaf" data-rel-to="hub-multi"
        data-rel-x="0" data-rel-y="1450" data-rel-z="300" data-scale="0.4">
-    <p class="kicker">multi-query · fine print</p>
+    <p class="kicker">shared scans · details</p>
     <h2>Observability for CEP</h2>
     <ul>
       <li><code>.multi lint</code> is a report card for shared-scan queries —<br>fused vs
@@ -1036,7 +1036,7 @@ function expand(args, ctx) {
 
   <div id="rigor-race" class="step leaf" data-rel-to="hub-rigor"
        data-rel-x="0" data-rel-y="1450" data-rel-z="300" data-scale="0.4">
-    <p class="kicker">rigor · fine print</p>
+    <p class="kicker">rigor · battle scars</p>
     <h2><code>-race</code> detector stories</h2>
     <ul>
       <li>UNION-ALL bug bit three times, each
