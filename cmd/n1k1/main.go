@@ -199,7 +199,7 @@ func main() {
 	// `-` (or `name=-`) source names it. `-` -> keyspace `stdin`; `name=-` -> keyspace
 	// `name`; other sources stay files, so you can join piped data against a file corpus:
 	//   cat x.jsonl | n1k1 -c 'SELECT * FROM stdin s'
-	//   n1k1 -c '.multi show --queries builtin:census.sql++' ds | n1k1 -c 'SELECT RAW s.sql FROM stdin s'
+	//   n1k1 -c '.multi show --queries builtin:census.sql++' | n1k1 -c 'SELECT RAW s.sql FROM stdin s'
 	if (*cFlag != "" || *fFlag != "") && !isTTY(os.Stdin) {
 		fileSrcs, stdinName, wantStdin := stdinSources(fargs)
 		if wantStdin {
@@ -500,10 +500,10 @@ usage: %[1]s [flags] [datastore-dir | file | source...]
   %[1]s -f script.sql++ path/to/datastore-dir
   echo "SELECT 1+1" | %[1]s
 
-  # with -c/-f, PIPED JSON is queryable as a keyspace named 'stdin' (jq-like) --
+  # with -c/-f, PIPED JSON is queryable as a keyspace named 'stdin'
   # when there's no datastore, or a '-' (or name=-) source names it:
   cat data.jsonl | %[1]s -c "SELECT s.type, COUNT(*) FROM stdin s GROUP BY s.type"
-  %[1]s -c '.multi show --queries builtin:census.sql++' ds | %[1]s -mode yaml -c "SELECT RAW s.sql FROM stdin s"
+  %[1]s -c '.multi show --queries builtin:census.sql++' | %[1]s -mode yaml -c "SELECT RAW s.sql FROM stdin s"
   cat metrics.jsonl | %[1]s -c "SELECT * FROM hosts h JOIN metrics m ON h.id=m.id" ./hosts metrics=-
 
   # dotted/hyphenated keyspaces need backticks -- and backticks are command-
