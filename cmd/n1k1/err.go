@@ -131,6 +131,48 @@ func reservedWordReason(reason string) string {
 	return reason
 }
 
+// noKeyspaceToken extracts the keyspace name from an unresolved-keyspace plan error,
+// or "" when the error isn't that case. Two shapes exist: "... no keyspace <name>"
+// (the glob namespace, when the tree has no physical default/) and "Keyspace not
+// found <name>..." (the fork's file datastore, when default/ exists but the keyspace
+// doesn't). Shared by noKeyspaceReason.
+func noKeyspaceToken(errText string) string {
+	for _, marker := range []string{"no keyspace ", "Keyspace not found "} {
+		i := strings.LastIndex(errText, marker)
+		if i < 0 {
+			continue
+		}
+		name := strings.TrimSpace(errText[i+len(marker):])
+		if j := strings.IndexAny(name, " \t\n("); j >= 0 {
+			name = name[:j]
+		}
+		return strings.TrimRight(name, ".,;:")
+	}
+	return ""
+}
+
+// noKeyspaceReason augments a rejected-entry reason with a --bind pointer when it's an
+// unresolved-keyspace plan error. Without it, a query over a LOGICAL keyspace (bound via
+// a manifest) run without --bind rejects with a bare "no keyspace sessions" -- which
+// reads as "my query is wrong" rather than "the binding is missing" and, in a compose
+// DAG, used to surface as an indistinguishable count:0 (the n1k1-for-ai team burned dead
+// ends on exactly this). The hint covers both the forgot---bind and the
+// not-in-the-manifest cases. A non-keyspace reason is returned as-is.
+func noKeyspaceReason(reason string) string {
+	if ks := noKeyspaceToken(reason); ks != "" {
+		return reason + " — if \"" + ks + "\" is a logical keyspace, bind it: --bind <manifest> " +
+			"with a line `" + ks + " = <glob>`; else check the datastore path (.tables lists keyspaces)"
+	}
+	return reason
+}
+
+// rejectReason applies every rejected-entry reason augmenter (reserved-word backtick
+// fix, unresolved-keyspace --bind pointer) -- the one call sites use so a new hint
+// lands everywhere a rejection is surfaced (run/lint/compose, stderr + JSON).
+func rejectReason(reason string) string {
+	return noKeyspaceReason(reservedWordReason(reason))
+}
+
 // dottedKeyspaceHint returns a one-line hint when a statement referenced a dotted
 // keyspace (e.g. `ns_server.error`, the norm in a bundle) WITHOUT backticks, so the
 // parser read it as a field path -- "Ambiguous reference to field 'ns_server'" -- yet a

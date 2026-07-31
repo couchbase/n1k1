@@ -731,7 +731,7 @@ func (c *cli) reportMultiQueryHealth(cc *glue.CompiledMultiQueryEntries, total i
 	// A rejected entry never runs, so it can never fire: surface it with the reason
 	// AND the fix snippet (what a runnable entry looks like), never silently drop it.
 	for _, r := range cc.Rejected {
-		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), r.Label, c.style.Yellow(reservedWordReason(r.Reason)))
+		fmt.Fprintf(c.stderr, "  %s %s: %s\n", c.icon("✗"), r.Label, c.style.Yellow(rejectReason(r.Reason)))
 		fmt.Fprintf(c.stderr, "      %s\n", multiFix(fixRejected, r.Reason))
 	}
 	// A standalone entry still runs (its own scan), just not fused into the shared
@@ -957,7 +957,7 @@ func (c *cli) renderMultiQueryExplain(cc *glue.CompiledMultiQueryEntries, report
 		fmt.Fprintf(w, "\n%s\n", c.style.Bold("REJECTED (never runs):"))
 		for _, d := range report {
 			if d.Class == glue.LintRejected {
-				fmt.Fprintf(w, "  %s %-24s %s\n", c.icon("✗"), d.Label, c.style.Yellow(reservedWordReason(orEmptyDash(d.Reason))))
+				fmt.Fprintf(w, "  %s %-24s %s\n", c.icon("✗"), d.Label, c.style.Yellow(rejectReason(orEmptyDash(d.Reason))))
 			}
 		}
 	}

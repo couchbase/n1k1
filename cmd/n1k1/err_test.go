@@ -207,3 +207,34 @@ func TestReservedWordDiscoverability(t *testing.T) {
 		t.Fatalf("non-reserved reason changed: %q", r)
 	}
 }
+
+// TestNoKeyspaceReason covers the unresolved-keyspace --bind pointer: a query over a
+// LOGICAL keyspace run without --bind rejects with a bare "no keyspace sessions",
+// which reads as "my query is wrong" rather than "the binding is missing" -- in a
+// compose DAG this used to surface as an indistinguishable count:0.
+func TestNoKeyspaceReason(t *testing.T) {
+	const errText = "plan error: namespace default: no keyspace sessions"
+	if ks := noKeyspaceToken(errText); ks != "sessions" {
+		t.Fatalf("noKeyspaceToken: got %q, want \"sessions\"", ks)
+	}
+	if ks := noKeyspaceToken("some other plan error"); ks != "" {
+		t.Fatalf("noKeyspaceToken(other): got %q, want \"\"", ks)
+	}
+	// The fork's file-datastore shape (a physical default/ exists, keyspace doesn't).
+	if ks := noKeyspaceToken("plan error: Keyspace not found sessions"); ks != "sessions" {
+		t.Fatalf("noKeyspaceToken(fork shape): got %q, want \"sessions\"", ks)
+	}
+	got := noKeyspaceReason(errText)
+	for _, want := range []string{`"sessions"`, "--bind <manifest>", "sessions = <glob>", ".tables"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reason augment missing %q; got %q", want, got)
+		}
+	}
+	if r := noKeyspaceReason("plain reason"); r != "plain reason" {
+		t.Fatalf("non-keyspace reason changed: %q", r)
+	}
+	// rejectReason chains both augmenters; either class of reason gets its hint.
+	if r := rejectReason(errText); !strings.Contains(r, "--bind") {
+		t.Fatalf("rejectReason missing bind hint: %q", r)
+	}
+}

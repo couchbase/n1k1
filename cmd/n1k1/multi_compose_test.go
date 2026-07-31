@@ -299,6 +299,37 @@ func TestMultiComposeRejectedNode(t *testing.T) {
 	if c.failed {
 		t.Fatalf("--allow-rejected must not hard-fail")
 	}
+
+	// A node over an UNBOUND logical keyspace (compose run without --bind) must reject
+	// with a reason pointing at --bind -- not a bare "no keyspace" that reads as "my
+	// query is wrong" (it used to surface as an indistinguishable count:0).
+	dag2 := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dag2, "sess.sql++"), []byte(
+		"-- label: sess\n"+`SELECT s.x FROM sessions s WHERE s.x = 1`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("compose --queries " + dag2)
+	var env struct {
+		Nodes []struct {
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		} `json:"nodes"`
+	}
+	json.Unmarshal([]byte(strings.TrimSpace(out.String())), &env)
+	if len(env.Nodes) != 1 || env.Nodes[0].Status != "rejected" {
+		t.Fatalf("unbound keyspace: want one rejected node, got %s", out.String())
+	}
+	for _, want := range []string{"sessions", "--bind <manifest>", "sessions = <glob>"} {
+		if !strings.Contains(env.Nodes[0].Reason, want) {
+			t.Fatalf("unbound-keyspace reason missing %q; got %q", want, env.Nodes[0].Reason)
+		}
+	}
+	if !c.failed {
+		t.Fatalf("an unbound-keyspace node must hard-fail by default")
+	}
 }
 
 // TestComposeNodeRefOutsideDAG: node('x') parses + routes as a table source, but
