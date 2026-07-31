@@ -378,6 +378,8 @@ A "kind":"fts" index is for full-text (bleve, dynamic: indexes every field), que
 SEARCH(keyspace, "text") -- searches the whole document -- or SEARCH(keyspace.field, "q")
 for one field. SEARCH by the keyspace NAME or its FROM alias both search the whole doc.
   Scope: "keys":["title","body"] indexes only those fields (as text); omit for dynamic.
+    Sizing: dynamic indexes EVERY field and can run ~5x the corpus size, vs ~0.3x for a
+    few scoped keys (a measured ~17x difference) -- scope "keys" for anything long-lived.
   Full control: instead of "keys", give a "mapping" holding a raw bleve index-mapping
     JSON (analyzers, per-field types, custom analyzers) -- e.g. the English stemming
     analyzer so SEARCH(ks.body,"run") also matches "running":
@@ -403,6 +405,14 @@ for one field. SEARCH by the keyspace NAME or its FROM alias both search the who
     SEARCH(ks,"SEQNOWAITINGSTARTED") match, but "waiting" (a substring) does not.
   Wildcards / fuzzy (think grep):  x*  = prefix,  a*b / a?b = wildcard,  x~ / x~2 = fuzzy
     (edit distance).  e.g. SEARCH(ks,"john*"), SEARCH(ks.etype,"john*").
+  ⚠ Hyphenated terms under a DYNAMIC index (UUIDs, dotted/hyphenated ids): the standard
+    analyzer SPLITS them into fragments, so an unquoted term becomes an OR over its
+    pieces and silently OVER-matches -- extra hits, the failure direction nobody checks.
+    Quote a PHRASE for exact matching (inner double quotes):
+      SEARCH(t, "0f784f11-a308-4eda-...")      -- OR of fragments: too many hits
+      SEARCH(t, '"0f784f11-a308-4eda-..."')    -- phrase: exact
+    "find this session/request by id" is usually the FIRST query on an id-heavy corpus,
+    so reach for the phrase form by default there.
 
 Example FTS queries (against the "docs" indexes above):
   -- whole-document search (any field), then a single field:
