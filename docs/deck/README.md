@@ -51,8 +51,14 @@ The deck is one big top-down **poster**, not a linear stack:
   they are detail.
 - **Source slides** (`class="step src"`, `data-scale="0.2"`) are a third
   level: they hang off a *slide* rather than a panel
-  (`data-rel-to="ext-udf"`), numbering as `7.1.1`, and hold real code
-  copied from `extensions/`. `0.2` repeats the panel:slide ratio one
+  (`data-rel-to="ext-udf"`), numbering as `7.1.1` … `7.4.1` — one per JS
+  extension kind (UDF + aggregate, extract recipe, macro, the
+  `vectorize_field` macro), holding code copied verbatim from
+  `extensions/`. Two of them also show the **inline goldens** every
+  extension ships (`.extensions test` runs them). Keep these cards under
+  ~815px CSS tall or they overflow a 1080p viewport, and keep code lines
+  inside their column — `pre` scrolls rather than wraps, which reads as
+  truncation on a slide. `0.2` repeats the panel:slide ratio one
   level down — a source card is 1:5 against its parent just as a slide
   is 1:5 against its panel. `data-rel-x="360" data-rel-y="140"` puts it
   **inside the parent's lower-right quadrant** — covering only 4–6% of the

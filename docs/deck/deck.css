@@ -221,7 +221,7 @@ pre .c   { color: #626f80; }              /* comment  */
    extensions/, so tighten the block a touch. They still render at the same
    on-screen size as every other slide — data-scale cancels against the
    camera — so this is about fitting more lines, not about being smaller. */
-.step.src pre { font-size: 15px; line-height: 1.45; margin: 10px 0; }
+.step.src pre { font-size: 15px; line-height: 1.35; margin: 9px 0; }
 .step.src h2  { margin-bottom: 12px; }
 .step.src .cols { gap: 22px; }
 

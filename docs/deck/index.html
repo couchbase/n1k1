@@ -31,7 +31,8 @@
              leaf:          x = 0,     y = +1450 or +1650 (data-scale 0.4)
          Because children overlap their panel, the panel's tint and giant
          watermark numeral stay in view around every child — grounding.
-       - a THIRD level holds real source code (7.1.1, 7.2.1, 7.3.1):
+       - a THIRD level holds real source code (7.1.1 … 7.4.1, one per JS
+         extension kind, copied verbatim from extensions/):
          .step.src, data-rel-to its PARENT SLIDE (not the panel),
              src: x = +360, y = +140, data-scale 0.2
          data-scale 0.2 repeats the panel:slide ratio one level down, so a
@@ -689,14 +690,14 @@ parent = n1k1, which has cbq + datasource access, and
   <div id="hub-extend" class="step hub" style="--hue:215"
        data-x="3100" data-y="4800" data-z="0" data-scale="5">
     <div class="bignum">7</div>
-    <p class="kicker">7 · programmability</p>
+    <p class="kicker">7 · extensibility</p>
     <h1>Multiple extension layers</h1>
   </div>
 
   <div id="ext-udf" class="step src-parent" data-rel-to="hub-extend"
        data-rel-x="-800" data-rel-y="-250" data-rel-z="150">
-    <p class="kicker">extensibility · values</p>
-    <h2>JS UDFs: functions &amp; aggregates</h2>
+    <p class="kicker">extensibility · functions</p>
+    <h2>JS UDFs: scalars &amp; aggregates</h2>
     <ul>
       <li>A JS extension are *.js files for
           JS UDF's;<br>or aggregate JS handlers, following git-ops practices.</li>
@@ -715,8 +716,8 @@ parent = n1k1, which has cbq + datasource access, and
        half so 7.1 still frames it. Real files from extensions/functions/js/. -->
   <div id="ext-udf-src" class="step src" data-rel-to="ext-udf"
        data-rel-x="360" data-rel-y="140" data-rel-z="0" data-scale="0.2">
-    <p class="kicker">7.1 · JS UDFs &amp; aggregates — the actual source</p>
-    <h2>A scalar UDF, and an aggregate</h2>
+    <p class="kicker">7.1 · JS UDFs &amp; aggregates — examples</p>
+    <h2>A scalar UDF, and an aggregate UDF</h2>
     <div class="cols">
       <div>
 <pre><code><span class="c">// extensions/functions/js/slugify.js</span>
@@ -726,37 +727,46 @@ function slugify(s) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
-<span class="c">// inline goldens — run by `.extensions test`</span>
+
+<span class="c">// inline golden examples / tests;
+// run by `.extensions test slugify`</span>
 slugify.examples = [
-  { in: ["Hello, World!"], out: "hello-world" },
-];</code></pre>
+  {
+    in: ["Hello, World!"],
+    out: "hello-world"
+  }
+];
+
+</code></pre>
       </div>
       <div>
-<pre><code><span class="c">// …/geomean.agg.js — 3-callback protocol</span>
-function geomean_init()      { return {logsum:0,n:0}; }
-function geomean_update(s,v) {
+<pre><code><span class="c">// geomean.agg.js — multiple callbacks for aggregates</span>
+function geomean_init() { // geometric mean aggregate
+  return { logsum:0, n:0 };
+}
+function geomean_update(s, v) {
   if (typeof v === "number" &amp;&amp; v &gt; 0) {
     s.logsum += Math.log(v); s.n++;
   }
   return s;
 }
 function geomean_final(s) {
-  return s.n ? Math.exp(s.logsum/s.n) : null;
+  return s.n ? Math.exp(s.logsum / s.n) : null;
 }
-<span class="c">// additive state ⇒ a commutative monoid, so it
-// folds across windows/shards</span>
-function geomean_merge(a,b) {
+<span class="c">// commutative merging to fold across windows/shards</span>
+function geomean_merge(a, b) {
   return {logsum:a.logsum+b.logsum, n:a.n+b.n};
 }</code></pre>
       </div>
     </div>
-<pre><code>$ n1k1 -ext ./extensions/functions/js -c 'SELECT slugify(p.cat) AS slug,
-      geomean(p.score) AS g FROM products p GROUP BY p.cat'</code></pre>
+<pre><code>$ n1k1 -ext ./my/path/to/js-extensions/ \
+  -c 'SELECT slugify(p.category) AS slug, geomean(p.score) AS g
+      FROM products p GROUP BY p.category'</code></pre>
   </div>
 
   <div id="ext-extract" class="step src-parent" data-rel-to="hub-extend"
        data-rel-x="800" data-rel-y="-250" data-rel-z="150">
-    <p class="kicker">extensibility · files</p>
+    <p class="kicker">extensibility · data extraction</p>
     <h2>Extract recipes: JS for custom data formats</h2>
     <ul>
       <li>JS <code>describe(file)</code> callback —
@@ -778,35 +788,38 @@ function geomean_merge(a,b) {
   <!-- 7.2.1 — grandchild: extensions/extract_plugins/apache_access.extract.js -->
   <div id="ext-extract-src" class="step src" data-rel-to="ext-extract"
        data-rel-x="360" data-rel-y="140" data-rel-z="0" data-scale="0.2">
-    <p class="kicker">7.2 · extract recipes — the actual source</p>
+    <p class="kicker">7.2 · extract JS — a describe example</p>
     <h2><code>apache_access.extract.js</code></h2>
-<pre><code><span class="c">// module scope: which files this recipe CLAIMS (exts / name-regexps; highest priority wins)</span>
+<pre><code><span class="c">// module scope: which files this *.extract.js can match (exts / name-regexps; highest priority wins)</span>
 var match = { exts: [".log"], names: ["access[._-].*\\.log$"], priority: 20 };
 
-<span class="c">// describe() runs ONCE per matched file and returns a DECLARATIVE spec.
-// The per-row work then runs natively on records.SpecApply — zero per-row JS.</span>
-function describe(file) {          <span class="c">// file = { path, name, ext, head }</span>
+<span class="c">// runs ONCE per matched file, returns a DECLARATIVE spec — per-row framing then runs natively</span>
+function describe(file) { <span class="c">// file = { path, name, ext, head }</span>
   return {
     format:  "apache_access_js",
     framing: { kind: "line" },
     fields:  { pattern: '^(?P&lt;ip&gt;\\S+) \\S+ \\S+ \\[(?P&lt;ts&gt;[^\\]]+)\\] ' +
                         '"(?P&lt;method&gt;\\S+) (?P&lt;path&gt;\\S+)[^"]*" (?P&lt;status&gt;\\d+)' },
     time:    { field: "ts", layout: "02/Jan/2006:15:04:05 -0700" },
-    order:   { by: "ts", sorted: "near" }   <span class="c">// the sorted-source contract the ASOF merge consumes</span>
+    order:   { by: "ts", sorted: "near" } <span class="c">// ordering info to optimize ASOF JOIN's</span>
   };
-}</code></pre>
-    <ul>
-      <li>Each <code>(?P&lt;name&gt;…)</code> capture becomes a typed field, and
-          <code>ts</code> is normalized to int64 epoch-nanos natively — so the log is
-          just a keyspace:
-          <code>SELECT l.status, COUNT(*) FROM `access.log` l GROUP BY l.status</code></li>
-    </ul>
+}
+
+<span class="c">// optional examples also serve as test cases for this *.extract.js</span>
+var examples = [{
+  desc: "one combined-log line -> typed fields",
+  in:  '127.0.0.1 - - [10/Oct/2000:13:55:36 -0700] "GET /index.html HTTP/1.0" 200 2326\n',
+  out: [ { ip: "127.0.0.1", method: "GET", path: "/index.html",
+           status: "200", size: "2326", ts: 971211336000000000 } ]
+}];</code></pre>
+    <p>The above *.extract.js allows Apache log files to serve as a keyspace:<br>
+       <code>SELECT l.status, COUNT(*) FROM `access.log` l GROUP BY l.status</code></p>
   </div>
 
   <div id="ext-macro" class="step src-parent" data-rel-to="hub-extend"
        data-rel-x="-800" data-rel-y="900" data-rel-z="150">
     <p class="kicker">extensibility · syntax</p>
-    <h2>JS Macros, because UDFs can't make SQL++ syntax</h2>
+    <h2>JS macros allow users to extend SQL++ syntax</h2>
 <pre><code>SELECT * FROM @grep_context(logs,
                             when =&gt; sev = "ERROR",
                             before =&gt; 2,
@@ -831,32 +844,35 @@ function describe(file) {          <span class="c">// file = { path, name, ext, 
   <!-- 7.3.1 — grandchild: extensions/macros/grep_context.macro.js -->
   <div id="ext-macro-src" class="step src" data-rel-to="ext-macro"
        data-rel-x="360" data-rel-y="140" data-rel-z="0" data-scale="0.2">
-    <p class="kicker">7.3 · macros — the actual source</p>
+    <p class="kicker">7.3 · macros — the grep_context example</p>
     <h2><code>grep_context.macro.js</code></h2>
-<pre><code>var macro = { name: "grep_context", params: [
-  { name: "src",    required: true },   { name: "when",  required: true },
-  { name: "before", default: 2 },       { name: "after", default: 2 },
-  { name: "order",  default: "pos" },   { name: "part" } ] };
+<pre><code>var macro = {
+  name: "grep_context", params: [
+    { name: "src",    required: true }, { name: "when",  required: true },
+    { name: "before", default: 2},      { name: "after", default: 2 },
+    { name: "order",  default: "pos" }, { name: "part" }
+  ] };
 
 function expand(args, ctx) {
-  <span class="c">// Hygiene: every introduced name is gensym'd, so nesting two uses can't collide.</span>
+  <span class="c">// Hygiene: every introduced name is gensym'd, so macro expansions can't collide.</span>
   var s = ctx.gensym("src"), sub = ctx.gensym("gc"), hit = ctx.gensym("hit");
   <span class="c">// args.when arrived as RAW SQL++ TEXT — `sev = "ERROR"` — and is spliced verbatim.</span>
-  return "SELECT " + sub + ".* FROM (SELECT " + s + ".*, " +
-    "MAX(CASE WHEN (" + args.when + ") THEN 1 ELSE 0 END) OVER (ORDER BY " +
-    args.order + " ROWS BETWEEN " + args.after  + " PRECEDING " +
-                              "AND " + args.before + " FOLLOWING) AS " + hit +
-    " FROM " + args.src + " AS " + s + ") " + sub + " WHERE " + sub + "." + hit + " = 1";
+  return "SELECT " + sub + ".*" +
+         " FROM (SELECT " + s + ".*," +
+                   " MAX(CASE WHEN (" + args.when + ") THEN 1 ELSE 0 END)" +
+                   " OVER (ORDER BY " + args.order +
+                          " ROWS BETWEEN " + args.after  + " PRECEDING" +
+                          " AND " + args.before + " FOLLOWING) AS " + hit +
+                " FROM " + args.src + " AS " + s + ") " + sub +
+         " WHERE " + sub + "." + hit + " = 1";
 }</code></pre>
     <ul>
-      <li>The frame bounds are <strong>swapped</strong> vs <code>before</code>/<code>after</code>
-          — a perspective duality, not a bug: row <em>r</em> is in match <em>m</em>'s
-          print-range iff <em>m</em> is in <em>r</em>'s frame. So keeping N lines
-          <em>before</em> a match means each row looks N lines <em>forward</em>.</li>
+      <li>NOTE: The frame bounds are <strong>swapped</strong> vs <code>before</code>/<code>after</code>
+          —<br>a perspective detail that a macro can get right instead of users figuring it out themselves.</li>
     </ul>
   </div>
 
-  <div id="ext-vectors" class="step" data-rel-to="hub-extend"
+  <div id="ext-vectors" class="step src-parent" data-rel-to="hub-extend"
        data-rel-x="800" data-rel-y="900" data-rel-z="150">
     <p class="kicker">extensibility · vectors</p>
     <h2>Vector Search, no index required (yet)</h2>
@@ -875,10 +891,71 @@ function expand(args, ctx) {
       <li>Embeddings via <code>VECTORIZE_BATCH</code>;<br>batching is expressed
           in SQL (GROUP BY pages), sugared by a @macro;<br>unit tested via a deterministic fake
           embedding model (for CI testability).<br>
-          n1k1's limited <code>INSERT INTO</code>'s operates in create-exclusive mode
-          as a 'free' embedding cache check.</li>
+          n1k1's limited <code>INSERT INTO</code>'s operates in create-exclusive mode<br>
+          which serves as an embedding cache check.</li>
       <li>Exact brute force to ~1M rows is cgo-free; ANN is possible roadmap (no FAISS since CGO_ENABLED=0).</li>
     </ul>
+  </div>
+
+  <!-- 7.4.1 — grandchild: extensions/macros/vectorize_field.macro.js. Long source,
+       so: params + expand() side by side, then the expansion full-width. -->
+  <div id="ext-vectors-src" class="step src" data-rel-to="ext-vectors"
+       data-rel-x="360" data-rel-y="140" data-rel-z="0" data-scale="0.2">
+    <p class="kicker">7.4 · vector search — the macro that sugars it</p>
+    <h2><code>vectorize_field.macro.js</code></h2>
+    <div class="cols">
+      <div>
+<pre><code>var macro = {
+ name: "vectorize_field",
+ params: [
+  { name:"src",   required: true },
+  { name:"field", required: true },
+  { name:"id",    default: "META().id" },
+  { name:"batch", default: 256 },
+  { name:"into",  default: "vec" },
+  { name:"order", default: "" },
+  { name:"opts",  default: "{}" }
+ ] };
+<span class="c">// batch = rows / round-trip to embedding model
+// opts  = embedding model endpoint, dimensions, etc.</span>
+
+function expand(args, ctx) {
+ var k   = ctx.gensym("k"),  rows = ctx.gensym("rows"),
+     pg  = ctx.gensym("pg"), emb  = ctx.gensym("emb"),
+     row = ctx.gensym("row"), …;
+</code></pre>
+      </div>
+      <div>
+<pre><code> … (continued)
+
+ var order = (args.order && args.order.replace(/\s/g, "") !== "") ? args.order : args.id;
+ // Force text/into onto the caller's opts (they can't be overridden): the batch objects
+ // are {id,text}, so VECTORIZE_BATCH must read "text" and write the requested field.
+ var vopts = 'OBJECT_PUT(OBJECT_PUT(' + args.opts + ', "text", "text"), "into", "' + args.into + '")';
+
+ return "(SELECT " + row + ".* FROM (" +
+   "SELECT VECTORIZE_BATCH(" + pg + ".b, " + vopts + ") AS b FROM (" +
+     "SELECT ARRAY_AGG({\"id\": " + rows + "." + idc + ", \"text\": " + rows + "." + txt + "}) AS b FROM (" +
+       "SELECT (" + args.id + ") AS " + idc + ", (" + args.field + ") AS " + txt + ", " +
+              "ROW_NUMBER() OVER (ORDER BY " + order + ") AS " + rn +
+       " FROM " + args.src + " AS " + k +
+     ") AS " + rows +
+     " GROUP BY FLOOR((" + rows + "." + rn + " - 1) / " + args.batch + ")" +
+   ") AS " + pg +
+ ") AS " + emb + " UNNEST " + emb + ".b AS " + row + ")";
+}</code></pre>
+</div>
+</div>
+    
+<pre><code><span class="c">// @vectorize_field(...) expands to this (gensym'd names simplified) — page by ROW_NUMBER, ARRAY_AGG each page,
+// ONE embedding model call per page (not per row), UNNEST back to per-row {id, text, vec}.</span>
+(SELECT row.* FROM (SELECT VECTORIZE_BATCH(pg.b, &lt;vopts&gt;) AS b
+   FROM (SELECT ARRAY_AGG({"id": rows.id, "text": rows.txt}) AS b
+           FROM (SELECT (META().id) AS id, (line) AS txt,
+                        ROW_NUMBER() OVER (ORDER BY META().id) AS rn
+                   FROM logs AS k) AS rows
+          GROUP BY FLOOR((rows.rn - 1) / 256)) AS pg) AS emb
+ UNNEST emb.b AS row)</code></pre>
   </div>
 
   <div id="up-extend" class="step camera"
