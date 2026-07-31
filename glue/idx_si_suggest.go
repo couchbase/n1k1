@@ -112,34 +112,54 @@ func SuggestIndexes(store *Store, namespace, only string, sampleN int) ([]IndexS
 	if sampleN <= 0 {
 		sampleN = suggestDefaultSample
 	}
-	ns, nerr := store.Datastore.NamespaceByName(namespace)
-	if nerr != nil {
-		return nil, "", fmt.Errorf("namespace %q: %v", namespace, nerr)
+	// The given namespace first; when it holds NO keyspaces (a namespaced layout
+	// like <project>/<session> has nothing under "default"), sweep EVERY namespace —
+	// suggest used to report "no keyspaces to sample" while .tables listed sixteen
+	// (ISSUE-done-12's related blind spot), and it is the command a newcomer
+	// reaches for first.
+	nsNames := []string{namespace}
+	if first, nerr := store.Datastore.NamespaceByName(namespace); nerr == nil {
+		if kn, kerr := first.KeyspaceNames(); kerr == nil && len(kn) == 0 {
+			if all, aerr := store.Datastore.NamespaceNames(); aerr == nil && len(all) > 0 {
+				sort.Strings(all)
+				nsNames = all
+			}
+		}
 	}
-	names, kerr := ns.KeyspaceNames()
-	if kerr != nil {
-		return nil, "", fmt.Errorf("listing keyspaces: %v", kerr)
-	}
-	sort.Strings(names)
 
 	var out []IndexSuggestion
 	totalSampled, keyspaces := 0, 0
-	for _, ksName := range names {
-		if only != "" && !strings.EqualFold(ksName, only) {
+	for _, nsName := range nsNames {
+		ns, nerr := store.Datastore.NamespaceByName(nsName)
+		if nerr != nil {
+			if nsName == namespace && len(nsNames) == 1 {
+				return nil, "", fmt.Errorf("namespace %q: %v", namespace, nerr)
+			}
 			continue
 		}
-		keyspaces++
-		ks, kerr := ns.KeyspaceByName(ksName)
+		names, kerr := ns.KeyspaceNames()
 		if kerr != nil {
-			continue
+			return nil, "", fmt.Errorf("listing keyspaces: %v", kerr)
 		}
-		stats, sampled, err := KeyspaceSample(ks, sampleN)
-		if err != nil {
-			return nil, "", fmt.Errorf("sampling %s: %v", ksName, err)
+		sort.Strings(names)
+
+		for _, ksName := range names {
+			if only != "" && !strings.EqualFold(ksName, only) {
+				continue
+			}
+			keyspaces++
+			ks, kerr := ns.KeyspaceByName(ksName)
+			if kerr != nil {
+				continue
+			}
+			stats, sampled, err := KeyspaceSample(ks, sampleN)
+			if err != nil {
+				return nil, "", fmt.Errorf("sampling %s: %v", ksName, err)
+			}
+			totalSampled += sampled
+			existing := existingIndexes(store.Datastore, nsName, ksName)
+			out = append(out, scoreSuggestions(nsName, ksName, stats, sampled, existing)...)
 		}
-		totalSampled += sampled
-		existing := existingIndexes(store.Datastore, namespace, ksName)
-		out = append(out, scoreSuggestions(namespace, ksName, stats, sampled, existing)...)
 	}
 
 	// Most selective (highest distinct) first.

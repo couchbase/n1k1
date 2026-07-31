@@ -98,6 +98,12 @@ func (c *cli) cmdIndexCreate(arg string) {
 		fragment = f
 	}
 
+	if err := c.validateIndexFragment(fragment); err != nil {
+		fmt.Fprintf(c.stderr, "%s: .index create: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+
 	added, err := glue.CatalogAddIndexes(c.dir, fragment)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .index create: %v\n", c.prog, err)
@@ -137,11 +143,17 @@ func parseCreateDSL(s string) ([]byte, error) {
 	}
 	head := fieldsBacktickAware(s[:open])
 	if len(head) != 3 || !strings.EqualFold(head[1], "on") {
-		return nil, fmt.Errorf("expected: <name> on <keyspace> (<expr>...)")
+		return nil, fmt.Errorf("expected: <name> on [<namespace>:]<keyspace> (<expr>...)")
 	}
 	// name and keyspace are identifiers -- unquote a backticked one (e.g. a
-	// keyspace with spaces) to the plain name the catalog stores/looks up by.
-	name, keyspace := unquoteIdent(head[0]), unquoteIdent(head[2])
+	// keyspace with spaces) to the plain name the catalog stores/looks up by. The
+	// keyspace token may be namespace-qualified (`ns`:`ks` / ns:ks): split on the
+	// first colon OUTSIDE backticks -- it used to be swallowed whole, filing the
+	// def under namespace "default" with backticks baked into the keyspace name,
+	// an index that reported "created" but could never build (ISSUE-done-12).
+	name := unquoteIdent(head[0])
+	nsTok, ksTok := splitNamespaceColon(head[2])
+	namespace, keyspace := unquoteIdent(nsTok), unquoteIdent(ksTok)
 
 	keys := splitTopLevelCommas(s[open+1 : closeIdx])
 	if len(keys) == 0 {
@@ -158,15 +170,74 @@ func parseCreateDSL(s string) ([]byte, error) {
 	}
 
 	def := struct {
-		Name     string   `json:"name"`
-		Keyspace string   `json:"keyspace"`
-		Keys     []string `json:"keys"`
-		Where    string   `json:"where,omitempty"`
-	}{name, keyspace, keys, where}
+		Name      string   `json:"name"`
+		Namespace string   `json:"namespace,omitempty"`
+		Keyspace  string   `json:"keyspace"`
+		Keys      []string `json:"keys"`
+		Where     string   `json:"where,omitempty"`
+	}{name, namespace, keyspace, keys, where}
 	b, err := json.Marshal(struct {
 		Indexes []interface{} `json:"indexes"`
 	}{[]interface{}{def}})
 	return b, err
+}
+
+// splitNamespaceColon splits a possibly namespace-qualified keyspace token on the
+// first ':' that sits OUTSIDE backtick quotes (`ns`:`ks`, ns:ks, ns:`k s`). ns is ""
+// when the token carries no qualifier.
+func splitNamespaceColon(tok string) (ns, ks string) {
+	inTick := false
+	for i := 0; i < len(tok); i++ {
+		switch tok[i] {
+		case '`':
+			inTick = !inTick
+		case ':':
+			if !inTick {
+				return tok[:i], tok[i+1:]
+			}
+		}
+	}
+	return "", tok
+}
+
+// validateIndexFragment refuses an index definition whose keyspace does not resolve
+// in the open datastore -- the way --bind refuses a logical keyspace matching zero
+// files (ISSUE-done-12: `create` used to report "created" for an index that could
+// never build). Applies to BOTH input forms (DSL and pasted JSON).
+func (c *cli) validateIndexFragment(fragment []byte) error {
+	type defRef struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		Keyspace  string `json:"keyspace"`
+	}
+	var frag struct {
+		Indexes []defRef `json:"indexes"`
+	}
+	defs := frag.Indexes
+	if err := json.Unmarshal(fragment, &frag); err != nil || len(frag.Indexes) == 0 {
+		var one defRef
+		if err := json.Unmarshal(fragment, &one); err != nil || one.Keyspace == "" {
+			return nil // malformed fragments get CatalogAddIndexes' own error
+		}
+		defs = []defRef{one}
+	} else {
+		defs = frag.Indexes
+	}
+	for _, d := range defs {
+		ns := d.Namespace
+		if ns == "" {
+			ns = defaultNamespace
+		}
+		nsObj, nerr := c.sess.Store.Datastore.NamespaceByName(ns)
+		if nerr != nil {
+			return fmt.Errorf("index %q: namespace %q not found (nothing written; .tables lists namespaces/keyspaces)", d.Name, ns)
+		}
+		if _, kerr := nsObj.KeyspaceByName(d.Keyspace); kerr != nil {
+			return fmt.Errorf("index %q: keyspace %q not found in namespace %q (nothing written; "+
+				".tables lists keyspaces; a namespaced keyspace is <ns>:<ks>)", d.Name, d.Keyspace, ns)
+		}
+	}
+	return nil
 }
 
 // matchParen returns the index of the ')' matching the '(' at open, or -1.
@@ -285,11 +356,12 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 	// kind is emitted only for fts (gsi is the loader's default); keys is omitted for a
 	// dynamic (whole-keyspace) fts index.
 	type outDef struct {
-		Name     string   `json:"name"`
-		Keyspace string   `json:"keyspace"`
-		Kind     string   `json:"kind,omitempty"`
-		Keys     []string `json:"keys,omitempty"`
-		Why      string   `json:"why"`
+		Name      string   `json:"name"`
+		Namespace string   `json:"namespace,omitempty"` // non-default namespaces only
+		Keyspace  string   `json:"keyspace"`
+		Kind      string   `json:"kind,omitempty"`
+		Keys      []string `json:"keys,omitempty"`
+		Why       string   `json:"why"`
 	}
 	type outCat struct {
 		Indexes []outDef `json:"indexes"`
@@ -297,6 +369,9 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 	cat := outCat{}
 	for _, s := range sugg {
 		def := outDef{Name: s.Name, Keyspace: s.Keyspace, Why: s.Why}
+		if s.Namespace != defaultNamespace {
+			def.Namespace = s.Namespace
+		}
 		if s.Kind == "fts" {
 			def.Kind = "fts"
 		}
@@ -328,6 +403,9 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 			// goes via the JSON form (also accepted by .index create). A dynamic fts
 			// (empty Field) carries no keys.
 			d := map[string]interface{}{"name": s.Name, "keyspace": s.Keyspace, "kind": "fts"}
+			if s.Namespace != defaultNamespace {
+				d["namespace"] = s.Namespace
+			}
 			if s.Field != "" {
 				d["keys"] = []string{s.Field}
 			}
@@ -336,9 +414,14 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 			continue
 		}
 		// Backtick the keyspace/name (whitespace-delimited in the DSL) and the key
-		// path segments, so a name/keyspace/field with spaces still parses.
+		// path segments, so a name/keyspace/field with spaces still parses. A
+		// non-default namespace prints as <ns>:<ks> (the DSL parses it now).
+		ksDisplay := quoteIdent(s.Keyspace)
+		if s.Namespace != defaultNamespace {
+			ksDisplay = quoteIdent(s.Namespace) + ":" + ksDisplay
+		}
 		fmt.Fprintf(c.stderr, "  .index create %s on %s (%s)\n",
-			quoteIdent(s.Name), quoteIdent(s.Keyspace), quotePath(s.Field))
+			quoteIdent(s.Name), ksDisplay, quotePath(s.Field))
 	}
 	if glue.IsFlatDatastore(c.sess.Store.Datastore) {
 		fmt.Fprintf(c.stderr, "%snote: this is a flat/single-file datastore, where secondary indexes "+

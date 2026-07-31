@@ -27,10 +27,11 @@ import (
 
 func TestParseCreateDSL(t *testing.T) {
 	type def struct {
-		Name     string
-		Keyspace string
-		Keys     []string
-		Where    string
+		Name      string
+		Namespace string
+		Keyspace  string
+		Keys      []string
+		Where     string
 	}
 	type cat struct{ Indexes []def }
 	parse := func(s string) (def, error) {
@@ -61,6 +62,22 @@ func TestParseCreateDSL(t *testing.T) {
 	if d, err := parse("ix on `Sales Transaction` (`full name`)"); err != nil ||
 		d.Keyspace != "Sales Transaction" || len(d.Keys) != 1 || d.Keys[0] != "`full name`" {
 		t.Errorf("backticked = %+v err %v", d, err)
+	}
+
+	// Namespace-qualified keyspaces (ISSUE-done-12: `ns`:`ks` used to be swallowed
+	// whole into the keyspace name, backticks included, under namespace "default").
+	if d, err := parse("ix on proj:sess (type)"); err != nil ||
+		d.Namespace != "proj" || d.Keyspace != "sess" {
+		t.Errorf("ns:ks = %+v err %v", d, err)
+	}
+	if d, err := parse("ix_t on `-Users-x-com`:`0c62f774-ab` (type)"); err != nil ||
+		d.Namespace != "-Users-x-com" || d.Keyspace != "0c62f774-ab" {
+		t.Errorf("backticked ns:ks = %+v err %v", d, err)
+	}
+	// A colon INSIDE backticks is not a qualifier.
+	if d, err := parse("ix on `a:b` (x)"); err != nil ||
+		d.Namespace != "" || d.Keyspace != "a:b" {
+		t.Errorf("colon-in-ticks = %+v err %v", d, err)
 	}
 
 	bad := []string{
@@ -290,5 +307,68 @@ func TestIndexSuggestQuotesSpacedField(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"keyspace":"people"`) || !strings.Contains(string(b), "`full name`") {
 		t.Errorf("round-trip = %s", b)
+	}
+}
+
+// TestIndexCreateNamespacedAndFailLoud replays ISSUE-done-12's transcript: the DDL
+// form addresses a <ns>:<ks> layout (project-slug/session style), and a keyspace
+// that does not resolve REFUSES at create — the way --bind refuses a logical
+// keyspace matching zero files — instead of reporting "created" for an index that
+// can never build (and writing the broken def into the catalog).
+func TestIndexCreateNamespacedAndFailLoud(t *testing.T) {
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "proj-slug", "sess-uuid")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ksDir, "e.jsonl"),
+		[]byte(`{"type":"a"}`+"\n"+`{"type":"b"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root, sess: sess}
+
+	// A keyspace that resolves nowhere: refused, nothing written.
+	c.cmdIndexCreate("ix_bogus on `proj-slug`:`nope` (type)")
+	if !c.failed || !strings.Contains(errb.String(), "not found") {
+		t.Fatalf("unresolvable keyspace must refuse: %q", errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".n1k1", "catalog.json")); err == nil {
+		t.Fatalf("refused create must write nothing")
+	}
+
+	// The real ns:ks: created, built, and the def carries the namespace.
+	c.failed = false
+	errb.Reset()
+	c.cmdIndexCreate("ix_type on `proj-slug`:`sess-uuid` (type)")
+	if c.failed || !strings.Contains(errb.String(), "created ix_type") {
+		t.Fatalf("namespaced create failed: %q", errb.String())
+	}
+	b, err := os.ReadFile(filepath.Join(root, ".n1k1", "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cat struct {
+		Indexes []struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+			Keyspace  string `json:"keyspace"`
+		} `json:"indexes"`
+	}
+	if err := json.Unmarshal(b, &cat); err != nil || len(cat.Indexes) != 1 {
+		t.Fatalf("catalog: %s (%v)", b, err)
+	}
+	if d := cat.Indexes[0]; d.Namespace != "proj-slug" || d.Keyspace != "sess-uuid" || d.Name != "ix_type" {
+		t.Fatalf("def mis-filed (the ISSUE-done-12 shape): %+v", d)
+	}
+	// And it actually builds (the old defect's defs could never build).
+	if !strings.Contains(errb.String(), "created ix_type") || strings.Contains(errb.String(), "no keyspace") {
+		t.Fatalf("build after create: %q", errb.String())
 	}
 }
