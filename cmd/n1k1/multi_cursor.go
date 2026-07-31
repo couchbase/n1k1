@@ -70,6 +70,7 @@ type cursorArgs struct {
 	quiet         bool              // --quiet, advance-only (ack only, no labelResults echo)
 	pruneRotated  bool              // --prune-rotated, advance-only (drop rotated containers from the committed position)
 	acceptTrunc   bool              // --accept-truncation, advance-only (acknowledge truncated containers; re-baseline each to its current extent)
+	haltViolation bool              // --halt-on-violation, advance-only (refuse the WHOLE advance on a truncated/rewritten container — the pre-ISSUE-19 behavior; default ISOLATES the violator instead)
 	force         bool              // --force, advance --to only (commit a rewinding/unknown position anyway)
 	allowDrift    bool              // --allow-drift, advance only (commit even though the query edited since create)
 	expect        string            // --expect <committed_id>, advance only (compare-and-swap: refuse if moved)
@@ -232,6 +233,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.pruneRotated = !hasEq || val == "true" || val == "1"
 		case "accept-truncation":
 			a.acceptTrunc = !hasEq || val == "true" || val == "1"
+		case "halt-on-violation":
+			a.haltViolation = !hasEq || val == "true" || val == "1"
 		case "force":
 			a.force = !hasEq || val == "true" || val == "1"
 		case "allow-drift":
@@ -973,6 +976,62 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
+	// ISSUE-19: isolate the VIOLATION, not the cursor. The refusal's safety argument
+	// — committing past a truncated/rewritten container entrenches its loss — is
+	// per-container, but a whole-cursor refusal stalls every HEALTHY container
+	// indefinitely (unbounded backlog that reads as a quiet corpus). Default policy:
+	// hold each violating container at its committed mark (its records deliver
+	// nothing, its disclosure re-fires every peek/advance until acknowledged) while
+	// healthy containers keep flowing. --halt-on-violation restores the all-or-
+	// nothing refusal; --accept-truncation still acknowledges + re-baselines.
+	violations := append(append([]string(nil), res.Truncated...), res.Rewritten...)
+	if len(violations) > 0 && !a.acceptTrunc && !a.haltViolation {
+		if len(res.Rewritten) > 0 {
+			// A REWRITTEN container's new content above the stale mark was admitted by
+			// the scan — quarantine it with a re-scan that admits nothing from the
+			// violating containers, so no bogus row delivers and no row re-delivers
+			// forever against the frozen mark. (Truncated/rotated containers admit
+			// nothing anyway — no re-scan needed for them.)
+			qsince := make(map[string]int64, len(committed))
+			for k, v := range committed {
+				qsince[k] = v
+			}
+			for _, k := range violations {
+				qsince[k] = quarantineMark
+			}
+			res2, qerr := sess.RunCursorPack(dets, qsince, st.WaterFP)
+			if qerr != nil {
+				env := cursorEnvelope{Cursor: a.name, Pack: st.Queries, Status: "error",
+					From: encodeWater(committed), To: encodeWater(committed),
+					Error: &cursorErr{Kind: "run", Message: qerr.Error()}}
+				c.printJSON(env)
+				c.failed = true
+				return
+			}
+			// Adopt the quarantined delivery + water; KEEP pass-1's disclosure lists
+			// (pass 2's since-map is synthetic, so its anomaly report is meaningless).
+			res.LabelResults = res2.LabelResults
+			res.NewWater = res2.NewWater
+			res.Observed, res.ObservedFP = res2.Observed, res2.ObservedFP
+		}
+		// Pin every violator at its committed mark: peek's `to` token and a default
+		// advance both hold it. Scrub the violator's OBSERVED offset+fingerprint too —
+		// for a same-length rewrite the observed max-record offset coincides with the
+		// pinned mark, and WaterFPMerge would otherwise adopt the NEW content's
+		// fingerprint, silently self-acknowledging the violation; with the observed
+		// pair gone, the merge carries the STORED fingerprint and the violation keeps
+		// re-firing until acknowledged. Also scrubs the quarantine sentinel.
+		for _, k := range violations {
+			if v, held := committed[k]; held {
+				res.NewWater[k] = v
+			} else {
+				delete(res.NewWater, k)
+			}
+			delete(res.Observed, k)
+			delete(res.ObservedFP, k)
+		}
+	}
+
 	rows := toRows(res.LabelResults)
 	env := cursorEnvelope{
 		Cursor: a.name, Pack: st.Queries,
@@ -1014,7 +1073,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	// truncated container to its CURRENT extent: rewritten content below the old
 	// offset is not re-delivered, and future appends deliver again. Rotation does
 	// NOT refuse: nothing mis-delivers, disclosure (+ --prune-rotated) suffices.
-	if (len(res.Truncated) > 0 || len(res.Rewritten) > 0) && !a.acceptTrunc {
+	if (len(res.Truncated) > 0 || len(res.Rewritten) > 0) && !a.acceptTrunc && a.haltViolation {
 		kind := "source-truncated"
 		if len(res.Rewritten) > 0 {
 			kind = "source-rewritten" // fingerprint mismatch: replaced in place, size unchanged
@@ -1081,6 +1140,18 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 			env.Dropped, env.Rewound, env.Unknown = dropped, rewound, unknown
 		}
 	}
+	// A violating container stays pinned even under an explicit --to: a token peeked
+	// BEFORE the violation could otherwise advance it without acknowledgment.
+	if !a.acceptTrunc {
+		for _, k := range violations {
+			if v, held := committed[k]; held {
+				if cur, in := newWater[k]; in && cur != v {
+					newWater[k] = v
+				}
+			}
+		}
+	}
+
 	// --accept-truncation: re-baseline each truncated container at the position this
 	// scan observed (NewWater's max-merge kept the old, higher offset). Applied WITH
 	// or WITHOUT an explicit --to (ISSUE-18): the documented safe loop is
@@ -1646,17 +1717,22 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        corpus is an event, never silent; a field that reads 0 NOW
                        may still exist in an accumulated census.
   advance NAME [--to <pos> | --to-file <path>] [--quiet] [--force]
-               [--prune-rotated] [--accept-truncation]
+               [--prune-rotated] [--accept-truncation] [--halt-on-violation]
                        commit (get + move). Echoes the delta unless --quiet.
                        --prune-rotated drops the rotated containers from the
                        committed position (acked as "pruned_rotated"; without it the
                        position map holds every container ever seen). Cost: if a
                        same-named file later reappears, it replays from byte 0.
-                       A TRUNCATED or REWRITTEN container REFUSES the advance (error
-                       kind "source-truncated" / "source-rewritten", position
-                       untouched): the source violated append-only, and committing
-                       past it would entrench the loss — a truncated container even
-                       stays dead until the file regrows past its old offset.
+                       A TRUNCATED or REWRITTEN container is ISOLATED, not fatal
+                       (ISSUE-19): the violator is HELD at its committed mark — its
+                       records deliver nothing, a rewrite's new content is
+                       quarantined, and its disclosure re-fires on every
+                       peek/advance until acknowledged — while every HEALTHY
+                       container keeps delivering (one violator must not stall the
+                       pipeline; the refusal's safety argument is per-container).
+                       --halt-on-violation instead REFUSES the whole advance (error
+                       kind "source-truncated"/"source-rewritten", position
+                       untouched) — for pipelines that want violations fatal.
                        --accept-truncation acknowledges the discontinuity (the
                        --allow-drift shape) and re-baselines each violating
                        container at its CURRENT content: nothing below the old
@@ -1665,8 +1741,9 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        re-baseline applies with or without --to/--to-file (a
                        peeked token carries the never-rewound water, so it cannot
                        express the rewind itself — ISSUE-18); a --to that rewinds
-                       a truncated container even deeper is honored. The advance
-                       acks what it acted on as "accepted_truncation" /
+                       a truncated container even deeper is honored, but a --to can
+                       never move an UNACKNOWLEDGED violator past its mark. The
+                       advance acks what it acted on as "accepted_truncation" /
                        "accepted_rewritten", distinct from the disclosure keys.
                        (A census cursor stays disclosure-only: its fold is additive
                        and never rewinds, so blocking it would only lose more.)
@@ -1723,3 +1800,8 @@ func paramsSummary(params map[string]string) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// quarantineMark is the synthetic watermark that admits nothing from a violating
+// container during an isolation re-scan (ISSUE-19). Never persisted: the pin step
+// replaces it with the committed mark before any save or token encode.
+const quarantineMark = int64(1<<62) - 1

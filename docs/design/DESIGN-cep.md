@@ -253,7 +253,15 @@ at-or-below the watermark. So today:
   the committed position (acked as `pruned_rotated`; disclosed cost: a same-named file reappearing
   later replays from byte 0). `RecordScanFilter.SourceAnomalies`; guard:
   `TestMultiCursorRotationDisclosure`.
-- **Fail-loud on truncation — ✅ SHIPPED**: a truncated container REFUSES `advance` (error kind
+- **Fail-loud on truncation — ✅ SHIPPED, then refined by ISSUE-19 to ISOLATE by default**: the
+  refusal's safety argument (committing past a violated container entrenches its loss) is
+  PER-CONTAINER, but a whole-cursor refusal stalls every healthy container behind one violator —
+  an unbounded, quiet-looking backlog (n1k1-for-ai measured a healthy container 11MB behind its
+  own extent behind one truncated sibling). Default now: each violating container is HELD at its
+  committed mark (records quarantined, observed fingerprint scrubbed so the disclosure re-fires
+  every peek/advance — a same-length rewrite must not self-acknowledge) while healthy containers
+  keep delivering; a `--to` token can never move an unacknowledged violator. `--halt-on-violation`
+  restores the all-or-nothing refusal: a truncated container REFUSES `advance` (error kind
   `source-truncated`, position untouched) — the source violated `mode: append`'s contract, and
   committing past it would entrench the loss (under the never-rewinding max-merge the container
   even stays *dead* until the file regrows past its old offset: future appends below it are

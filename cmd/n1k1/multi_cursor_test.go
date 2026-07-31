@@ -585,19 +585,9 @@ func TestMultiCursorRotationDisclosure(t *testing.T) {
 		t.Fatalf("rotated disclosure must persist while the position holds b: %v", pv["rotated"])
 	}
 
-	// Fail-loud on truncation: a bare advance REFUSES (kind "source-truncated"),
-	// position untouched -- the source violated append-only, and committing past it
-	// would entrench the loss.
-	out.Reset()
-	c.failed = false
-	c.cmdMulti("cursor advance ROT --quiet --prune-rotated --cursor-store " + store)
-	av := env()
-	if ev, _ := av["error"].(map[string]interface{}); ev == nil || ev["kind"] != "source-truncated" {
-		t.Fatalf("truncated advance must refuse with source-truncated: %s", out.String())
-	}
-	if !c.failed {
-		t.Fatalf("source-truncated refusal must set failure")
-	}
+	// ISSUE-19 isolation is the DEFAULT: a bare advance no longer refuses -- the
+	// truncated container is held at its committed mark (still disclosed) while the
+	// rest of the cursor proceeds. --halt-on-violation restores the refusal.
 	sidecar := func() map[string]interface{} {
 		b, _ := os.ReadFile(filepath.Join(store, "ROT.json"))
 		var sc map[string]interface{}
@@ -605,8 +595,36 @@ func TestMultiCursorRotationDisclosure(t *testing.T) {
 		w, _ := sc["water"].(map[string]interface{})
 		return w
 	}
-	if w := sidecar(); len(w) != 2 {
+	preWater := sidecar()
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ROT --quiet --halt-on-violation --cursor-store " + store)
+	av := env()
+	if ev, _ := av["error"].(map[string]interface{}); ev == nil || ev["kind"] != "source-truncated" {
+		t.Fatalf("--halt-on-violation must refuse with source-truncated: %s", out.String())
+	}
+	if !c.failed {
+		t.Fatalf("source-truncated refusal must set failure")
+	}
+	if w := sidecar(); len(w) != len(preWater) {
 		t.Fatalf("refused advance must leave the position untouched: %v", w)
+	}
+	// Default (isolating) advance: succeeds, discloses, and PINS the truncated
+	// container at its committed mark rather than moving or refusing.
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ROT --quiet --cursor-store " + store)
+	av = env()
+	if av["status"] == "error" || c.failed {
+		t.Fatalf("default advance must isolate, not refuse: %s", out.String())
+	}
+	if tr := strs(av["truncated"]); len(tr) != 1 || !strings.Contains(tr[0], "a.jsonl") {
+		t.Fatalf("isolating advance must still disclose truncated: %s", out.String())
+	}
+	for k, v := range sidecar() {
+		if strings.Contains(k, "a.jsonl") && v != preWater[k] {
+			t.Fatalf("isolating advance moved the violator: %v vs %v", sidecar(), preWater)
+		}
 	}
 
 	// --accept-truncation (+ --prune-rotated): acknowledges the discontinuity --
@@ -724,12 +742,33 @@ func TestMultiCursorRewriteFingerprint(t *testing.T) {
 		t.Fatalf("same-length rewrite must not read as truncated: %s", out.String())
 	}
 
-	// advance refuses (source-rewritten, position untouched) until acknowledged.
+	// --halt-on-violation refuses (source-rewritten, position untouched); the
+	// DEFAULT isolates: the advance goes through empty (the rewritten container's
+	// new content is QUARANTINED, its mark pinned, the disclosure re-fires).
 	out.Reset()
 	c.failed = false
-	c.cmdMulti("cursor advance ROT --quiet --cursor-store " + store)
+	c.cmdMulti("cursor advance ROT --quiet --halt-on-violation --cursor-store " + store)
 	if ev, _ := env()["error"].(map[string]interface{}); ev == nil || ev["kind"] != "source-rewritten" {
-		t.Fatalf("rewritten advance must refuse with source-rewritten: %s", out.String())
+		t.Fatalf("--halt-on-violation must refuse with source-rewritten: %s", out.String())
+	}
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ROT --cursor-store " + store) // no --quiet: rows would show
+	iso := env()
+	if iso["status"] == "error" || c.failed {
+		t.Fatalf("default advance must isolate a rewrite, not refuse: %s", out.String())
+	}
+	if iso["count"] != float64(0) {
+		t.Fatalf("rewritten content must be quarantined, not delivered: %s", out.String())
+	}
+	if rw, _ := iso["rewritten"].([]interface{}); len(rw) != 1 {
+		t.Fatalf("isolating advance must still disclose rewritten: %s", out.String())
+	}
+	// Still rewritten on the NEXT peek (mark + fingerprint pinned until acknowledged).
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	if pv := env(); pv["rewritten"] == nil {
+		t.Fatalf("violation must re-fire until acknowledged: %s", out.String())
 	}
 	out.Reset()
 	c.failed = false
@@ -1368,5 +1407,104 @@ func TestMultiCursorParams(t *testing.T) {
 	c.cmdMulti("cursor peek P --cursor-store " + store)
 	if env()["queries_current"] == nil {
 		t.Fatalf("template edit must drift: %s", out.String())
+	}
+}
+
+// TestMultiCursorIsolateViolations is the ISSUE-19 guard: one violating container
+// must NOT stall the cursor. Healthy containers keep delivering while the violator
+// is held at its committed mark and re-disclosed on every peek/advance; one
+// --accept-truncation later, the violator re-baselines and flows again. The
+// n1k1-for-ai replay harness showed the old whole-cursor refusal freezing an
+// 11MB-behind healthy container indefinitely behind one truncated sibling.
+func TestMultiCursorIsolateViolations(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aPath := filepath.Join(ks, "a.jsonl")
+	cPath := filepath.Join(ks, "c.jsonl")
+	if err := os.WriteFile(aPath, []byte(`{"n":1}`+"\n"+`{"n":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cPath, []byte(`{"n":10}`+"\n"+`{"n":11}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := writeMultiQueryEntries(t, map[string]string{"all": "-- label: all\nSELECT e.n FROM events e"})
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	env := func() map[string]interface{} {
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+	appendA := func(n string) {
+		f, _ := os.OpenFile(aPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		f.WriteString(`{"n":` + n + `}` + "\n")
+		f.Close()
+	}
+	water := func() map[string]interface{} {
+		b, _ := os.ReadFile(filepath.Join(store, "ISO.json"))
+		var sc map[string]interface{}
+		json.Unmarshal(b, &sc)
+		w, _ := sc["water"].(map[string]interface{})
+		return w
+	}
+
+	out.Reset()
+	c.cmdMulti("cursor create ISO --queries " + pack + " --from start --cursor-store " + store)
+	out.Reset()
+	c.cmdMulti("cursor advance ISO --quiet --cursor-store " + store) // consume the 4 seeds
+	cMark := water()["c.jsonl"]
+
+	// Violate c (truncate to one record) AND append to healthy a.
+	if err := os.WriteFile(cPath, []byte(`{"n":10}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appendA("3")
+
+	// Default advance: the healthy record DELIVERS, c is disclosed + held.
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ISO --cursor-store " + store)
+	av := env()
+	if av["status"] != "advanced" || c.failed {
+		t.Fatalf("healthy containers must keep flowing: %s (stderr %s)", out.String(), errb.String())
+	}
+	if av["count"] != float64(1) {
+		t.Fatalf("want the healthy append delivered, got %s", out.String())
+	}
+	if av["truncated"] == nil {
+		t.Fatalf("violation must be disclosed: %s", out.String())
+	}
+	if water()["c.jsonl"] != cMark {
+		t.Fatalf("violator must be held at its committed mark: %v (want %v)", water()["c.jsonl"], cMark)
+	}
+
+	// Healthy flow continues on the NEXT round too; the violation re-fires each time.
+	appendA("4")
+	out.Reset()
+	c.cmdMulti("cursor advance ISO --cursor-store " + store)
+	av = env()
+	if av["count"] != float64(1) || av["truncated"] == nil {
+		t.Fatalf("round 2: healthy delivery + persistent disclosure: %s", out.String())
+	}
+
+	// Acknowledge: the violator re-baselines and its future appends deliver.
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ISO --quiet --accept-truncation --cursor-store " + store)
+	if e := env(); e["status"] == "error" || c.failed {
+		t.Fatalf("accept: %s", out.String())
+	}
+	f, _ := os.OpenFile(cPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString(`{"n":12}` + "\n")
+	f.Close()
+	out.Reset()
+	c.cmdMulti("cursor peek ISO --cursor-store " + store)
+	if pv := env(); pv["count"] != float64(1) || pv["truncated"] != nil {
+		t.Fatalf("after ack the violator must flow again: %s", out.String())
 	}
 }
