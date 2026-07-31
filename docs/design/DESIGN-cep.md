@@ -299,6 +299,17 @@ merge-base for `rev-list old..new` + the fallback rewrite check. Shelling out to
 the alternative (trivial, exact, but needs `git` on PATH + subprocess + parsing). `create`-time
 validation: repo opens as a git dir, the `refs` selector resolves to ≥1 ref, the pack compiles.
 
+**Field evidence — which join key survives (n1k1-for-ai, 2026-07).** The flagship consumer join —
+agent transcripts (`agent-<id>.jsonl`) to the commits they shipped — was planned around the
+`worktree-agent-<id>` branch name, and that key **loses**: only 13 of 380 agent transcripts ever
+produced a worktree branch, and most branches are merged-and-deleted (46 `gitBranch` values in the
+corpus, 30 still exist). The key that survives rewrite/squash/branch-deletion is a **commit
+trailer** (`Co-Authored-By: …` — 85% of their windowed commits carry it), which lives on the commit
+object itself. Design consequence: the `commits` record should parse **trailers** into a queryable
+field (`trailers: {key: [values]}` — `git interpret-trailers` semantics, cheap at read time), so the
+transcript⋈commits join is `ON t.agent_id = c.trailers.…` rather than a branch-name reconstruction.
+Keep the branch join for the exact per-agent case; the trailer is the coverage path.
+
 **Open edges:** remote refs need a periodic `git fetch` (a `fetch=every 5m` bind option; local
 worktrees need none — the use case is all-local); shallow clones/grafts have incomplete ancestry;
 merge commits' diff-stat is first-parent by default; `--from beginning` on a large repo must be
