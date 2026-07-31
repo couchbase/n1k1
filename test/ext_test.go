@@ -421,7 +421,8 @@ func TestExtShippedJSExamples(t *testing.T) {
 	// (a whole family per file), the geomean + hll aggregates (*.agg.js; hll is the
 	// mergeable HyperLogLog sketch), and the series streaming source (*.stream.js),
 	// sorted by filename stem.
-	want := []string{"add_two_numbers", "builtin_decimal", "builtin_ejson", "celsius_to_fahrenheit", "geomean", "hll", "series", "slugify"}
+	want := []string{"add_two_numbers", "builtin_decimal", "builtin_ejson", "celsius_to_fahrenheit",
+		"geomean", "hll", "series", "slugify", "vector_nearest", "vector_nearest_dist"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("shipped extension names = %v, want %v", names, want)
 	}
@@ -442,6 +443,9 @@ func TestExtShippedJSExamples(t *testing.T) {
 		// (the FNV hash is deterministic, so these are stable across runs/builds).
 		{`SELECT RAW hll(v) FROM [1,1,1,1,1] AS v`, `1`},
 		{`SELECT RAW hll(v) FROM [1,2,3,1,2,3] AS v`, `3`},
+		// vector_nearest / vector_nearest_dist (k-means argmin; examples/kmeans/).
+		{`SELECT RAW vector_nearest([0.1, 0.9], [[1, 0], [0, 1]])`, `1`},
+		{`SELECT RAW vector_nearest_dist([0, 0], [[3, 4], [0, 1]])`, `[1,1]`},
 	}
 	for _, c := range cases {
 		got := extRawRows(t, sess, c.stmt)

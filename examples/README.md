@@ -27,6 +27,11 @@ Status legend (matches the design doc):
 | `kb/` | L | docs & media → extract-provider rows (`{filename,kind,text,…}`) | `SELECT filename FROM default:docs WHERE text LIKE '%vacation%'` | 🟢 |
 | `infra/` | Y | YAML → JSON records: `---` multi-doc streams + top-level sequences | `SELECT team, SUM(replicas) FROM services GROUP BY team` | 🟢 |
 
+Not a data tree but living here too: **`kmeans/`** — a k-means / IVF-partitioning /
+dataset-census pipeline over any keyspace's vector field, run entirely through the CLI
+(no engine changes; generates its own demo data). See `kmeans/README.md` and
+`DESIGN-vectors.md` §"Phase 1.5".
+
 **A/B/C/E/H/J/K/L/Y work today.** Parquet (K) reads via `apache/arrow-go`,
 transposing each row to a JSON object (`records/parquet.go`) — so it's a
 correctness feature, not yet vectorized/columnar execution (see `DESIGN-col.md`).

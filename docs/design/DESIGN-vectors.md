@@ -1,14 +1,15 @@
 # DESIGN-vectors.md — embeddings & vector search in n1k1
 
-_Last reviewed: 2026-07-25._
+_Last reviewed: 2026-08-01._
 
-**Status: Phase 0 SHIPPED + Phase 1 largely SHIPPED.** Phase 0 = `VECTORIZE_BATCH` builtin +
-`@vectorize_field` macro + brute-force `VECTOR_DISTANCE` search (fake + real-HTTP, cgo-free).
-Phase 1 = native byte-lane `VECTOR_DISTANCE`, a columnar float32 kernel over an Arrow
-`List<float32>` column, an `INSERT INTO <name>.parquet` vector-column writer, and computed-qvec
-lowering to the columnar fast path. Phase 2 (remote-source ingest, ANN-index cgo decision) not
-started. Companion to DESIGN-data.md (keyspaces, extract), DESIGN-extensions.md (UDFs, macros),
-DESIGN-col.md (columnar/SIMD).
+**Status: Phase 0 SHIPPED + Phase 1 largely SHIPPED + Phase 1.5 SHIPPED.** Phase 0 =
+`VECTORIZE_BATCH` builtin + `@vectorize_field` macro + brute-force `VECTOR_DISTANCE` search (fake +
+real-HTTP, cgo-free). Phase 1 = native byte-lane `VECTOR_DISTANCE`, a columnar float32 kernel over
+an Arrow `List<float32>` column, an `INSERT INTO <name>.parquet` vector-column writer, and
+computed-qvec lowering to the columnar fast path. Phase 1.5 = k-means centroids + IVF partitioning +
+cluster census with NO engine changes (`examples/kmeans/` + two goja UDFs; see §"Phase 1.5"). Phase
+2 (remote-source ingest, ANN-index cgo decision) not started. Companion to DESIGN-data.md
+(keyspaces, extract), DESIGN-extensions.md (UDFs, macros), DESIGN-col.md (columnar/SIMD).
 
 ## Intent
 
@@ -237,6 +238,70 @@ stable `VECTORIZE_BATCH(texts, opts)` across Phase 0→1; only the under-the-hoo
 An ANN index at ~10M+ vectors needs one of: (a) an opt-in `CGO_ENABLED=1` FAISS build variant
 (breaks the single pure-Go binary), (b) a **pure-Go HNSW** library (cgo-free, slower build), or (c)
 a sidecar index process. **Decide later** — brute-force ships first and covers dev/debug scale.
+**Phase 1.5 below defers it further**: IVF partitioning gives mid-scale ANN in pure Go with no new
+index format at all.
+
+## Phase 1.5 — k-means centroids, IVF partitioning, cluster census (no engine changes)
+
+**Status: SHIPPED as `examples/kmeans/` (driver + SQL++ idioms + two goja UDFs) — engine untouched.**
+The question it answers: given vectors in Parquet, can we compute centroids (k-means) to (a)
+*partition* for faster search and (b) *summarize* the dataset — and how much of that is expressible
+in SQL++ today?
+
+**Prior art (this is well-trodden ground; we're composing, not inventing):**
+- *Partitioning by centroids* is the **IVF (inverted file) index**: pgvector's `ivfflat` (k-means at
+  build, `probes` at query — inside a SQL database), FAISS `IVFFlat`, **Lance/LanceDB `IVF_PQ`**
+  (the closest cousin: a columnar file format with centroid-pruned scans), Milvus, SPANN.
+- *k-means in SQL* is academic lineage: Ordonez (KDD'04/TKDE'06), Apache MADlib, BigQuery ML's
+  `CREATE MODEL … kmeans`. Assignment = per-row argmin; update = per-cluster `GROUP BY` mean;
+  the iteration loop lives in a driver.
+- *"What's in the dataset" via centroids* is cluster-based corpus summarization: BERTopic/top2vec
+  (cluster embeddings, label clusters, exemplar docs), Nomic Atlas (embedding maps), SemDeDup
+  (dedup within k-means clusters by centroid distance), DINOv2-era hierarchical k-means curation.
+  "Docs nearest the centroid" (exemplars/medoids) beats random sampling for eyeballing a cluster.
+
+**What shipped** (`examples/kmeans/kmeans.py` — stdlib-only driver, every data-plane step a SQL++
+statement through the stock CLI; `gen_vectors.py` — synthetic topic-clustered demo data;
+`extensions/functions/js/vector_nearest{,_dist}.js` — optional goja argmin UDFs):
+`fit` (farthest-first init + Lloyd iterations → `centroids.json`), `partition` (per-cluster
+`part_<k>/data.parquet` + a queryable `centroids/` keyspace), `census` (sizes + per-centroid
+exemplars via `VECTOR_DISTANCE` + per-cluster `TOKENS()` terms), `probe` (nprobe-partition scan,
+recall + timing vs brute). The runbook (incl. flags, idioms, gotchas) is `examples/kmeans/README.md`.
+
+**Expressibility verdict — SQL++ can do all of it, with three measured caveats** (20K×64-d, k=8,
+M2 Pro):
+- ⚠ **`VECTOR_DISTANCE` refuses a non-STATIC query vector** (cbq-inherited validation: constant /
+  `$param` / `WITH` alias only), so the k-means argmin *cannot* use it — a comprehension variable
+  over the centroid list is rejected. Workarounds that ship: pure-SQL++ arithmetic argmin
+  (`ARRAY_SORT` over `[dist, i]` pairs) and the `vector_nearest()` UDF (~4× faster; its boundary
+  cost scales with the K×dim argument re-converted per row, ~0.3ms/row at 8×64).
+- ⚠ **Derived tables flatten**: a subselect-computed assignment is re-evaluated per (doc, position)
+  under an `UNNEST` — dim× the work (18s → 1.4s when restructured; still pays the boxed lane).
+  The all-in-one-statement Lloyd (`fit --pure-sql`) is therefore the *expressibility demo*; the
+  practical fit does the assignment scan in SQL++ and the tiny K×dim mean in the driver, and
+  `partition` materializes the assignment through a real temp Parquet keyspace.
+- The UNNEST-by-position update (`GROUP BY cl, p` over N×dim rows) runs the boxed row lane at
+  ~3.5µs/(doc·dim) — fine for sampled fits (sampling is standard; pgvector trains on a sample),
+  slow for full-data fits at scale.
+
+**The IVF payoff composes with the columnar kernel** (partitions ARE parquet vec files): probe
+top-10 at nprobe=2/8 ≈ 0.12s vs 1.9s row-lane brute (recall 1.00; nprobe=1 → 0.90). Honest framing:
+at ≤100K vectors a SINGLE parquet file + columnar brute force (~0.08s at 20K; ~0.4–0.5s at
+100K×384) is already the answer — partitioning pays when the full-file decode exceeds the latency
+budget (millions of vectors), by decoding only `nprobe/K` of the bytes. **This resolves the cgo
+fork at mid scale**: no FAISS, no HNSW graph, no new index format — parquet files + a centroids
+keyspace.
+
+**Engine seams this motivates (the Phase 1.5 → 2 follow-ups, in value order):**
+1. **`VECTOR_AVG(vec)` native aggregate** (rides the existing `RegisterAggregate` ext-agg seam like
+   sparkline/histogram): kills the UNNEST-by-position update AND the driver-side mean — full-data
+   Lloyd becomes one fast scan per iteration.
+2. **Native argmin**: either lift the static-qvec restriction on n1k1's native `VECTOR_DISTANCE`
+   lane (it's pure compute — the restriction is a vector-index eligibility rule, meaningless here)
+   or add `VECTOR_NEAREST(vec, cents)` as a native function; batch-friendly on the columnar lane.
+3. Later: an `nprobe` query rewrite (centroid scan → partition pruning inside one statement),
+   auto-partitioned `INSERT` (one pass instead of K filtered copies), and per-cluster PQ/quantized
+   codes if N ever demands true IVF_PQ.
 
 ## Phased plan
 
@@ -250,8 +315,12 @@ a sidecar index process. **Decide later** — brute-force ships first and covers
   `VecFloat32` over `VectorBatchSource`, via `VectorColumnarScan` / `maybeVectorColumnarFuse`,
   `glue/vector.go`), its prerequisite `INSERT INTO <name>.parquet` writer, and computed-qvec lowering
   to the columnar fast path.
+- **Phase 1.5 — DONE (no engine changes).** k-means centroids + IVF partitioning + cluster census as
+  `examples/kmeans/` (SQL++ scans through the stock CLI, optional `vector_nearest{,_dist}` goja
+  UDFs) — see the §"Phase 1.5" section above for findings + the engine seams it motivates
+  (`VECTOR_AVG` ext-aggregate, native argmin, an nprobe rewrite).
 - **Phase 2 — not started.** Remote-source ingest (S3/Box/Drive/HF → local vec side-file), then the
-  ANN-index cgo decision only if N demands.
+  ANN-index cgo decision only if N demands (mid-scale ANN now covered by Phase 1.5 IVF).
 
 ## Future: signal-preserving preprocessing (log templating / dedup)
 
