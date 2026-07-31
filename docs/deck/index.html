@@ -114,8 +114,8 @@
            WHERE total &gt; 200 ORDER BY total DESC" examples/shop</code></pre>
     <ul>
       <li>Inspirations: <code>sqlite3</code> / <code>duckdb</code>,<br>but the query
-          language (SQL++) is built for <strong>nested JSON</strong><br>and the scan
-          layer handles directory trees of mixed data file formats.</li>
+          language (SQL++) is built for <strong>nested JSON</strong><br>and n1k1's engine
+          handles directory trees of mixed data file formats.</li>
       <li>File formats are discovered <em>per file</em> — no
           <code>CREATE TABLE</code>:</li>
     </ul>
@@ -124,9 +124,6 @@
       <span>TOML</span><span>Parquet</span><span>Iceberg</span>
       <span>.gz</span><span>PDF / Office</span><span>s3:// gs:// abfs://</span>
     </p>
-    <p>Also compiles to
-       <strong>wasm</strong>: the playground runs n1k1's engine
-       client-side in a browser.</p>
   </div>
 
   <div id="why-scope" class="step" data-rel-to="hub-why"
@@ -691,7 +688,7 @@ parent = n1k1, which has cbq + datasource access, and
        data-x="3100" data-y="4800" data-z="0" data-scale="5">
     <div class="bignum">7</div>
     <p class="kicker">7 · extensibility</p>
-    <h1>Multiple extension layers</h1>
+    <h1>Multiple extension features</h1>
   </div>
 
   <div id="ext-udf" class="step src-parent" data-rel-to="hub-extend"
