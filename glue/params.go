@@ -26,6 +26,23 @@ package glue
 // $param gate would degrade to always-wake. The engine's runtime named args
 // (Session.NamedArgs) remain the mechanism for ad-hoc single statements.
 //
+// HOW STANDARD IS THIS? Verified against the engine's parser, by position:
+//   - VALUE position (`x > $threshold`, `k NOT IN $exclude`) — genuinely standard
+//     named-parameter syntax; a stock engine parses it and binds at runtime. Our
+//     int/list(/future str) params live here: a pack using only value-typed params
+//     is standard-parseable SQL++.
+//   - IDENTIFIER position (`obj.$field`, `FROM $keyspace`) — an n1k1 PACK EXTENSION
+//     that exists only pre-parse: `obj.$field` is a stock-engine SYNTAX ERROR, and
+//     `FROM $expr` parses but means expression-as-datasource (the bound VALUE is the
+//     data), not "keyspace named by this string". The `ident` param type marks this
+//     boundary exactly. The standard runtime form for dynamic field access is
+//     `obj.[$field]` (dot-bracket); we don't use it because runtime navigation
+//     forfeits the static field path the optimizer needs, and there is no runtime
+//     equivalent at all for a parameterized keyspace.
+//   - HYPHENATED names (`$type-field`) — standard lexing reads `$type - field`; our
+//     longest-DECLARED-name match reads the declared name. Prefer underscores for
+//     value params meant to stay standard-portable.
+//
 // Types close the injection surface: `ident` renders `backticked` (and rejects
 // backticks), `int` must parse, `list` renders as a JSON string array. Substitution
 // is quote- AND comment-aware (a $ inside a string literal or a `--` comment is

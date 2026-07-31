@@ -628,6 +628,18 @@ same syntax, different binding TIME, chosen per context: packs fold early; a fut
 `-args` flag can pass the same `$name` as true runtime args. Resolution is quote- and
 comment-aware and matches the longest DECLARED name (`$type-field` binds `type-field`;
 `$depth - 1` needs the spacing); an undeclared `$word` in a pack errors naming the declared set.
+
+**How standard is the syntax? (verified against the parser.)** VALUE-position references
+(`x > $threshold`, `k NOT IN $exclude`) are genuine standard named-parameter SQL++ — a pack
+using only value-typed params (`int`/`list`) parses on a stock engine and could bind at runtime.
+IDENTIFIER-position references are an **n1k1 pack extension** that exists only pre-parse:
+`obj.$field` is a stock-engine *syntax error*, and `FROM $expr` parses but means
+expression-as-datasource (the bound value IS the data), not "keyspace named by this string" —
+the `ident` param type marks this boundary exactly. (The standard runtime form for dynamic
+field access is `obj.[$field]`, dot-bracket; not used here because runtime navigation forfeits
+the static field path the optimizer prunes on, and a parameterized *keyspace* has no runtime
+equivalent at all.) Hyphenated names also diverge: standard lexing reads `$type-field` as
+`$type - field`; prefer underscores for params meant to stay standard-portable.
 Injection is closed by typing, as in builtins: `ident` renders backticked and rejects backticks,
 `int` must parse, `str` renders via a quoted literal, `list` as a JSON string array.
 
