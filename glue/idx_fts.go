@@ -57,6 +57,14 @@ import (
 
 const ftsSigFile = "sig" // <instDir>/sig -- source signature for freshness
 
+// Cursor-watermark keys in bleve's INTERNAL key-value store: SetInternal rides in
+// the SAME batch as the delta docs, so the fold and its position commit atomically
+// (the SI one-transaction story, stock bleve API -- no fork needed).
+var (
+	ftsWaterKey   = []byte("n1k1.water")
+	ftsWaterFPKey = []byte("n1k1.water_fp")
+)
+
 // ---------------------------------------------------------------- FTS indexer
 
 // ftsIndexer is a read-only datastore.Indexer of type FTS advertising the
@@ -676,27 +684,52 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 		return nil, err
 	}
 	if force || readFTSSig(instDir) != sig {
-		slot.fi.idx.Close()
-		idx, e := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, onDoc)
-		if e != nil {
-			return nil, e
+		caughtUp := false
+		if !force {
+			ok, e := catchUpBleve(slot.fi.idx, instDir, srcDir, sig, onDoc)
+			if e != nil {
+				return nil, e
+			}
+			caughtUp = ok
 		}
-		slot.fi.idx = idx
+		if caughtUp {
+			indexBuildsCatchUp.Add(1)
+		} else {
+			slot.fi.idx.Close()
+			idx, e := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, onDoc)
+			if e != nil {
+				return nil, e
+			}
+			slot.fi.idx = idx
+			indexBuildsFull.Add(1)
+		}
 	}
 	slot.fi.ks = ks
 	return slot.fi, nil
 }
 
-// openOrBuildBleve opens the bleve dir if it exists and is fresh, else builds it.
+// openOrBuildBleve opens the bleve dir if it exists (catching up incrementally when
+// stale), else builds it.
 func openOrBuildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 	srcDir, sig string, onDoc func(int)) (bleve.Index, error) {
-	if _, err := os.Stat(bleveDir); err == nil && readFTSSig(instDir) == sig {
+	if _, err := os.Stat(bleveDir); err == nil {
 		if idx, e := bleve.Open(bleveDir); e == nil {
-			return idx, nil
+			if readFTSSig(instDir) == sig {
+				return idx, nil
+			}
+			if ok, e2 := catchUpBleve(idx, instDir, srcDir, sig, onDoc); e2 == nil && ok {
+				indexBuildsCatchUp.Add(1)
+				return idx, nil
+			}
+			idx.Close()
 		}
-		// Fall through to rebuild on a corrupt/unopenable dir.
+		// Fall through to rebuild on a corrupt/unopenable/uncatchable dir.
 	}
-	return buildBleve(bleveDir, instDir, ks, def, srcDir, sig, onDoc)
+	idx, err := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, onDoc)
+	if err == nil {
+		indexBuildsFull.Add(1)
+	}
+	return idx, err
 }
 
 // buildBleve (re)creates the bleve index from a full keyspace scan.
@@ -719,11 +752,16 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 	}
 	defer src.Close()
 
+	// Observe the scan through a nil-since cursor filter: capture the per-container
+	// watermark + boundary fingerprints the next stale open folds forward from.
+	filter := NewRecordScanFilter(nil, nil)
+	scan := filter.wrap(src)
+
 	batch := idx.NewBatch()
 	var rec records.Record
 	scanned := 0
 	for {
-		ok, err := src.Next(&rec)
+		ok, err := scan.Next(&rec)
 		if err != nil {
 			idx.Close()
 			return nil, fmt.Errorf("fts build, next: %w", err)
@@ -751,6 +789,13 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 			}
 		}
 	}
+	// The FINAL batch carries the watermark in bleve's internal KV, so docs and
+	// position commit together (a crash losing the batch loses both consistently;
+	// re-folding is idempotent -- batch.Index by doc id is an upsert).
+	if err := setBleveWater(batch, filter.NewWater(), filter.FingerprintWater()); err != nil {
+		idx.Close()
+		return nil, err
+	}
 	if err := idx.Batch(batch); err != nil {
 		idx.Close()
 		return nil, err
@@ -763,6 +808,115 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 		return nil, err
 	}
 	return idx, nil
+}
+
+// catchUpBleve tries the INCREMENTAL path for a stale bleve index (the FTS sibling
+// of catchUpIndex, stock bleve API throughout): seed a cursor filter at the
+// watermark stored in the index's internal KV, collect ONLY the records past it,
+// and -- if the scan proves the source stayed append-only -- commit them in ONE
+// batch that also advances the watermark (Batch.SetInternal). Returns false (no
+// error) when a full rebuild is required: no stored watermark (legacy artifact,
+// or a per-doc-file keyspace whose record ids carry no position), or any
+// SourceAnomalies violation (rotated/truncated/rewritten container -- adds-only
+// can't retract those postings).
+func catchUpBleve(idx bleve.Index, instDir, srcDir, sig string, onDoc func(int)) (bool, error) {
+	water, waterFP, err := getBleveWater(idx)
+	if err != nil || len(water) == 0 {
+		return false, err
+	}
+
+	opts := ScanWalkOptions
+	opts.PathPrefix = ""
+	src, err := records.Walk(srcDir, opts)
+	if err != nil {
+		return false, fmt.Errorf("fts catch-up, walk %q: %w", srcDir, err)
+	}
+	defer src.Close()
+
+	filter := NewRecordScanFilter(water, waterFP)
+	scan := filter.wrap(src)
+
+	// Collect the delta first: any append-only violation, discovered only once the
+	// scan completes, voids the fold before anything is committed.
+	type deltaDoc struct {
+		id  string
+		doc interface{}
+	}
+	var delta []deltaDoc
+	var rec records.Record
+	folded := 0
+	for {
+		ok, err := scan.Next(&rec)
+		if err != nil {
+			return false, fmt.Errorf("fts catch-up, next: %w", err)
+		}
+		if !ok {
+			break
+		}
+		var doc interface{}
+		if err := json.Unmarshal(rec.Doc, &doc); err != nil {
+			continue // skip undecodable docs (same as the full build)
+		}
+		delta = append(delta, deltaDoc{id: string(rec.ID), doc: doc})
+		folded++
+		if onDoc != nil && folded%512 == 0 {
+			onDoc(folded)
+		}
+	}
+	if rotated, truncated, rewritten := filter.SourceAnomalies(); len(rotated)+len(truncated)+len(rewritten) > 0 {
+		return false, nil // postings need retraction -> full rebuild
+	}
+	if onDoc != nil {
+		onDoc(folded)
+	}
+
+	batch := idx.NewBatch()
+	for _, d := range delta {
+		if err := batch.Index(d.id, d.doc); err != nil {
+			return false, fmt.Errorf("fts catch-up, index %q: %w", d.id, err)
+		}
+	}
+	newWater := filter.NewWater()
+	newFP := WaterFPMerge(newWater, filter.ObservedWater(), filter.FingerprintWater(), water, waterFP)
+	if err := setBleveWater(batch, newWater, newFP); err != nil {
+		return false, err
+	}
+	if err := idx.Batch(batch); err != nil {
+		return false, err
+	}
+	return true, writeFTSSig(instDir, sig)
+}
+
+// setBleveWater / getBleveWater persist the cursor watermark in bleve's internal KV
+// (rides in a batch -> atomic with the docs it positions).
+func setBleveWater(batch *bleve.Batch, water map[string]int64, fp map[string]string) error {
+	wb, err := json.Marshal(water)
+	if err != nil {
+		return err
+	}
+	fb, err := json.Marshal(fp)
+	if err != nil {
+		return err
+	}
+	batch.SetInternal(ftsWaterKey, wb)
+	batch.SetInternal(ftsWaterFPKey, fb)
+	return nil
+}
+
+func getBleveWater(idx bleve.Index) (map[string]int64, map[string]string, error) {
+	var water map[string]int64
+	var fp map[string]string
+	if wb, err := idx.GetInternal(ftsWaterKey); err == nil && len(wb) > 0 {
+		if err := json.Unmarshal(wb, &water); err != nil {
+			return nil, nil, err
+		}
+	}
+	if fb, err := idx.GetInternal(ftsWaterFPKey); err == nil && len(fb) > 0 {
+		if err := json.Unmarshal(fb, &fp); err != nil {
+			return nil, nil, err
+		}
+	}
+	return water, fp, nil
 }
 
 func readFTSSig(instDir string) string {

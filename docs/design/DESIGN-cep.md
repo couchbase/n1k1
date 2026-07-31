@@ -852,9 +852,18 @@ second direction and would turn index maintenance from O(corpus) per open into O
 > can't retract (ISSUE-12 ask #4's guard). The watermark lives in the index artifact itself (the
 > catalog side of the open question), so index and position commit atomically.
 > `glue.IndexBuildCounts()` exposes full-vs-catchup; guard: `TestSecondaryIndexIncremental`
-> (append → catch-up, fresh → no work, rotation → full rebuild with no stale entry). *(Still open:
-> FTS incremental adds — deliberately deferred to the bleve/zapx fork workstream, where segment-level
-> append is the whole point; `diff`-mode maintenance for mutable keyspaces.)*
+> (append → catch-up, fresh → no work, rotation → full rebuild with no stale entry).
+
+> **Status — FTS SHIPPED too, on STOCK bleve (no fork needed).** The initial instinct to defer FTS
+> to the bleve/zapx fork workstream was wrong, and usefully so: scorch is segment-append by design
+> (`Batch` = a new segment), `batch.Index(id, doc)` is an upsert (at-least-once replay safe), and
+> `Batch.SetInternal` lets the watermark + fingerprints ride IN the delta batch — docs and position
+> commit atomically, and a crash losing the unpersisted batch loses both consistently (re-fold is
+> idempotent). `catchUpBleve` (glue/idx_fts.go) mirrors `catchUpIndex` exactly: same filter, same
+> anomaly taxonomy forcing full rebuild, same legacy/per-doc-file degradation. The bleve/zapx fork
+> workstream is for genuinely NEW capabilities (segment formats, ANN, merge policies) — consumed
+> via anonymous-interface probes with stock fallbacks per work/README.md. Guard:
+> `TestFTSIncremental`. *(Still open: `diff`-mode maintenance for mutable keyspaces.)*
 
 ## The engine gap for `follow` (Phase 6)
 

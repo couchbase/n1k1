@@ -1048,3 +1048,86 @@ func TestSecondaryIndexIncremental(t *testing.T) {
 		t.Fatalf("rotation must force a full rebuild (full %d->%d)", full2, full3)
 	}
 }
+
+// TestFTSIncremental is the FTS sibling of TestSecondaryIndexIncremental — and the
+// proof that incremental FTS needs NO bleve fork: batch.Index (upsert by doc id) +
+// Batch.SetInternal (watermark rides in the same batch, atomic) are stock APIs, and
+// scorch is segment-append by design. Append → catch-up; fresh → no work;
+// rotation → full rebuild with no stale hit.
+func TestFTSIncremental(t *testing.T) {
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "default", "docs")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeF := func(name string, lines ...string) {
+		if err := os.WriteFile(filepath.Join(ksDir, name),
+			[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeF("a.jsonl",
+		`{"id":"d1","title":"the quick brown fox","body":"lazy dog"}`,
+		`{"id":"d2","title":"hello world","body":"a quick start"}`)
+	writeF("b.jsonl",
+		`{"id":"d3","title":"slow and steady","body":"quick nothing"}`)
+	if err := os.MkdirAll(filepath.Join(root, ".n1k1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".n1k1", "catalog.json"),
+		[]byte(`{"indexes":[{"name":"ft_docs","keyspace":"docs","kind":"fts"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	q := `SELECT d.id AS id FROM docs d WHERE SEARCH(d, "quick")`
+
+	run := func(wantIDs []string) {
+		t.Helper()
+		store, conv := flatRootConv(t, root, q)
+		if !hasKind(conv.TopOp, "datastore-scan-fts") {
+			t.Fatalf("expected an FTS scan, got %v", opKinds(conv.TopOp))
+		}
+		rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+		if got := idJSONs(rows); !equalStrs(got, wantIDJSONs(wantIDs)) {
+			t.Fatalf("want ids %v, got %v", wantIDs, got)
+		}
+	}
+
+	fullBase, cuBase := glue.IndexBuildCounts()
+	run([]string{"d1", "d2", "d3"})
+	full1, cu1 := glue.IndexBuildCounts()
+	if full1 == fullBase {
+		t.Fatalf("initial open should full-build (full %d->%d)", fullBase, full1)
+	}
+
+	// APPEND a matching doc: catch-up, not rebuild.
+	f, err := os.OpenFile(filepath.Join(ksDir, "a.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(`{"id":"d4","title":"quick addition","body":"appended later"}` + "\n")
+	f.Close()
+	run([]string{"d1", "d2", "d3", "d4"})
+	full2, cu2 := glue.IndexBuildCounts()
+	if cu2 == cu1 {
+		t.Fatalf("append should catch up incrementally (catchup %d->%d, base %d)", cu1, cu2, cuBase)
+	}
+	if full2 != full1 {
+		t.Fatalf("append must NOT full-rebuild (full %d->%d)", full1, full2)
+	}
+
+	// Fresh: no build activity.
+	run([]string{"d1", "d2", "d3", "d4"})
+	if fl, cu := glue.IndexBuildCounts(); fl != full2 || cu != cu2 {
+		t.Fatalf("fresh open must not build (full %d->%d, catchup %d->%d)", full2, fl, cu2, cu)
+	}
+
+	// ROTATE b.jsonl away (held d3): full rebuild, no stale hit.
+	if err := os.Remove(filepath.Join(ksDir, "b.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	run([]string{"d1", "d2", "d4"})
+	full3, _ := glue.IndexBuildCounts()
+	if full3 == full2 {
+		t.Fatalf("rotation must force a full rebuild (full %d->%d)", full2, full3)
+	}
+}
