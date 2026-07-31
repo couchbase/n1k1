@@ -39,7 +39,12 @@ type censusCursorEnv struct {
 	WindowRecords int64               `json:"window_records"` // records censused this window
 	Count         int                 `json:"count"`          // drift events
 	Drift         []glue.CensusChange `json:"drift,omitempty"`
-	Error         *cursorErr          `json:"error,omitempty"`
+	// Rotated/Truncated: committed containers whose source violated append-only this
+	// scan (see the pack-cursor envelope) -- for a census, ROTATION IS EVIDENCE
+	// LEAVING: the accumulated census keeps what a fresh scan can no longer prove.
+	Rotated   []string   `json:"rotated,omitempty"`
+	Truncated []string   `json:"truncated,omitempty"`
+	Error     *cursorErr `json:"error,omitempty"`
 }
 
 func (c *cli) censusOpts(a cursorArgs) glue.CensusOptions {
@@ -153,6 +158,7 @@ func (c *cli) cursorCensusPeekAdvance(a cursorArgs, st *glue.CursorState, store 
 	changed := len(drift) > 0
 	env.WindowRecords = window.Records
 	env.Count = len(drift)
+	env.Rotated, env.Truncated = window.Rotated, window.Truncated
 
 	if !advance {
 		env.Advanced = false

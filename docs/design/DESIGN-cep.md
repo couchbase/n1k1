@@ -245,11 +245,14 @@ at-or-below the watermark. So today:
   re-delivered; rotation and truncation losses are currently silent.*
 
 **3. The response ladder** (cheap first):
-- **Surface, don't guess**: `peek`/`advance` can report `rotated: [containers]` (committed water
-  key, nothing observed this scan) and `truncated: [containers]` (observed extent below the
-  committed offset) in the envelope — same disclosure pattern as `dropped/rewound/unknown` on
-  `advance --to`. Turns silent evidence loss into an event a census/doctor can correlate; an
-  explicit `--prune-rotated` could then shrink the position map deliberately.
+- **Surface, don't guess — ✅ SHIPPED**: every `peek`/`advance` (pack AND census cursors) reports
+  `rotated: [containers]` (committed water key, nothing observed this scan — deleted or now empty)
+  and `truncated: [containers]` (observed extent below the committed offset) in the envelope —
+  same disclosure pattern as `dropped/rewound/unknown` on `advance --to`. Evidence loss is an
+  event a census/doctor can correlate. `advance --prune-rotated` drops the rotated entries from
+  the committed position (acked as `pruned_rotated`; disclosed cost: a same-named file reappearing
+  later replays from byte 0). `RecordScanFilter.SourceAnomalies`; guard:
+  `TestMultiCursorRotationDisclosure`.
 - **Fail-loud on truncation** is arguably right for `mode: append`'s contract (the source violated
   append-only), with an explicit override that re-baselines that container — mirroring
   `--allow-drift`'s shape: the caller acknowledges the discontinuity.

@@ -400,6 +400,30 @@ func (f *RecordScanFilter) NewWater() map[string]int64 {
 	return out
 }
 
+// SourceAnomalies reports the committed containers whose source violated the
+// append-only assumption this scan ("append-mostly, with whole-file rotation" —
+// DESIGN-cep.md): rotated = held in the committed water but NOTHING observed this
+// scan (file deleted/renamed, or now empty); truncated = observed but the extent
+// fell BELOW the committed offset (rewritten shorter — its records below the old
+// offset are being skipped, since the watermark never rewinds). Both are silent
+// evidence loss unless disclosed, which is this method's whole purpose. Sorted.
+func (f *RecordScanFilter) SourceAnomalies() (rotated, truncated []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for k, w := range f.since {
+		seen, ok := f.seen[k]
+		switch {
+		case !ok:
+			rotated = append(rotated, k)
+		case seen < w:
+			truncated = append(truncated, k)
+		}
+	}
+	sort.Strings(rotated)
+	sort.Strings(truncated)
+	return rotated, truncated
+}
+
 type filteringSource struct {
 	inner records.Source
 	f     *RecordScanFilter
@@ -431,7 +455,12 @@ func (s *filteringSource) Close() error { return s.inner.Close() }
 type CursorRunResult struct {
 	LabelResults []LabelResult    // the delta only (records past the water)
 	NewWater     map[string]int64 // recomputed high-water (the candidate `to`)
-	Report       *MultiQueryRunReport
+	// Rotated / Truncated disclose committed containers whose source violated
+	// append-only this scan (see RecordScanFilter.SourceAnomalies) — surfaced in the
+	// peek/advance envelope so evidence loss is an event, never silent.
+	Rotated   []string
+	Truncated []string
+	Report    *MultiQueryRunReport
 }
 
 // RunCursorPack compiles and runs the pack `dets` with an `append` scan filter
@@ -468,6 +497,7 @@ func (s *Session) runCursorPack(dets []MultiQueryEntry, filter *RecordScanFilter
 	res := &CursorRunResult{LabelResults: lrs, Report: report}
 	if filter != nil {
 		res.NewWater = filter.NewWater()
+		res.Rotated, res.Truncated = filter.SourceAnomalies()
 	}
 	return res, nil
 }

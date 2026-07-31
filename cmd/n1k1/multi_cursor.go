@@ -67,6 +67,7 @@ type cursorArgs struct {
 	mode          string   // --mode append|diff, create-only (default: append)
 	idField       string   // --id-field <name>, create-only diff (default: id)
 	quiet         bool     // --quiet, advance-only (ack only, no labelResults echo)
+	pruneRotated  bool     // --prune-rotated, advance-only (drop rotated containers from the committed position)
 	force         bool     // --force, advance --to only (commit a rewinding/unknown position anyway)
 	allowDrift    bool     // --allow-drift, advance only (commit even though the query edited since create)
 	expect        string   // --expect <committed_id>, advance only (compare-and-swap: refuse if moved)
@@ -211,6 +212,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.idField = val
 		case "quiet":
 			a.quiet = !hasEq || val == "true" || val == "1"
+		case "prune-rotated":
+			a.pruneRotated = !hasEq || val == "true" || val == "1"
 		case "force":
 			a.force = !hasEq || val == "true" || val == "1"
 		case "allow-drift":
@@ -339,6 +342,18 @@ type cursorEnvelope struct {
 	Dropped []string `json:"dropped,omitempty"` // held (offset>0) but absent from --to -> would reset to byte 0
 	Rewound []string `json:"rewound,omitempty"` // --to offset < committed -> would re-deliver
 	Unknown []string `json:"unknown,omitempty"` // --to names a container the datastore lacks
+
+	// "Append-mostly, with whole-file rotation" (DESIGN-cep.md): committed containers
+	// whose SOURCE violated append-only this scan. Rotated = held in the committed
+	// position but nothing observed (file deleted/renamed, or now empty); truncated =
+	// the observed extent fell below the committed offset (rewritten shorter — its
+	// records below the old offset are skipped, since the watermark never rewinds).
+	// Disclosure, not failure: a census/doctor can correlate a count drop with the
+	// evidence leaving. `advance --prune-rotated` drops the rotated entries from the
+	// committed position (PrunedRotated acks how many).
+	Rotated       []string `json:"rotated,omitempty"`
+	Truncated     []string `json:"truncated,omitempty"`
+	PrunedRotated int      `json:"pruned_rotated,omitempty"`
 
 	// ISSUE-17: the query file can be edited after create; `pack` is the baseline
 	// (creation-time) id, QueriesCurrent is the id re-hashed from the query NOW. They
@@ -910,6 +925,10 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		From:        encodeWater(committed),
 		Count:       len(rows),
 		CommittedID: committedID(st), // the CURRENTLY-committed position (peek: unchanged)
+		// Source-side append violations (rotation/truncation) are DISCLOSED on every
+		// peek/advance — evidence leaving the corpus is an event, never silent.
+		Rotated:   res.Rotated,
+		Truncated: res.Truncated,
 	}
 	if drifted {
 		env.QueriesCurrent = currentID
@@ -976,6 +995,18 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 			}
 			// forced: proceed, but the rewind is disclosed in the envelope below.
 			env.Dropped, env.Rewound, env.Unknown = dropped, rewound, unknown
+		}
+	}
+	// --prune-rotated: deliberately shrink the committed position by the containers
+	// whose files rotated away (disclosed in env.Rotated). Without this the position
+	// map grows with every file ever seen. The cost is disclosed in help: if a
+	// same-named file later reappears, it is a NEW container and replays from byte 0.
+	if a.pruneRotated {
+		for _, k := range res.Rotated {
+			if _, held := newWater[k]; held {
+				delete(newWater, k)
+				env.PrunedRotated++
+			}
 		}
 	}
 	moved := !waterEqual(committed, newWater)
@@ -1477,8 +1508,20 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        (+"-dirty") when unset, so "which commit produced this position"
                        lives in the cursor instead of an external ledger.
   peek   NAME          the pending delta; does NOT move the cursor (re-peek is safe).
-  advance NAME [--to <pos> | --to-file <path>] [--quiet] [--force]
+                       Both peek and advance DISCLOSE source-side append violations
+                       ("append-mostly, with whole-file rotation"): "rotated" lists
+                       committed containers no longer observed (file deleted, or now
+                       empty), "truncated" those rewritten SHORTER than the committed
+                       offset (their records below it are skipped -- the watermark
+                       never rewinds, so nothing double-delivers). Evidence leaving
+                       the corpus is an event, never silent; a field that reads 0
+                       NOW may still exist in an accumulated census.
+  advance NAME [--to <pos> | --to-file <path>] [--quiet] [--force] [--prune-rotated]
                        commit (get + move). Echoes the delta unless --quiet.
+                       --prune-rotated drops the rotated containers from the
+                       committed position (acked as "pruned_rotated"; without it the
+                       position map holds every container ever seen). Cost: if a
+                       same-named file later reappears, it replays from byte 0.
                        --to <pos> commits the exact position peek reported (two-step);
                        the token is OPAQUE (survives argv verbatim). --to-file reads it
                        from a file (positions can be large — an append position is a

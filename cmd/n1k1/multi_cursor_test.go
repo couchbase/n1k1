@@ -496,6 +496,122 @@ func TestMultiCursorHashSchemeUpgrade(t *testing.T) {
 	}
 }
 
+// TestMultiCursorRotationDisclosure covers the "append-mostly, with whole-file
+// rotation" disclosure (DESIGN-cep.md): a committed container whose file is DELETED
+// surfaces as "rotated" and one rewritten SHORTER than its watermark as "truncated"
+// on every peek/advance — evidence loss is an event, never silent. The watermark
+// never rewinds (no double-delivery), live containers keep delivering, and
+// `advance --prune-rotated` deliberately drops rotated entries from the position.
+func TestMultiCursorRotationDisclosure(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aPath := filepath.Join(ks, "a.jsonl")
+	bPath := filepath.Join(ks, "b.jsonl")
+	if err := os.WriteFile(aPath, []byte(`{"n":1}`+"\n"+`{"n":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bPath, []byte(`{"n":3}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := writeMultiQueryEntries(t, map[string]string{"all": "-- label: all\nSELECT e.n FROM events e"})
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	env := func() map[string]interface{} {
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+	strs := func(v interface{}) []string {
+		arr, _ := v.([]interface{})
+		var s []string
+		for _, x := range arr {
+			s = append(s, x.(string))
+		}
+		return s
+	}
+
+	// Baseline: create from start + advance commits watermarks for both containers.
+	out.Reset()
+	c.cmdMulti("cursor create ROT --queries " + pack + " --from start --cursor-store " + store)
+	out.Reset()
+	c.cmdMulti("cursor advance ROT --quiet --cursor-store " + store)
+	if av := env(); av["status"] != "advanced" || av["rotated"] != nil || av["truncated"] != nil {
+		t.Fatalf("clean advance: %s", out.String())
+	}
+
+	// Rotate b away; append to a. Peek must deliver the new record AND disclose b.
+	if err := os.Remove(bPath); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.OpenFile(aPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString(`{"n":4}` + "\n")
+	f.Close()
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	pv := env()
+	if pv["status"] != "pending" || pv["count"] != float64(1) {
+		t.Fatalf("peek after rotation should still deliver the live delta: %s", out.String())
+	}
+	rot := strs(pv["rotated"])
+	if len(rot) != 1 || !strings.Contains(rot[0], "b.jsonl") {
+		t.Fatalf("rotated should name b.jsonl: %v", pv["rotated"])
+	}
+	if pv["truncated"] != nil {
+		t.Fatalf("nothing truncated yet: %s", out.String())
+	}
+
+	// Truncate a below its watermark (rewrite shorter). Peek: truncated names a,
+	// rotated still names b, no rows (all below the never-rewinding watermark).
+	if err := os.WriteFile(aPath, []byte(`{"n":9}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	pv = env()
+	if pv["count"] != float64(0) {
+		t.Fatalf("truncation must not double-deliver: %s", out.String())
+	}
+	trunc := strs(pv["truncated"])
+	if len(trunc) != 1 || !strings.Contains(trunc[0], "a.jsonl") {
+		t.Fatalf("truncated should name a.jsonl: %v", pv["truncated"])
+	}
+	if rot = strs(pv["rotated"]); len(rot) != 1 || !strings.Contains(rot[0], "b.jsonl") {
+		t.Fatalf("rotated disclosure must persist while the position holds b: %v", pv["rotated"])
+	}
+
+	// advance --prune-rotated: drops b from the committed position (acked), keeps a.
+	out.Reset()
+	c.cmdMulti("cursor advance ROT --quiet --prune-rotated --cursor-store " + store)
+	av := env()
+	if av["pruned_rotated"] != float64(1) {
+		t.Fatalf("prune ack missing: %s", out.String())
+	}
+	b, _ := os.ReadFile(filepath.Join(store, "ROT.json"))
+	var sc map[string]interface{}
+	json.Unmarshal(b, &sc)
+	water, _ := sc["water"].(map[string]interface{})
+	if len(water) != 1 {
+		t.Fatalf("pruned water should hold only a.jsonl: %v", water)
+	}
+	for k := range water {
+		if !strings.Contains(k, "a.jsonl") {
+			t.Fatalf("pruned water holds wrong container: %v", water)
+		}
+	}
+
+	// After the prune, rotation disclosure clears (nothing held that is missing).
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	if pv = env(); pv["rotated"] != nil {
+		t.Fatalf("rotated should clear after prune: %s", out.String())
+	}
+}
+
 // TestMultiCursorAdvanceToSafety guards ISSUE-13: (1) peek's `to` token must survive
 // being fed back to `advance --to` through .multi's quote-aware tokenizer (it is an
 // opaque base64 token, no quotes to strip); (2) an explicit --to that would silently

@@ -78,6 +78,11 @@ type CensusResult struct {
 	TypeTotals map[string]int64
 	Records    int64
 	NewWater   map[string]int64
+	// Rotated / Truncated disclose committed containers whose source violated
+	// append-only this scan (RecordScanFilter.SourceAnomalies) -- a census fold over
+	// a rotating corpus must know when evidence left, not just when it arrived.
+	Rotated   []string
+	Truncated []string
 }
 
 type censusCell struct {
@@ -197,7 +202,9 @@ func (s *Session) Census(keyspace string, opts CensusOptions) (*CensusResult, er
 		}
 		return rows[i].ValType < rows[j].ValType
 	})
-	return &CensusResult{Rows: rows, TypeTotals: typeTotals, Records: total, NewWater: filter.NewWater()}, nil
+	rotated, truncated := filter.SourceAnomalies()
+	return &CensusResult{Rows: rows, TypeTotals: typeTotals, Records: total,
+		NewWater: filter.NewWater(), Rotated: rotated, Truncated: truncated}, nil
 }
 
 // censusTypeName is jsonTypeName spelled to match SQL++ TYPE_NAME (so a census
