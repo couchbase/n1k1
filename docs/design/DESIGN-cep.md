@@ -593,6 +593,18 @@ recipes), `.multi lint`. *New:* treat a recipe dir as desired-state; `plan` (dif
 > cbq-fork `expression.Copy` race in the fused UNION-ALL execution (fails `-race`; tracked with the
 > other fork-pool races — not cursor logic). Single-keyspace packs (the common monitor shape) are clean.
 
+> **Amended — `plan`/`apply` retired; metadata moved to `create`.** The declarative `plan`/`apply`
+> reconcile above was withdrawn in the `.multi` naming overhaul (it returns with a `serve`/monitor
+> runtime); `.multi cursor create` (one `*.sql++` = one cursor) is the create path. Annotations/labels
+> passthrough — which had shipped only on the retired `apply` path — is now wired onto `create`
+> (`--annotation k=v`, `--annotations-file <f>`, `--labels`, `--source-ref`, plus the same front-matter
+> keys), so the *"put the SHA in the cursor"* provenance workflow no longer needs an external ledger.
+> `--source-ref` **auto-captures** the queries dir's git HEAD (+`-dirty`) when unset (the ISSUE-03 #5
+> ask). Metadata stays OUT of `SpecHash`/`PackID` (the delta identity), so a retag never re-baselines —
+> asserted by `TestMultiCursorAnnotations` (two cursors, same pack, different metadata → equal
+> `spec_hash`). ⚠ `SpecHash`/`PackID` are still not stable across n1k1 *binary* versions (they hash the
+> post-rewrite statement text); pinning them to raw source is a separate open item.
+
 **Phase 4 — Composition (pack DAG).** *Build on:* temp-tables / CTEs / sequence op (exist), and the
 Phase-1 labelResults journal as the materialized intermediate. *New:* a `pack:<name>` labelResults keyspace a
 downstream pack can `FROM`; topological ordering (reject cycles); per-pack cursors so incremental

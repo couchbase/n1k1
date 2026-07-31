@@ -104,6 +104,25 @@ func provenanceFromGit(dir string) (Provenance, bool) {
 	return p, true
 }
 
+// GitCommitOf returns a provenance ref for the git repo containing dir -- the HEAD commit
+// hex, suffixed "-dirty" when the working tree has uncommitted changes -- for stamping a
+// cursor's SourceRef ("which commit produced this position", ISSUE-03 #5, collapsing an
+// external SHA ledger into the cursor). ok is false when dir is not a git repo or git is
+// unavailable; never errors, so a read-only or non-git queries source degrades to "".
+func GitCommitOf(dir string) (ref string, ok bool) {
+	sha, err := gitOutput(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", false
+	}
+	if ref = strings.TrimSpace(sha); ref == "" {
+		return "", false
+	}
+	if st, err := gitOutput(dir, "status", "--porcelain"); err == nil && strings.TrimSpace(st) != "" {
+		ref += "-dirty"
+	}
+	return ref, true
+}
+
 func gitOutput(dir string, args ...string) (string, error) {
 	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
 	return string(out), err

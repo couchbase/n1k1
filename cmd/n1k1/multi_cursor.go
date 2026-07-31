@@ -18,7 +18,10 @@ package main
 // Verbs:
 //
 //	create NAME --queries <dir> [--bind <m>] [--from now|start] [--desc ...]
-//	                          bind + validate (compile + probe binding); no rows.
+//	            [--annotation k=v ...] [--annotations-file <f>] [--labels ...] [--source-ref <sha>]
+//	                          bind + validate (compile + probe binding); no rows. Client
+//	                          metadata (annotations/labels/source-ref) is stored verbatim,
+//	                          echoed by show, and OUTSIDE spec_hash (a retag never resets).
 //	peek   NAME               pending delta; does NOT move the committed position.
 //	advance NAME [--to <pos>] [--quiet]
 //	                          commit (get + move); echoes the delta unless --quiet.
@@ -56,6 +59,10 @@ type cursorArgs struct {
 	toFile        string   // --to-file <path>, advance-only (read --to from a file: large positions)
 	from          string   // --from now|start, create-only (default: now)
 	desc          string   // --desc <text>, create-only
+	annotFile     string   // --annotations-file <path>, create-only (JSON blob base; a file, since .multi's tokenizer strips the quotes raw JSON needs -- same reason as --to-file)
+	annotationKV  []string // --annotation k=v (repeatable), create-only (quote-free overlays onto the blob)
+	labels        string   // --labels k=v,... | {json}, create-only (indexable tags)
+	sourceRef     string   // --source-ref <sha>, create-only (else auto-captured from git)
 	store         string   // --cursor-store <dir> (override the default state dir)
 	mode          string   // --mode append|diff, create-only (default: append)
 	idField       string   // --id-field <name>, create-only diff (default: id)
@@ -153,6 +160,34 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 				}
 			}
 			a.desc = val
+		case "annotations-file":
+			if !hasEq {
+				if err := need(&i, &val, "--annotations-file"); err != nil {
+					return a, err
+				}
+			}
+			a.annotFile = val
+		case "annotation":
+			if !hasEq {
+				if err := need(&i, &val, "--annotation"); err != nil {
+					return a, err
+				}
+			}
+			a.annotationKV = append(a.annotationKV, val)
+		case "labels":
+			if !hasEq {
+				if err := need(&i, &val, "--labels"); err != nil {
+					return a, err
+				}
+			}
+			a.labels = val
+		case "source-ref", "source_ref":
+			if !hasEq {
+				if err := need(&i, &val, "--source-ref"); err != nil {
+					return a, err
+				}
+			}
+			a.sourceRef = val
 		case "cursor-store":
 			if !hasEq {
 				if err := need(&i, &val, "--cursor-store"); err != nil {
@@ -566,7 +601,10 @@ func (c *cli) cursorCreate(arg string) {
 	// ignored: front-matter keys create saw but did not translate into cursor state
 	// (create honors from/mode above; description/source/tags/label are consumed
 	// elsewhere). Also flags a CLI --id-field that append mode discards (ISSUE-14 §3).
-	honoredFM := map[string]bool{"from": true, "mode": true}
+	honoredFM := map[string]bool{
+		"from": true, "mode": true,
+		"annotations": true, "labels": true, "source-ref": true, "source_ref": true,
+	}
 	if mode == "diff" {
 		honoredFM["id-field"], honoredFM["id_field"] = true, true
 	}
@@ -592,6 +630,18 @@ func (c *cli) cursorCreate(arg string) {
 		Created:     now,
 		Updated:     now,
 	}
+	// Client-owned metadata (DESIGN-cep.md labels/annotations split): CLI flags win over
+	// front-matter. These are OUTSIDE PackID/spec_hash, so stamping provenance never moves
+	// the position -- see CursorState.Annotations. Populated before Save; consumed keys are
+	// pulled out of `ignored` above via honoredFM.
+	ann, aerr := buildAnnotations(a, fm)
+	if aerr != nil {
+		c.cursorFail(a.name, "bad-args", aerr)
+		return
+	}
+	st.Annotations = ann
+	st.Labels = buildLabels(a, fm)
+	st.SourceRef = resolveSourceRef(a, fm)
 	var fromTok string
 
 	if mode == "append" {
@@ -640,22 +690,117 @@ func (c *cli) cursorCreate(arg string) {
 	}
 
 	c.printJSON(struct {
-		Created  string   `json:"created"`
-		OK       bool     `json:"ok"`
-		Pack     string   `json:"queries"`
-		Compiles string   `json:"compiles"`
-		Mode     string   `json:"mode"`
-		From     string   `json:"from"`
-		Ignored  []string `json:"ignored,omitempty"`
+		Created   string   `json:"created"`
+		OK        bool     `json:"ok"`
+		Pack      string   `json:"queries"`
+		Compiles  string   `json:"compiles"`
+		Mode      string   `json:"mode"`
+		From      string   `json:"from"`
+		SourceRef string   `json:"source_ref,omitempty"`
+		Ignored   []string `json:"ignored,omitempty"`
 	}{
-		Created:  a.name,
-		OK:       true,
-		Ignored:  ignored,
-		Pack:     st.Queries,
-		Compiles: "ok",
-		Mode:     mode,
-		From:     fromTok,
+		Created:   a.name,
+		OK:        true,
+		Ignored:   ignored,
+		Pack:      st.Queries,
+		Compiles:  "ok",
+		Mode:      mode,
+		From:      fromTok,
+		SourceRef: st.SourceRef,
 	})
+}
+
+// buildAnnotations assembles the cursor's verbatim annotations blob: a base JSON object
+// (--annotations-file's contents, else the front-matter `annotations:` value) with any
+// repeated --annotation k=v pairs overlaid as strings. An invalid JSON base is a hard error,
+// not a silent drop (the whole point is that declared provenance is never lost). Returns nil
+// when nothing was supplied, so the sidecar key stays omitted.
+func buildAnnotations(a cursorArgs, fm map[string]string) (map[string]interface{}, error) {
+	out := map[string]interface{}{}
+	raw := fm["annotations"]
+	if a.annotFile != "" {
+		b, err := os.ReadFile(a.annotFile)
+		if err != nil {
+			return nil, fmt.Errorf("--annotations-file: %w", err)
+		}
+		raw = string(b)
+	}
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			return nil, fmt.Errorf("annotations is not a JSON object: %w", err)
+		}
+	}
+	for _, kv := range a.annotationKV {
+		k, v, ok := strings.Cut(kv, "=")
+		if k = strings.TrimSpace(k); !ok || k == "" {
+			return nil, fmt.Errorf("--annotation %q must be key=value", kv)
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// buildLabels resolves the cursor's indexable k=v tags (CLI --labels over front-matter),
+// accepting BOTH `k=v, k2=v2` and a JSON object (ISSUE-03 #3).
+func buildLabels(a cursorArgs, fm map[string]string) map[string]string {
+	raw := a.labels
+	if raw == "" {
+		raw = fm["labels"]
+	}
+	return parseLabelSpec(raw)
+}
+
+func parseLabelSpec(s string) map[string]string {
+	if s = strings.TrimSpace(s); s == "" {
+		return nil
+	}
+	if strings.HasPrefix(s, "{") { // JSON-object form
+		var m map[string]string
+		if json.Unmarshal([]byte(s), &m) == nil && len(m) > 0 {
+			return m
+		}
+		return nil
+	}
+	out := map[string]string{}
+	for _, pair := range strings.Split(s, ",") {
+		k, v, ok := strings.Cut(pair, "=")
+		if k = strings.TrimSpace(k); ok && k != "" {
+			out[k] = strings.TrimSpace(v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// resolveSourceRef determines the cursor's git provenance ref: an explicit --source-ref (or
+// front-matter source-ref/source_ref) wins; otherwise best-effort auto-capture of the
+// queries source's git HEAD (ISSUE-03 #5 -- so the git↔position correlation lives IN the
+// cursor instead of an external ledger). Empty when the source isn't a git repo.
+func resolveSourceRef(a cursorArgs, fm map[string]string) string {
+	if a.sourceRef != "" {
+		return a.sourceRef
+	}
+	if v := fm["source-ref"]; v != "" {
+		return v
+	}
+	if v := fm["source_ref"]; v != "" {
+		return v
+	}
+	if len(a.pack) > 0 {
+		dir := a.pack[0]
+		if fi, err := os.Stat(dir); err == nil && !fi.IsDir() {
+			dir = filepath.Dir(dir)
+		}
+		if ref, ok := glue.GitCommitOf(dir); ok {
+			return ref
+		}
+	}
+	return ""
 }
 
 // cursorPeekAdvance implements both peek (advance=false: non-moving) and advance
@@ -1072,14 +1217,17 @@ func (c *cli) cursorList(arg string) {
 		Advances    int         `json:"total_advances"`
 
 		// --long only:
-		QueriesPath string `json:"queries_path,omitempty"`
-		Bind        string `json:"bind,omitempty"`
-		IdField     string `json:"id_field,omitempty"`
-		Schema      int    `json:"schema,omitempty"`
-		Description string `json:"description,omitempty"`
-		Created     string `json:"created,omitempty"`
-		Updated     string `json:"updated,omitempty"`
-		LastCount   int    `json:"last_count,omitempty"`
+		QueriesPath string                 `json:"queries_path,omitempty"`
+		Bind        string                 `json:"bind,omitempty"`
+		IdField     string                 `json:"id_field,omitempty"`
+		Schema      int                    `json:"schema,omitempty"`
+		Description string                 `json:"description,omitempty"`
+		Annotations map[string]interface{} `json:"annotations,omitempty"`
+		Labels      map[string]string      `json:"labels,omitempty"`
+		SourceRef   string                 `json:"source_ref,omitempty"`
+		Created     string                 `json:"created,omitempty"`
+		Updated     string                 `json:"updated,omitempty"`
+		LastCount   int                    `json:"last_count,omitempty"`
 	}
 	out := make([]listRow, 0, len(names))
 	for _, n := range names {
@@ -1093,6 +1241,7 @@ func (c *cli) cursorList(arg string) {
 		if a.long {
 			row.QueriesPath, row.Bind, row.IdField = st.QueriesPath, st.Bind, st.IdField
 			row.Schema, row.Description = glue.CursorSchemaVersion, st.Description
+			row.Annotations, row.Labels, row.SourceRef = st.Annotations, st.Labels, st.SourceRef
 			row.Created, row.Updated, row.LastCount = st.Created, st.Updated, st.LastCount
 		}
 		out = append(out, row)
@@ -1195,16 +1344,21 @@ func (c *cli) cursorShow(arg string) {
 		CommittedID   string      `json:"committed_id"`
 		Schema        int         `json:"schema"` // sidecar/output schema version (ISSUE-15 §3)
 		Description   string      `json:"description,omitempty"`
-		Created       string      `json:"created,omitempty"`
-		Updated       string      `json:"updated,omitempty"`
-		LastCount     int         `json:"last_count"`
-		TotalAdvances int         `json:"total_advances"`
+		// Client-owned metadata, echoed verbatim (outside spec_hash) -- provenance lives here.
+		Annotations   map[string]interface{} `json:"annotations,omitempty"`
+		Labels        map[string]string      `json:"labels,omitempty"`
+		SourceRef     string                 `json:"source_ref,omitempty"`
+		Created       string                 `json:"created,omitempty"`
+		Updated       string                 `json:"updated,omitempty"`
+		LastCount     int                    `json:"last_count"`
+		TotalAdvances int                    `json:"total_advances"`
 	}{
 		Cursor: st.Name, Pack: st.Queries, QueriesPath: st.QueriesPath, SpecHash: specHash(st.Queries),
 		Keyspace: st.Keyspace, CensusCells: len(st.Census), CensusRecords: st.CensusRecords,
 		Bind: st.Bind,
 		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions),
 		CommittedID: committedID(st), Schema: glue.CursorSchemaVersion, Description: st.Description,
+		Annotations: st.Annotations, Labels: st.Labels, SourceRef: st.SourceRef,
 		Created: st.Created, Updated: st.Updated,
 		LastCount: st.LastCount, TotalAdvances: st.TotalAdvances,
 	})
@@ -1287,6 +1441,7 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
 
   create NAME --queries <dir> [--bind <m>] [--from now|start] [--mode append|diff]
               [--id-field <name>] [--desc <t>]
+              [--annotation k=v ...] [--annotations-file <f>] [--labels k=v,...] [--source-ref <sha>]
   create NAME --queries "builtin:census?keyspace=<ks>[&type-field=f&time-field=f&depth=1|2&exclude=a,b]"
               [--bind <m>] [--from now|start]
                        bind + validate; set the start position. No rows.
@@ -1296,8 +1451,18 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        keyspace; peek/advance fold new records + emit drift (field_added
                        / type_changed). The census + watermark commit atomically.
                        A single-file cursor HONORS the query's front-matter (from / mode
-                       / description); precedence is CLI flag > front-matter > default. A
-                       front-matter key create does not consume is listed in "ignored".
+                       / description / annotations / labels / source-ref); precedence is
+                       CLI flag > front-matter > default. A front-matter key create does
+                       not consume is listed in "ignored".
+                       Client metadata (echoed by show/list --long, NEVER folded into
+                       spec_hash, so a retag never re-baselines the position): --annotation
+                       k=v is a quote-free overlay (repeatable); --annotations-file is a
+                       JSON blob (a file, since .multi's tokenizer strips the quotes raw
+                       JSON needs — as with --to-file); --labels are indexable tags. The
+                       home for provenance — e.g. --annotation git_sha=$(git rev-parse HEAD),
+                       or --source-ref, which AUTO-captures the queries dir's git HEAD
+                       (+"-dirty") when unset, so "which commit produced this position"
+                       lives in the cursor instead of an external ledger.
   peek   NAME          the pending delta; does NOT move the cursor (re-peek is safe).
   advance NAME [--to <pos> | --to-file <path>] [--quiet] [--force]
                        commit (get + move). Echoes the delta unless --quiet.
@@ -1321,9 +1486,10 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        N+1 sweep of the private sidecar files. Vocabulary: "queries" is
                        the content id everywhere, "queries_path" the source dir/file.
   show   NAME [--positions]
-                       one cursor's committed position + metadata (description);
-                       committed is summarized for many-container append cursors unless
-                       --positions asks for the full per-container map.
+                       one cursor's committed position + metadata (description, and any
+                       annotations / labels / source_ref set at create); committed is
+                       summarized for many-container append cursors unless --positions
+                       asks for the full per-container map.
   check                re-hash every cursor's query and report which DRIFTED since
                        create ({cursor, baseline, current, drifted}); exits nonzero if
                        any drifted, so a CI/monitor can gate on it.

@@ -134,6 +134,19 @@ type CursorState struct {
 	// Description is a free-form note set at create time (--desc).
 	Description string `json:"description,omitempty"`
 
+	// Annotations is an arbitrary client-owned JSON blob, stored + returned VERBATIM and
+	// never interpreted (DESIGN-cep.md's labels-vs-annotations split): the home for
+	// provenance (a git SHA, the authoring prompt/model), runbook links, and suppression
+	// hints. Labels are indexable k=v tags. SourceRef is the git commit (with a "-dirty"
+	// suffix on an uncommitted tree) of the queries source captured at create -- "which
+	// commit produced this cursor's positions". All three are DELIBERATELY OUTSIDE the delta
+	// identity (PackID / spec_hash covers only pack content + policy), so a retag/reword or a
+	// provenance stamp never re-baselines the committed position (the "metadata edits must
+	// not reset the cursor" rule).
+	Annotations map[string]interface{} `json:"annotations,omitempty"`
+	Labels      map[string]string      `json:"labels,omitempty"`
+	SourceRef   string                 `json:"source_ref,omitempty"`
+
 	// Bookkeeping surfaced by `show`.
 	Created       string `json:"created,omitempty"`
 	Updated       string `json:"updated,omitempty"`

@@ -288,6 +288,103 @@ func TestMultiCursorCreateFrontMatter(t *testing.T) {
 	}
 }
 
+// TestMultiCursorAnnotations covers the cursor client-metadata passthrough (ISSUE-03:
+// annotations/labels shipped on the removed `apply`/`plan` path and had to be re-wired onto
+// `create`). It asserts: front-matter + CLI flags both populate; --annotation k=v overlays
+// the --annotations blob; show/list --long echo all three verbatim including a nested object;
+// --source-ref stamps provenance; the consumed front-matter keys leave the `ignored` list;
+// and — the load-bearing invariant — metadata is OUTSIDE spec_hash, so two cursors over the
+// SAME pack with DIFFERENT annotations share a spec_hash (a retag never re-baselines).
+func TestMultiCursorAnnotations(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "default", "events"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default", "events", "e.jsonl"),
+		[]byte(`{"n":1}`+"\n"+`{"n":2}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A query that declares provenance annotations + labels in front-matter.
+	qfile := filepath.Join(t.TempDir(), "q.sql++")
+	if err := os.WriteFile(qfile, []byte(
+		"-- label: CC-A\n"+
+			`-- annotations: {"provenance": {"git_sha": "abc123", "prompt": "ROI watch"}}`+"\n"+
+			"-- labels: team=devinfra, severity=normal\n"+
+			"SELECT e.n FROM events e"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	env := func() map[string]interface{} {
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+
+	// (A) create — front-matter annotations + labels persist; nothing lands in `ignored`.
+	out.Reset()
+	c.cmdMulti("cursor create CC-A --queries " + qfile + " --source-ref feedface --cursor-store " + store)
+	if env()["ok"] != true {
+		t.Fatalf("create CC-A: %s (stderr %s)", out.String(), errb.String())
+	}
+	if ig, _ := env()["ignored"].([]interface{}); len(ig) != 0 {
+		t.Errorf("front-matter annotations/labels reported as ignored: %v", ig)
+	}
+	if env()["source_ref"] != "feedface" {
+		t.Errorf("--source-ref not echoed on create: %v", env()["source_ref"])
+	}
+
+	// (B) show echoes annotations (incl. the nested object), labels, and source_ref.
+	out.Reset()
+	c.cmdMulti("cursor show CC-A --cursor-store " + store)
+	sh := env()
+	ann, _ := sh["annotations"].(map[string]interface{})
+	prov, _ := ann["provenance"].(map[string]interface{})
+	if prov["git_sha"] != "abc123" || prov["prompt"] != "ROI watch" {
+		t.Errorf("show did not round-trip nested annotations: %v", sh["annotations"])
+	}
+	lbl, _ := sh["labels"].(map[string]interface{})
+	if lbl["team"] != "devinfra" || lbl["severity"] != "normal" {
+		t.Errorf("show did not round-trip labels: %v", sh["labels"])
+	}
+	if sh["source_ref"] != "feedface" {
+		t.Errorf("show source_ref: got %v", sh["source_ref"])
+	}
+	specA, _ := sh["spec_hash"].(string)
+
+	// (C) --annotations-file (a JSON blob, since the tokenizer mangles raw-JSON argv) as the
+	// base, REPLACING the front-matter blob, plus a quote-free --annotation k=v overlay and
+	// CLI labels. Same pack as CC-A, so spec_hash must MATCH despite different metadata.
+	annFile := filepath.Join(t.TempDir(), "prov.json")
+	if err := os.WriteFile(annFile, []byte(`{"env":"prod"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	c.cmdMulti(`cursor create CC-B --queries ` + qfile +
+		` --annotations-file ` + annFile + ` --annotation git_sha=zzz999 --labels team=platform --cursor-store ` + store)
+	if env()["ok"] != true {
+		t.Fatalf("create CC-B: %s (stderr %s)", out.String(), errb.String())
+	}
+	out.Reset()
+	c.cmdMulti("cursor show CC-B --cursor-store " + store)
+	shB := env()
+	annB, _ := shB["annotations"].(map[string]interface{})
+	if annB["env"] != "prod" || annB["git_sha"] != "zzz999" {
+		t.Errorf("--annotations-file base + --annotation overlay: got %v", shB["annotations"])
+	}
+	if _, leaked := annB["provenance"]; leaked {
+		t.Errorf("--annotations-file should replace the front-matter blob, not merge: %v", annB)
+	}
+	if lblB, _ := shB["labels"].(map[string]interface{}); lblB["team"] != "platform" {
+		t.Errorf("CLI --labels: got %v", shB["labels"])
+	}
+	if specB, _ := shB["spec_hash"].(string); specB != specA || specA == "" {
+		t.Errorf("spec_hash must be independent of annotations: CC-A=%q CC-B=%q", specA, specB)
+	}
+}
+
 // TestMultiCursorAdvanceToSafety guards ISSUE-13: (1) peek's `to` token must survive
 // being fed back to `advance --to` through .multi's quote-aware tokenizer (it is an
 // opaque base64 token, no quotes to strip); (2) an explicit --to that would silently
