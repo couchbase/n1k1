@@ -31,6 +31,25 @@
              leaf:          x = 0,     y = +1450 or +1650 (data-scale 0.4)
          Because children overlap their panel, the panel's tint and giant
          watermark numeral stay in view around every child — grounding.
+       - a THIRD level holds real source code (7.1.1, 7.2.1, 7.3.1):
+         .step.src, data-rel-to its PARENT SLIDE (not the panel),
+             src: x = +360, y = +140, data-scale 0.2
+         data-scale 0.2 repeats the panel:slide ratio one level down, so a
+         source card is 1:5 against its parent exactly as a slide is 1:5
+         against its panel. It sits INSIDE the parent's lower-right quadrant,
+         covering only ~4-6% of the parent's area at the panel view, but far
+         enough inside that the parent FILLS THE WHOLE VIEWPORT behind it when
+         the source slide is active. That is the point: with less overlap the
+         parent slid off screen and 7.1 -> 7.1.1 read as a teleport. The
+         budget, measured at 1080p: the active view spans only +/-145 x and
+         +/-82 y world px, and parent half-extents are 550 x by 236/246/292 y,
+         so keep |x| <= ~405 and |y| <= ~154 or the parent stops covering.
+         The parent also carries .src-parent for a lighter surface tone, so
+         the surround reads as a surface -- the same grounding trick as the
+         giant "7" behind 7.1.
+         Remember data-scale never changes a slide's OWN on-screen size (the
+         camera cancels it — these render full size, code at ~20px); it only
+         sets how magnified the surroundings look.
        - THE WORLD IS FLAT: the title and all 8 panels sit at z=0, which is
          what makes the zoomed-out #map read as a poster board.
          data-rel-z lifts children only SLIGHTLY off that plane (150; leaves
@@ -674,7 +693,7 @@ parent = n1k1, which has cbq + datasource access, and
     <h1>Multiple extension layers</h1>
   </div>
 
-  <div id="ext-udf" class="step" data-rel-to="hub-extend"
+  <div id="ext-udf" class="step src-parent" data-rel-to="hub-extend"
        data-rel-x="-800" data-rel-y="-250" data-rel-z="150">
     <p class="kicker">extensibility · values</p>
     <h2>JS UDFs: functions &amp; aggregates</h2>
@@ -692,7 +711,50 @@ parent = n1k1, which has cbq + datasource access, and
     </ul>
   </div>
 
-  <div id="ext-extract" class="step" data-rel-to="hub-extend"
+  <!-- 7.1.1 — a GRANDCHILD: small in world space, parked over its parent's lower
+       half so 7.1 still frames it. Real files from extensions/functions/js/. -->
+  <div id="ext-udf-src" class="step src" data-rel-to="ext-udf"
+       data-rel-x="360" data-rel-y="140" data-rel-z="0" data-scale="0.2">
+    <p class="kicker">7.1 · JS UDFs &amp; aggregates — the actual source</p>
+    <h2>A scalar UDF, and an aggregate</h2>
+    <div class="cols">
+      <div>
+<pre><code><span class="c">// extensions/functions/js/slugify.js</span>
+function slugify(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+<span class="c">// inline goldens — run by `.extensions test`</span>
+slugify.examples = [
+  { in: ["Hello, World!"], out: "hello-world" },
+];</code></pre>
+      </div>
+      <div>
+<pre><code><span class="c">// …/geomean.agg.js — 3-callback protocol</span>
+function geomean_init()      { return {logsum:0,n:0}; }
+function geomean_update(s,v) {
+  if (typeof v === "number" &amp;&amp; v &gt; 0) {
+    s.logsum += Math.log(v); s.n++;
+  }
+  return s;
+}
+function geomean_final(s) {
+  return s.n ? Math.exp(s.logsum/s.n) : null;
+}
+<span class="c">// additive state ⇒ a commutative monoid, so it
+// folds across windows/shards</span>
+function geomean_merge(a,b) {
+  return {logsum:a.logsum+b.logsum, n:a.n+b.n};
+}</code></pre>
+      </div>
+    </div>
+<pre><code>$ n1k1 -ext ./extensions/functions/js -c 'SELECT slugify(p.cat) AS slug,
+      geomean(p.score) AS g FROM products p GROUP BY p.cat'</code></pre>
+  </div>
+
+  <div id="ext-extract" class="step src-parent" data-rel-to="hub-extend"
        data-rel-x="800" data-rel-y="-250" data-rel-z="150">
     <p class="kicker">extensibility · files</p>
     <h2>Extract recipes: JS for custom data formats</h2>
@@ -707,13 +769,41 @@ parent = n1k1, which has cbq + datasource access, and
           <code>extractStream</code> — JS on its own goroutine,<br>each
           <code>emit</code> handed over an unbuffered channel,<br>so a 400 MB
           log will stream with bounded memory usage &amp; backpressure.</li>
-      <li><code>describe</code> can also specify time/order metadata:
+      <li><code>describe</code> can also specify time/order metadata:<br>
           e.g., near-sorted-source for ASOF k-way merging —<br>and, each JS extension can
-          ship a golden test fixture for self-documentation and testing.</li>
+          ship a golden test fixture<br>for self-documentation and testing.</li>
     </ul>
   </div>
 
-  <div id="ext-macro" class="step" data-rel-to="hub-extend"
+  <!-- 7.2.1 — grandchild: extensions/extract_plugins/apache_access.extract.js -->
+  <div id="ext-extract-src" class="step src" data-rel-to="ext-extract"
+       data-rel-x="360" data-rel-y="140" data-rel-z="0" data-scale="0.2">
+    <p class="kicker">7.2 · extract recipes — the actual source</p>
+    <h2><code>apache_access.extract.js</code></h2>
+<pre><code><span class="c">// module scope: which files this recipe CLAIMS (exts / name-regexps; highest priority wins)</span>
+var match = { exts: [".log"], names: ["access[._-].*\\.log$"], priority: 20 };
+
+<span class="c">// describe() runs ONCE per matched file and returns a DECLARATIVE spec.
+// The per-row work then runs natively on records.SpecApply — zero per-row JS.</span>
+function describe(file) {          <span class="c">// file = { path, name, ext, head }</span>
+  return {
+    format:  "apache_access_js",
+    framing: { kind: "line" },
+    fields:  { pattern: '^(?P&lt;ip&gt;\\S+) \\S+ \\S+ \\[(?P&lt;ts&gt;[^\\]]+)\\] ' +
+                        '"(?P&lt;method&gt;\\S+) (?P&lt;path&gt;\\S+)[^"]*" (?P&lt;status&gt;\\d+)' },
+    time:    { field: "ts", layout: "02/Jan/2006:15:04:05 -0700" },
+    order:   { by: "ts", sorted: "near" }   <span class="c">// the sorted-source contract the ASOF merge consumes</span>
+  };
+}</code></pre>
+    <ul>
+      <li>Each <code>(?P&lt;name&gt;…)</code> capture becomes a typed field, and
+          <code>ts</code> is normalized to int64 epoch-nanos natively — so the log is
+          just a keyspace:
+          <code>SELECT l.status, COUNT(*) FROM `access.log` l GROUP BY l.status</code></li>
+    </ul>
+  </div>
+
+  <div id="ext-macro" class="step src-parent" data-rel-to="hub-extend"
        data-rel-x="-800" data-rel-y="900" data-rel-z="150">
     <p class="kicker">extensibility · syntax</p>
     <h2>JS Macros, because UDFs can't make SQL++ syntax</h2>
@@ -731,10 +821,38 @@ parent = n1k1, which has cbq + datasource access, and
           raw SQL++ substrings,<br>gensym enables hygiene, innermost-first with a
           depth cap.<br><em>Invisible to downstream steps</em>: planner, CSE, MQO, and
           codegen all see SQL++.</li>
-      <li>Shipped *.macro.js examples: <code>grep_context</code>,
+      <li>Shipped *.macro.js examples:<br><code>grep_context</code>,
           <code>sessionize</code>, <code>top_per_group</code>,
           <code>transitions</code>;<br><code>.macro expand</code> shows the
           expansions to help developers.</li>
+    </ul>
+  </div>
+
+  <!-- 7.3.1 — grandchild: extensions/macros/grep_context.macro.js -->
+  <div id="ext-macro-src" class="step src" data-rel-to="ext-macro"
+       data-rel-x="360" data-rel-y="140" data-rel-z="0" data-scale="0.2">
+    <p class="kicker">7.3 · macros — the actual source</p>
+    <h2><code>grep_context.macro.js</code></h2>
+<pre><code>var macro = { name: "grep_context", params: [
+  { name: "src",    required: true },   { name: "when",  required: true },
+  { name: "before", default: 2 },       { name: "after", default: 2 },
+  { name: "order",  default: "pos" },   { name: "part" } ] };
+
+function expand(args, ctx) {
+  <span class="c">// Hygiene: every introduced name is gensym'd, so nesting two uses can't collide.</span>
+  var s = ctx.gensym("src"), sub = ctx.gensym("gc"), hit = ctx.gensym("hit");
+  <span class="c">// args.when arrived as RAW SQL++ TEXT — `sev = "ERROR"` — and is spliced verbatim.</span>
+  return "SELECT " + sub + ".* FROM (SELECT " + s + ".*, " +
+    "MAX(CASE WHEN (" + args.when + ") THEN 1 ELSE 0 END) OVER (ORDER BY " +
+    args.order + " ROWS BETWEEN " + args.after  + " PRECEDING " +
+                              "AND " + args.before + " FOLLOWING) AS " + hit +
+    " FROM " + args.src + " AS " + s + ") " + sub + " WHERE " + sub + "." + hit + " = 1";
+}</code></pre>
+    <ul>
+      <li>The frame bounds are <strong>swapped</strong> vs <code>before</code>/<code>after</code>
+          — a perspective duality, not a bug: row <em>r</em> is in match <em>m</em>'s
+          print-range iff <em>m</em> is in <em>r</em>'s frame. So keeping N lines
+          <em>before</em> a match means each row looks N lines <em>forward</em>.</li>
     </ul>
   </div>
 
@@ -949,21 +1067,18 @@ parent = n1k1, which has cbq + datasource access, and
     var placeholder = new Option( "— jump to slide —", "" );
     jump.appendChild( placeholder );
 
-    // Outline numbering: a panel's number is its watermark numeral, and its
-    // children continue it as 4.1, 4.2, ... Keyed off data-rel-to rather than
-    // "the last panel seen", so moving a slide in the markup can't misnumber it.
-    var sectionNo = {}, childNo = {};
+    // Outline numbering, at ANY depth: a panel's number is its watermark numeral,
+    // and every other step numbers itself <parent's number>.<n> in document order
+    // (4.1, and 7.1.1 for a grandchild). Keyed off data-rel-to -- the real parent --
+    // rather than "the last step seen", so moving a slide can't misnumber it.
+    var outlineNo = {}, kidCount = {};
     document.querySelectorAll( "#impress .step.hub" ).forEach( function( hub ) {
       var n = hub.querySelector( ".bignum" );
-      if ( n ) { sectionNo[ hub.id ] = n.textContent.trim(); }
+      if ( n ) { outlineNo[ hub.id ] = n.textContent.trim(); }
     } );
 
     document.querySelectorAll( "#impress .step" ).forEach( function( el ) {
       if ( el.classList.contains( "camera" ) ) { return; }   // camera positions
-
-      var depth = el.classList.contains( "leaf" )     ? 2
-                : el.hasAttribute( "data-rel-to" )    ? 1
-                :                                       0;
 
       // Read the heading via a clone with <br> swapped for a space -- a
       // two-line title would otherwise runwordstogether in the picker.
@@ -981,13 +1096,14 @@ parent = n1k1, which has cbq + datasource access, and
       var label = el.dataset.navLabel || headingText || el.id;
 
       var relTo = el.getAttribute( "data-rel-to" );
-      if ( relTo && sectionNo[ relTo ] ) {                  // 4.1, 4.2, ...
-        childNo[ relTo ] = ( childNo[ relTo ] || 0 ) + 1;
-        label = sectionNo[ relTo ] + "." + childNo[ relTo ] + " · " + label;
-      } else if ( sectionNo[ el.id ] ) {                    // 4
-        label = sectionNo[ el.id ] + " · " + label;
+      if ( relTo && outlineNo[ relTo ] ) {
+        kidCount[ relTo ] = ( kidCount[ relTo ] || 0 ) + 1;
+        outlineNo[ el.id ] = outlineNo[ relTo ] + "." + kidCount[ relTo ];
       }
+      if ( outlineNo[ el.id ] ) { label = outlineNo[ el.id ] + " · " + label; }
 
+      var depth = outlineNo[ el.id ]
+                    ? outlineNo[ el.id ].split( "." ).length - 1 : 0;
       var o = new Option( label.replace( /\s+/g, " " ).trim(), el.id );
       o.className = "nav-depth" + depth;
       jump.appendChild( o );

@@ -217,6 +217,32 @@ pre {
 pre code { color: #d5dae2; }
 pre .c   { color: #626f80; }              /* comment  */
 
+/* Grandchild source slides (7.1.1, 7.2.1, …): dense real code from
+   extensions/, so tighten the block a touch. They still render at the same
+   on-screen size as every other slide — data-scale cancels against the
+   camera — so this is about fitting more lines, not about being smaller. */
+.step.src pre { font-size: 15px; line-height: 1.45; margin: 10px 0; }
+.step.src h2  { margin-bottom: 12px; }
+.step.src .cols { gap: 22px; }
+
+/* Three surfaces, three tones, so depth is legible when they nest:
+     panel (.hub)        — the section's hue tint
+     parent (.src-parent) — a LIGHTER slate, marking any slide that owns a
+                            source child; it is what surrounds the code card
+                            when you zoom in, so it has to read as a surface
+                            rather than as darkness
+     source (.src)        — a DARKER card, so it sits clearly in front
+   Add src-parent to a slide whenever you give it a .src child. */
+.step.src-parent {
+  background: #1f2937;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5),
+              inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.step.src {
+  background: #0d1219;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.6);
+}
+
 /* ASCII-art diagrams: a quiet phosphor-green terminal treatment. */
 pre.diagram        { background: #0a100c; border-color: #1f3327; }
 pre.diagram code   { color: #a9d8ab; }

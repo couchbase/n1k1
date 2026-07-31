@@ -49,6 +49,27 @@ The deck is one big top-down **poster**, not a linear stack:
 - **Leaf** slides (fine print, `data-scale="0.4"`) park near the
   panel's bottom edge — smaller in presentation space, exactly because
   they are detail.
+- **Source slides** (`class="step src"`, `data-scale="0.2"`) are a third
+  level: they hang off a *slide* rather than a panel
+  (`data-rel-to="ext-udf"`), numbering as `7.1.1`, and hold real code
+  copied from `extensions/`. `0.2` repeats the panel:slide ratio one
+  level down — a source card is 1:5 against its parent just as a slide
+  is 1:5 against its panel. `data-rel-x="360" data-rel-y="140"` puts it
+  **inside the parent's lower-right quadrant** — covering only 4–6% of the
+  parent at the panel view, yet deep enough in that the parent **fills the
+  whole viewport** behind the code when the source slide is active. That
+  overlap is the point: with less of it the parent slid off screen and
+  7.1 → 7.1.1 read as a teleport. The budget, measured at 1080p: the
+  active view spans only ±145 × ±82 world px while parent half-extents are
+  550 × 236–292, so keep `|x| ≤ ~405` and `|y| ≤ ~154`.
+- The parent also gets **`class="step src-parent"`**, a lighter surface
+  tone, so what surrounds the code reads as a *surface* rather than as
+  darkness. Three tones now encode depth: panel (section hue) → parent
+  (lighter slate) → source card (darker). Add `src-parent` to any slide
+  you give a `.src` child.
+  Note `data-scale` never changes a slide's own on-screen size (the
+  camera cancels it out — these render full size, code at ~20px); it
+  only sets how magnified the *surroundings* are.
 - **Camera steps** (`class="step camera"`, zero content): `#map` /
   `#overview` show the whole poster; the `#up-<section>` waypoints pull
   the camera back over a section's panel after its last slide, so
