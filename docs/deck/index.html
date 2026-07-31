@@ -625,22 +625,21 @@ parent = n1k1, which has cbq + datasource access, and
   <div id="multi-cep" class="step" data-rel-to="hub-multi"
        data-rel-x="1400" data-rel-y="350" data-rel-z="150">
     <p class="kicker">multi-query · change feeds</p>
-    <h2>Named cursors: CEP (complex event processing)</h2>
-<pre><code>.multi cursor peek    incidents   <span class="c">-- the delta; cursor NOT moved</span>
-.multi cursor advance incidents   <span class="c">-- move + return the delta passed</span></code></pre>
+    <h2>CEP (complex event processing) with cursors</h2>
+<pre><code>.multi cursor peek    AWS-incidents   <span class="c">-- the delta; cursor NOT moved</span>
+.multi cursor advance AWS-incidents   <span class="c">-- move + return the delta passed</span></code></pre>
     <ul>
-      <li>Crash-safety in one line: <strong>getting the delta must not move
-          the cursor</strong> (avoiding auto-commit foot-gun's like from Kafka).
-          Re-peek after a crash returns a superset; per-result fingerprints
-          give at-least-once + idempotent consumer = exactly-once
-          <em>effect</em>.</li>
+      <li>Runs a shared-scan 'multi' set of *.sql queries but in incremental fashion,<br>tracking highwater marks for each named cursor.</li>
+      <li>Peeking at the latest delta <strong>does not move
+          the cursor</strong> -<br>avoid auto-commit foot-guns like from Kafka.<br>
+          Re-peek after a crash can return a superset if the underlying data changed;<br>per-result fingerprints
+          give at-least-once + idempotent consumer = exactly-once effect.</li>
       <li><code>diff</code> mode keeps a snapshot keyed by doc id and emits
           Debezium-style envelopes:
-          <code>{op, id, before, after}</code> — like a
+          <code>{op, id, before, after}</code> —<br>like a
           <em>terraform-plan for arbitrary keyspaces</em>.</li>
-      <li>DAG composition: each pack of queries's results materialize as a temp
-          keyspace for the next node's FROM — providing
-          inter-pack dataflow.</li>
+      <li>DAG composition: 'compose' multiple queries into a DAG,<br>which materializes intermediary results as temp
+          keyspaces for dependent queries —<br>providing dataflow between shared-scan queries.</li>
     </ul>
   </div>
 
@@ -788,40 +787,41 @@ parent = n1k1, which has cbq + datasource access, and
           <span class="num">~2,352</span> statements) mined into
           file-datastore fixtures: n1k1 must match cbq
           <strong>byte-for-byte</strong>, in interpreter <em>and</em>
-          compiled modes, gated by regression floors
+          compiled modes,<br>gated by regression floors
           (<span class="num">1045</span> defaults /
           <span class="num">833</span> gsi).</li>
-      <li>Compiler validation is two mandatory phases — generate, then
-          <em>actually build and run the generated Go</em>.</li>
-      <li>Non-passes are explicit and rationale-tagged — including cases
+      <li>Compiler validation is two mandatory phases — generate, and
+          <em>build and run the generated Go</em>.</li>
+      <li>Non-passes are explicit and rationale-tagged —<br>including cases
           where n1k1 <em>declines</em> to match cbq's quirks
           (single-element VAR_SAMP=0, numeric RANGE frames over non-numeric
-          keys) rather than green-washing the number.</li>
+          keys).</li>
     </ul>
   </div>
 
   <div id="rigor-bench" class="step" data-rel-to="hub-rigor"
        data-rel-x="0" data-rel-y="350" data-rel-z="150">
-    <p class="kicker">rigor · measurement gotchas, hard-won</p>
-    <h2>How to be confidently wrong<br>about your own engine</h2>
+    <p class="kicker">rigor and gotchas</p>
+    <h2>How to be wrong<br>about your SQL++ engine</h2>
     <ul>
       <li><strong>Time the full request</strong> — an ExecOp-only
           measurement once showed a bogus <span class="num">~40×</span>
           "win" :-(</li>
-      <li><strong>Validate row counts, not just speedups</strong> — a
+      <li><strong>Validate row counts, not just speedups</strong> —<br>a
           parallel-scan prototype silently dropped
-          <span class="num">18%</span> of rows (20,000 → 16,384 = 256×64:
-          unflushed final batches) while looking fast. :-(</li>
-      <li>Float SUM is non-deterministic under reordering (rounding error drift
-          trips exact-diff oracles); compiled-child memory usage was uncounted by
-          the parent; and more</li>
+          <span class="num">18%</span> of rows (20,000 → 16,384 = 256×64) -<br>
+          unflushed final batches while looking fast. :-(</li>
+      <li>Float SUM is non-deterministic under reordering -<br>rounding error drift
+          trips exact-diff test cases. :-(</li>
+      <li>Compiled-child memory usage was uncounted by
+          the parent n1k1 process. :-( and more</li>
     </ul>
   </div>
 
   <div id="rigor-layout" class="step" data-rel-to="hub-rigor"
        data-rel-x="1400" data-rel-y="350" data-rel-z="150">
-    <p class="kicker">rigor · the humbling result</p>
-    <h2>I/O - the biggest wins were never in the engine</h2>
+    <p class="kicker">rigor and Amdahl's Law</p>
+    <h2>I/O - the biggest wins aren't in the engine</h2>
     <div class="stats">
       <div class="stat"><span class="v">3194 ms</span>
         <span class="l">20,000 one-doc files, serial scan</span></div>
@@ -832,12 +832,12 @@ parent = n1k1, which has cbq + datasource access, and
     </div>
     <ul>
       <li>Packing into 1 file beats parallelizing by an order of magnitude
-          (<span class="num">~245×</span> vs serial): at 128 actors,
+          (<span class="num">~245×</span> vs serial):<br>at 128 actors,
           <span class="num">97.6%</span> of time is
-          <code>syscall.syscall</code>. The concurrency ceiling is the
+          <code>syscall.syscall</code>.<br>The concurrency ceiling was data
           layout, not the engine.</li>
       <li>Same spirit at the microsecond end: raw <code>SELECT 0</code> is
-          27.9 µs — <span class="num">~94%</span> parse+plan. Prepared:
+          27.9 µs — <span class="num">~94%</span> of that in parse+plan.<br>Prepared:
           1.6 µs, <span class="num">~1.55M q/s</span> across goroutines.</li>
     </ul>
   </div>
@@ -847,17 +847,13 @@ parent = n1k1, which has cbq + datasource access, and
     <p class="kicker">rigor · fine print</p>
     <h2><code>-race</code> detector stories</h2>
     <ul>
-      <li>The UNION-ALL-shares-one-context bug class bit three times, each
-          caught by <code>-race</code>; lesson: per-actor mutable state
-          lives behind the per-actor clone, not the shared context.</li>
-      <li>Inverted use: the stats core is a flat <code>[]int64</code>
-          bumped <em>without</em> atomics, justified by
-          single-writer-per-slot — <code>-race</code> turns a violated
-          assumption into a visible write/write race instead of a silently
-          wrong count.</li>
-      <li>Measurement counters cost no <code>time.Now()</code> on the row
-          path; rendering happens at ~10 Hz on the reader side
-          (the ClickHouse/DuckDB cadence discipline).</li>
+      <li>UNION-ALL bug bit three times, each
+          caught by <code>-race</code>;<br>lesson: per-actor mutable state
+          needs to live in a per-actor data clone,<br>not in shared context.</li>
+      <li>Inverted use: the stats core in n1k1 is a flat <code>[]int64</code><br>
+          bumped <em>without</em> atomics, justified by assuming there's a
+          single-writer-per-slot —<br><code>-race</code> turned a violated
+          assumption into a visible write/write race.</li>
     </ul>
   </div>
 
@@ -873,16 +869,15 @@ parent = n1k1, which has cbq + datasource access, and
     <h2>Five decisions (at least)</h2>
     <ul style="text-align:left">
       <li><code>[]byte</code> is better than parsed objects (boxes) in performance (speed and memory usage).</li>
-      <li>Hybrid row and columnar -- turned out to be not a problem when everything's a []byte.</li>
-      <li>A frozen SQL++ grammar from cbq forced n1k1 to optimize via plan-shape recognition and
-          new runtime ops — which allowed features to be composable.</li>
-      <li>The evaluation / verification must-have: the trusted oracle to stand upon - for n1k1, that's cbq.</li>
-      <li>The best optimizations were layout and metadata — the cheapest
+      <li>Hybrid row and columnar -<br>relatively easy when everything travels as []byte.</li>
+      <li>A frozen SQL++ grammar from cbq forced n1k1<br>to optimize via plan-shape pattern recognition and
+          new runtime ops —<br>which allowed n1k1 features to be composable.</li>
+      <li>Must-Have for evaluation / verification:<br>trusted oracles to stand upon - for n1k1, that's cbq.</li>
+      <li>The best optimizations were layout and metadata —<br>and, the cheapest
           read is the one you skip.</li>
     </ul>
-    <p class="dim">github.com/couchbase/n1k1 ·
-       playground: couchbase.github.io/n1k1/play ·
-       docs/design/DESIGN*.md</p>
+    <p class="dim">n1k1's source: <a href="https://github.com/couchbase/n1k1">github.com/couchbase/n1k1</a><br>
+       n1k1 playground: <a href="https://couchbase.github.io/n1k1/play">couchbase.github.io/n1k1/play</a><br></p>
   </div>
 
   <div id="overview" class="step camera" data-x="0" data-y="1100" data-z="0" data-scale="25">
