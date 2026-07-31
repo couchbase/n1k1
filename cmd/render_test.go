@@ -288,6 +288,28 @@ func TestRenderJSON(t *testing.T) {
 	}
 }
 
+func TestRenderYAML(t *testing.T) {
+	// A multi-line string must render as a YAML literal block (real newlines, no
+	// `\n` escaping) — the whole point of the mode vs JSON.
+	var b strings.Builder
+	RenderYAML(&b, raws(`{"sql":"SELECT 1\nFROM t","n":2}`), false)
+	got := b.String()
+	if !strings.Contains(got, "SELECT 1\n") || !strings.Contains(got, "FROM t") {
+		t.Errorf("yaml did not render real newlines: %q", got)
+	}
+	if strings.Contains(got, `\n`) {
+		t.Errorf("yaml still has escaped \\n (not a literal block): %q", got)
+	}
+	if !strings.Contains(got, "sql: |") { // literal-block indicator
+		t.Errorf("yaml multi-line string is not a literal block: %q", got)
+	}
+	var e strings.Builder
+	RenderYAML(&e, nil, false)
+	if strings.TrimSpace(e.String()) != "[]" {
+		t.Errorf("yaml empty = %q", e.String())
+	}
+}
+
 func TestRenderCSV(t *testing.T) {
 	var b strings.Builder
 	RenderCSV(&b, raws(`{"a":1,"b":"x"}`, `{"a":2,"b":"y,z"}`), false)

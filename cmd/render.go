@@ -25,12 +25,14 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
 )
 
 // OutputModes are the supported renderers. "box" is the default at a TTY;
 // "jsonlines" for pipes / one-shot. jsonlines also answers to jsonl / ndjson (see
 // modeAliases), matching the .formats input-format spelling.
-var OutputModes = []string{"box", "jsonlines", "json", "csv", "markdown", "line", "list"}
+var OutputModes = []string{"box", "jsonlines", "json", "yaml", "csv", "markdown", "line", "list"}
 
 // modeAliases maps alternate output-mode spellings to their canonical OutputModes
 // entry, so a user can ask for jsonlines by the shorter jsonl / ndjson (the same
@@ -321,6 +323,33 @@ func RenderJSON(w io.Writer, rows []json.RawMessage, pretty bool) {
 	}
 	b.WriteString("]")
 	fmt.Fprintln(w, b.String())
+}
+
+// RenderYAML renders the rows as a YAML sequence. Its value over JSON is multi-line
+// strings: a value containing newlines (e.g. an embedded SQL++ statement) is emitted as
+// a YAML literal-block scalar ("field: |" + the raw lines), so it reads with REAL
+// newlines and no `\n` escaping — the readable, copy-pasteable form. (pretty is ignored;
+// YAML is already indented.)
+func RenderYAML(w io.Writer, rows []json.RawMessage, pretty bool) {
+	docs := make([]interface{}, 0, len(rows))
+	for _, r := range rows {
+		var v interface{}
+		if json.Unmarshal(r, &v) == nil {
+			docs = append(docs, v)
+		}
+	}
+	if len(docs) == 0 {
+		fmt.Fprintln(w, "[]")
+		return
+	}
+	enc := yaml.NewEncoder(w)
+	enc.SetIndent(2)
+	if err := enc.Encode(docs); err != nil {
+		// Fall back to JSON rather than emitting nothing on an odd value.
+		RenderJSON(w, rows, pretty)
+		return
+	}
+	_ = enc.Close()
 }
 
 func compactJSON(r json.RawMessage) string {

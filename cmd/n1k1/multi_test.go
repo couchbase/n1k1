@@ -86,13 +86,22 @@ func TestMultiShow(t *testing.T) {
 	})
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	// -mode jsonlines emits one JSON object per line (NDJSON); parse line-by-line.
 	arr := func(cmd string) []map[string]interface{} {
 		out.Reset()
 		errb.Reset()
 		c.failed = false
 		c.cmdMulti(cmd)
 		var rows []map[string]interface{}
-		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &rows)
+		for _, ln := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+			if ln = strings.TrimSpace(ln); ln == "" {
+				continue
+			}
+			var m map[string]interface{}
+			if json.Unmarshal([]byte(ln), &m) == nil {
+				rows = append(rows, m)
+			}
+		}
 		return rows
 	}
 

@@ -46,7 +46,7 @@ WHERE / GROUP BY / ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
 
 COMMANDS
   .multi list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
-  .multi show --queries <dir | builtin:census.sql++>   print each query's SQL++ source (a viewer; also parses every *.sql++ = an existence/validity check); for a builtin, the SQL++ it generates
+  .multi show --queries <dir | builtin:census.sql++>   print each query's SQL++ source (a viewer; also parses every *.sql++ = an existence/validity check); for a builtin, the SQL++ it generates. -mode box (TTY default) prints plain, copy-pasteable SQL; -mode yaml a literal block; -mode json/jsonlines the machine array (+ a dump/re-query tip)
   .multi run  --queries <dir> [--bind <manifest>]  compile & execute the queries over the open dataset
   .multi lint --queries <dir> [--bind <manifest>] [--census]  authoring report card (compiles, does NOT run); --census escalates to census-aware lint: cross-check each query's referenced fields against a census of its data — flags a field the data lacks (birth-in-error) + data fields no query reads
   .multi explain --queries <dir> [--bind <manifest>] [--sql]  show the fused shared-scan plan + fusion map; --sql = pretty SQL++ w/ provenance + hints (does NOT run)

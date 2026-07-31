@@ -59,6 +59,7 @@ import (
 	"strings"
 
 	"github.com/couchbase/n1k1/base"
+	"github.com/couchbase/n1k1/cmd"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -371,25 +372,29 @@ func (c *cli) cmdMultiList(arg string) {
 		c.icon("📋 "), len(entries), strings.Join(args.queries, ", "), fixtures, goldens)
 }
 
+// multiShowRow is one entry `.multi show` prints: a query's source, or a builtin's note.
+type multiShowRow struct {
+	Label       string   `json:"label,omitempty"`
+	Queries     string   `json:"queries,omitempty"`
+	QueriesPath string   `json:"queries_path,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Note        string   `json:"note,omitempty"`
+	SQL         string   `json:"sql,omitempty"`
+}
+
 // cmdMultiShow prints the SOURCE of a queries entity WITHOUT running it: each *.sql++
 // file's label + tags + SQL++ (a viewer, and — since it parses every file — an
 // existence/validity check for a dir of ordinary queries), or, for a builtin like
 // builtin:census.sql++, the SQL++ that builtin generates. The native builtin:census
-// (Go) has no SQL++ source. Emits one JSON array; --queries-tags filters as elsewhere.
+// (Go) has no SQL++ source. --queries-tags filters as elsewhere. Output honors -mode:
+// a JSON/structured mode emits the array; box (the interactive default) prints the SQL
+// VERBATIM as readable SQL++ (real newlines, not a JSON-escaped one-liner).
 func (c *cli) cmdMultiShow(arg string) {
 	args, err := parseMultiArgs(arg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi show: %v\n", c.prog, err)
 		c.failed = true
 		return
-	}
-	type showRow struct {
-		Label       string   `json:"label,omitempty"`
-		Queries     string   `json:"queries,omitempty"`
-		QueriesPath string   `json:"queries_path,omitempty"`
-		Tags        []string `json:"tags,omitempty"`
-		Note        string   `json:"note,omitempty"`
-		SQL         string   `json:"sql,omitempty"`
 	}
 
 	// A single builtin ref: show the SQL++ it generates (or a note for a native builtin).
@@ -402,12 +407,12 @@ func (c *cli) cmdMultiShow(arg string) {
 					ks = "<keyspace>" // show the template even without a bound keyspace
 				}
 				id := "builtin:census.sql++@" + r.version
-				c.printJSON([]showRow{
+				c.emitShow([]multiShowRow{
 					{Queries: id, Note: "the mergeable census core (per type/path/val_type)", SQL: censusSQL(ks, tf, tif, depth, excl)},
 					{Queries: id, Note: "the per-type totals (coverage denominator)", SQL: censusTotalsSQL(ks, tf)},
 				})
 			case "census":
-				c.printJSON([]showRow{{Queries: "builtin:census@" + r.version,
+				c.emitShow([]multiShowRow{{Queries: "builtin:census@" + r.version,
 					Note: "native Go builtin — no SQL++ source; use builtin:census.sql++ to see/fork the SQL++ form"}})
 			default:
 				fmt.Fprintf(c.stderr, "%s: .multi show: builtin %q has no source to show\n", c.prog, r.name)
@@ -430,12 +435,62 @@ func (c *cli) cmdMultiShow(arg string) {
 		c.failed = true
 		return
 	}
-	out := make([]showRow, 0, len(entries))
+	out := make([]multiShowRow, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, showRow{Label: e.Label, QueriesPath: e.Path, Tags: e.Tags, SQL: e.Stmt})
+		out = append(out, multiShowRow{Label: e.Label, QueriesPath: e.Path, Tags: e.Tags, SQL: e.Stmt})
 	}
-	c.printJSON(out)
+	c.emitShow(out)
 	fmt.Fprintf(c.stderr, "%s%d query/queries shown from %s\n", c.icon("📄 "), len(out), strings.Join(args.queries, ", "))
+}
+
+// emitShow renders `.multi show` rows. A structured/JSON -mode (json, jsonlines, csv,
+// markdown, list, line) goes through the mode renderer (machine-friendly array). box
+// (the interactive default) prints each query's SQL VERBATIM with a `-- header` — real
+// newlines, not a JSON-escaped one-liner, and the whole output is itself valid SQL++
+// you can read, copy, or save. (This is what fixes "the JSON-in-JSON is hard to read".)
+func (c *cli) emitShow(rows []multiShowRow) {
+	if base, _, _ := cmd.ParseMode(c.mode); base != "box" {
+		raws := make([]json.RawMessage, 0, len(rows))
+		for _, r := range rows {
+			b, _ := json.Marshal(r)
+			raws = append(raws, b)
+		}
+		c.renderRows(raws, "", false)
+		// The SQL is a JSON string here (newlines escaped as \n). Point at the readable
+		// forms + the dump-and-re-query recipe, with copy-pasteable command lines.
+		if base == "json" || base == "jsonlines" {
+			fmt.Fprint(c.stderr, "\ntip: for the SQL itself, use a readable mode:\n"+
+				"  n1k1 -mode box  -c '.multi show --queries builtin:census.sql++' <datastore>   # plain SQL\n"+
+				"  n1k1 -mode yaml -c '.multi show --queries builtin:census.sql++' <datastore>   # literal-block YAML\n"+
+				"or dump this JSON to a file and re-open it as data with SQL++:\n"+
+				"  n1k1 -mode jsonlines -c '.multi show --queries builtin:census.sql++' <datastore> > show.jsonl\n"+
+				"  n1k1 -mode yaml -c 'SELECT RAW s.sql FROM `*.jsonl` s' <dir-with-show.jsonl>\n")
+		}
+		return
+	}
+	for i, r := range rows {
+		if i > 0 {
+			fmt.Fprintln(c.out)
+		}
+		hdr := r.Label
+		if hdr == "" {
+			hdr = r.Queries
+		}
+		tagStr := ""
+		if len(r.Tags) > 0 {
+			tagStr = "  [" + strings.Join(r.Tags, ", ") + "]"
+		}
+		fmt.Fprintf(c.out, "-- === %s%s ===\n", hdr, tagStr)
+		if r.QueriesPath != "" {
+			fmt.Fprintf(c.out, "-- %s\n", r.QueriesPath)
+		}
+		if r.Note != "" {
+			fmt.Fprintf(c.out, "-- %s\n", r.Note)
+		}
+		if r.SQL != "" {
+			fmt.Fprintf(c.out, "%s\n", r.SQL)
+		}
+	}
 }
 
 // yesNo renders a boolean flag column as "yes"/"no" (kept short so the box stays tight).

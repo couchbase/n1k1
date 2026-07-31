@@ -234,6 +234,8 @@ func (c *cli) renderRows(rows []json.RawMessage, elapsed string, footer bool) {
 		cmd.RenderJSONLines(c.out, rows, pretty)
 	case "json":
 		cmd.RenderJSON(c.out, rows, pretty)
+	case "yaml":
+		cmd.RenderYAML(c.out, rows, pretty)
 	case "csv":
 		cmd.RenderCSV(c.out, rows, pretty)
 	case "markdown":
