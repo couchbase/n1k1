@@ -598,6 +598,72 @@ Monitor CRUD (`create/list/show/pause/resume/reset/snooze/delete`) mirrors the C
 unbounded-source engine work), and only later add true `follow`. So monitors are useful well before
 the continuous-operation engine work lands.
 
+### Parameterized packs (design — not shipped)
+
+File-based packs (`--queries <dir>`) will want parameters — a threshold, a date window, a field
+name — without editing files or duplicating them per variant. The embedded builtins shipped the
+contract (`-- param: <name> <type> [= <default>]` front-matter + typed `$(name)` substitution,
+`cmd/n1k1/builtins`); this section designs its extension to user packs, and above all the
+**identity story**: what a parameter does to `spec_hash`, drift, and a cursor.
+
+**Axes, not conflated.** Three different questions, three different mechanisms:
+- *Which physical data?* → `--bind` (logical keyspace → glob). Already shipped; stays the only
+  keyspace mechanism.
+- *What values/identifiers does the query take?* → params (this section).
+- *When/how is it driven?* → run / cursor / monitor cadence (unchanged).
+
+**Mechanism: pre-parse typed substitution, not engine named parameters.** The fork's named
+parameters (`$name`) are fully plumbed in glue (`Session.NamedArgs` → planner + eval
+`NamedParameter`), and for an *ad-hoc single statement* they are the principled value mechanism
+(a future `-args` CLI flag; no rendering, no injection surface). But a PACK's economics are
+literal-driven: the Aho-Corasick predicate index prunes on **string literals extracted at plan
+time**, and the compiled lane **bakes literals into generated code** — `WHERE s.type = $t` has no
+extractable literal, so every parameterized gate degrades to always-wake and drops out of the
+compile lane. Pre-parse substitution happens before the planner ever looks: the engine sees a
+literal, and fusion/pruning/compiled all work unchanged. (Same reason macros are pre-parse.)
+Injection is closed by typing, as in builtins: `ident` renders backticked and rejects backticks,
+`int` must parse, `str` renders via a quoted literal, `list` as a JSON string array.
+
+**Supply.** `--param k=v` (repeatable) on run/lint/test/show/compose/`cursor create` — the
+`--annotation k=v` shape. Defaults live in front-matter (git-committed, PR-reviewable — the
+GitOps home). A `--param` naming nothing any entry declared is a loud error listing the declared
+set (a typo'd `depht=1` must never silently run `depth=2`). NOT via `--queries "./dir?k=v"`:
+`?` is a glob metacharacter in paths, and the ref grammar stays unambiguous.
+
+**Identity — the crux.** A parameter change IS a meaning change: a cursor's watermark was
+advanced under the old predicate, so running new params against the old position silently skips
+records the new predicate would have matched behind it — exactly the ISSUE-17 query-drift
+hazard. So a cursor's delta identity must cover **template + resolved params**, and the design
+gets that almost for free:
+- `QueriesID` keeps hashing the statement **as rendered** (substitution happens at load, before
+  hashing) — params are automatically inside the delta identity, no new hash input.
+- `CursorState` gains `Params map[string]string` — the params **resolved at create** (defaults
+  baked in), the census-cursor precedent (it already persists keyspace/type-field/depth/exclude
+  and replays them). `peek`/`advance`/`check` re-render with the STORED params; a template edit
+  drifts exactly as today, and a later front-matter **default** change cannot silently move a
+  live cursor (its params were resolved and stored).
+- Changing a cursor's params = a new standing question: `rm` + `create` (or, later, an
+  `--allow-drift`-shaped "adopt new params, keep the position" — the drift machinery already
+  models "the question changed, the caller acknowledges").
+- `show`/`list --long` echo `params`, so the ledger can record them next to `spec_hash`.
+
+**Fixtures & goldens** run under the front-matter **defaults** — a golden is a contract for the
+default rendering. (Per-param-set fixtures are possible later via a fixture-section header;
+deferred.)
+
+**Versioning tie-in.** `-- version:` is the artifact's compatibility statement; adding a new
+param WITH a default leaves the rendered-under-defaults statement byte-identical, so it
+re-baselines nothing — the cheap-evolution path. A param whose default *changes* the rendering
+is a meaning change: bump the version. (Follow-up, same story for the JS artifact family:
+macros/UDF modules/extract recipes have no declared-version convention today — extract recipes
+carry only an automatic `name@<source-hash>` fingerprint, an identity, not a compatibility
+statement. A `// version:` top-comment surfaced by `.extensions list`/`.macro list` unifies it.)
+
+**Open questions (deferred).** Compose: can a downstream node pass params to an upstream node
+(`-- needs: CC-SPEND?threshold=0.9`)? Probably yes-but-later — it makes node identity
+per-instantiation and the DAG a template graph. A `--params <file>` for large sets. Engine
+named-args exposure (`-args`) for ad-hoc statements, independent of packs.
+
 ### Three axes, one frozen grammar
 
 None of the above touches the SQL++ dialect: **query = pure SQL++**, **source liveness = the
