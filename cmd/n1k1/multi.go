@@ -60,6 +60,7 @@ import (
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/cmd"
+	builtinq "github.com/couchbase/n1k1/cmd/n1k1/builtins"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -377,6 +378,7 @@ type multiShowRow struct {
 	Label       string   `json:"label,omitempty"`
 	Queries     string   `json:"queries,omitempty"`
 	QueriesPath string   `json:"queries_path,omitempty"`
+	Version     string   `json:"version,omitempty"` // `-- version:` front-matter: the ARTIFACT's version (not n1k1's)
 	Tags        []string `json:"tags,omitempty"`
 	Note        string   `json:"note,omitempty"`
 	SQL         string   `json:"sql,omitempty"`
@@ -397,27 +399,45 @@ func (c *cli) cmdMultiShow(arg string) {
 		return
 	}
 
-	// A single builtin ref: show the SQL++ it generates (or a note for a native builtin).
+	// A single builtin ref: show the SQL++ it renders (or a note for a native builtin).
+	// Generic over every embedded SQL++ builtin (cmd/n1k1/builtins): a missing
+	// REQUIRED param renders as a <placeholder> so the template shows unbound.
 	if len(args.queries) == 1 {
-		if r, perr := parseQueriesRef(args.queries[0]); perr == nil && r.kind == refBuiltin {
-			switch r.name {
-			case "census.sql++":
-				ks, tf, tif, depth, excl := censusParamsFromRef(r)
-				if ks == "" {
-					ks = "<keyspace>" // show the template even without a bound keyspace
-				}
-				id := "builtin:census.sql++@" + r.version
-				c.emitShow([]multiShowRow{
-					{Queries: id, Note: "the mergeable census core (per type/path/val_type)", SQL: censusSQL(ks, tf, tif, depth, excl)},
-					{Queries: id, Note: "the per-type totals (coverage denominator)", SQL: censusTotalsSQL(ks, tf)},
-				})
-			case "census":
+		// A malformed builtin ref (unknown name / unsupported @version) must error as
+		// itself, not fall through to the file loader's "no *.sql++ queries in ...".
+		if r, perr := parseQueriesRef(args.queries[0]); perr != nil && strings.HasPrefix(args.queries[0], refBuiltin+":") {
+			fmt.Fprintf(c.stderr, "%s: .multi show: %v\n", c.prog, perr)
+			c.failed = true
+			return
+		} else if perr == nil && r.kind == refBuiltin {
+			if r.name == "census" {
 				c.emitShow([]multiShowRow{{Queries: "builtin:census@" + r.version,
 					Note: "native Go builtin — no SQL++ source; use builtin:census.sql++ to see/fork the SQL++ form"}})
-			default:
+				return
+			}
+			q, ok := builtinq.Lookup(r.name)
+			if !ok {
 				fmt.Fprintf(c.stderr, "%s: .multi show: builtin %q has no source to show\n", c.prog, r.name)
 				c.failed = true
+				return
 			}
+			params := map[string]string{}
+			for k, v := range r.params {
+				params[k] = v
+			}
+			for _, p := range q.Params {
+				if p.Required && params[p.Name] == "" {
+					params[p.Name] = "<" + p.Name + ">" // show the template even unbound
+				}
+			}
+			sql, rerr := renderBuiltinSQL(q.Name, params)
+			if rerr != nil {
+				fmt.Fprintf(c.stderr, "%s: .multi show: %v\n", c.prog, rerr)
+				c.failed = true
+				return
+			}
+			c.emitShow([]multiShowRow{{Queries: "builtin:" + q.Name + "@" + r.version,
+				Version: q.Version, Note: q.Description, SQL: sql}})
 			return
 		}
 	}
@@ -437,7 +457,7 @@ func (c *cli) cmdMultiShow(arg string) {
 	}
 	out := make([]multiShowRow, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, multiShowRow{Label: e.Label, QueriesPath: e.Path, Tags: e.Tags, SQL: e.Stmt})
+		out = append(out, multiShowRow{Label: e.Label, QueriesPath: e.Path, Version: e.Version, Tags: e.Tags, SQL: e.Stmt})
 	}
 	c.emitShow(out)
 	fmt.Fprintf(c.stderr, "%s%d query/queries shown from %s\n", c.icon("📄 "), len(out), strings.Join(args.queries, ", "))

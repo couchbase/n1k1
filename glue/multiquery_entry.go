@@ -74,12 +74,15 @@ import (
 // need (see the entry projection); the rest drives routing (Source), reporting (Description, Tags,
 // Meta), and the golden-fixture test harness (Fixture / HasFixture / HasExpect).
 type MultiQueryEntry struct {
-	Label       string   // query id: the `label` front-matter, else the filename stem.
-	Stmt        string   // the SQL++ query statement (front-matter + fixture/expect stripped).
-	Source      string   // `source` front-matter: the LOGICAL keyspace this query targets.
-	Description string   // `description` front-matter: a free-form summary (advisory, reported).
-	Tags        []string // `tags` front-matter: freeform labels (a JSON array or comma-separated).
-	Gate        string   // `gate` front-matter: a cheap NECESSARY precondition (a boolean SQL++
+	Label       string // query id: the `label` front-matter, else the filename stem.
+	Stmt        string // the SQL++ query statement (front-matter + fixture/expect stripped).
+	Source      string // `source` front-matter: the LOGICAL keyspace this query targets.
+	Description string // `description` front-matter: a free-form summary (advisory, reported).
+	Version     string // `version` front-matter: the ARTIFACT's own semver-ish version (not n1k1's) --
+	// bumped when the query's meaning/output changes, so consumers (and builtin: refs) can pin
+	// and detect incompatibility. Advisory metadata: NOT part of the QueriesID delta identity.
+	Tags []string // `tags` front-matter: freeform labels (a JSON array or comma-separated).
+	Gate string   // `gate` front-matter: a cheap NECESSARY precondition (a boolean SQL++
 	// expression over the Source keyspace). A STANDALONE entry (window / GROUP BY / join --
 	// one that gets its own scan, not the fused shared scan) is SKIPPED when its Source has no
 	// row satisfying Gate, so an expensive sort/window never runs over a keyspace that cannot
@@ -338,6 +341,8 @@ func (r *MultiQueryEntry) applyFrontMatter(key, val string) {
 		r.Gate = val
 	case "description":
 		r.Description = val
+	case "version":
+		r.Version = val
 	case "tags":
 		r.Tags = parseListValue(val)
 	default:

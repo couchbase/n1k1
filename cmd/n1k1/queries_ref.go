@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 
+	builtinq "github.com/couchbase/n1k1/cmd/n1k1/builtins"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -57,14 +58,34 @@ type queriesRef struct {
 // newest FIRST (index 0 is the latest). An unknown name or an unsupported @version is
 // a loud error, so a pinned ref never silently runs a different builtin than asked.
 //
-// TODO(builtin-versioning): this only gates the REF today; a full story also
-// (a) stamps the resolved version into any durable artifact a builtin produces (e.g.
-// a census cursor records "built with census@1") so a later incompatible version can
-// detect + refuse/rebase a stale artifact, and (b) documents each version's schema.
-// See tmp/naming.md; recorded as a TODO in TODO.md.
+// Native builtins list their versions here; embedded SQL++ builtins
+// (cmd/n1k1/builtins/*.sql++) contribute theirs at init from each file's
+// `-- version:` front-matter — the ARTIFACT's version, not n1k1's, bumped when the
+// file's meaning/output changes so a pinned ref detects incompatibility instead of
+// silently running a different query. (This is the builtin-versioning TODO's part
+// (a) for SQL++ builtins; a census cursor already stamps its resolved ref.)
 var builtinVersions = map[string][]string{
-	"census":       {"1"}, // native Go implementation (the oracle)
-	"census.sql++": {"1"}, // the same census expressed as pure SQL++ (forkable; oracle-checked)
+	"census": {"1"}, // native Go implementation (the census.sql++ oracle)
+}
+
+func init() {
+	all, err := builtinq.All()
+	if err != nil {
+		return // surfaced loudly on first use by runBuiltinSQL/lookup paths
+	}
+	for _, q := range all {
+		vers := []string{}
+		if q.Version != "" {
+			vers = append(vers, q.Version)
+		}
+		if q.Name == "census.sql++" {
+			vers = append(vers, "1") // legacy alias: census.sql++ predates file versions
+		}
+		if len(vers) == 0 {
+			vers = []string{"1"}
+		}
+		builtinVersions[q.Name] = vers
+	}
 }
 
 // parseQueriesRef classifies one `--queries` token. See the file header for the rules.
@@ -149,15 +170,16 @@ func (c *cli) runBuiltinQueries(args multiArgs) bool {
 		return true
 	}
 	r := refs[0]
-	switch r.name {
-	case "census":
+	if r.name == "census" { // native Go builtin (the oracle)
 		c.runBuiltinCensus(args, r)
-	case "census.sql++":
-		c.runBuiltinCensusSQL(args, r)
-	default:
-		fmt.Fprintf(c.stderr, "%s: .multi run: builtin %q is not runnable\n", c.prog, r.name)
-		c.failed = true
+		return true
 	}
+	if q, ok := builtinq.Lookup(r.name); ok { // embedded SQL++ builtin (generic)
+		c.runBuiltinSQL(args, r, q)
+		return true
+	}
+	fmt.Fprintf(c.stderr, "%s: .multi run: builtin %q is not runnable\n", c.prog, r.name)
+	c.failed = true
 	return true
 }
 

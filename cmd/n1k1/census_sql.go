@@ -37,55 +37,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
-	"strings"
 
+	builtinq "github.com/couchbase/n1k1/cmd/n1k1/builtins"
 	"github.com/couchbase/n1k1/glue"
 )
 
-// censusSQL builds the pure-SQL++ census statement for a keyspace. typeField /
-// timeField are the discriminator + timestamp field names (already defaulted);
-// depth is 1 or 2; exclude are top-level keys not descended past depth 1.
-func censusSQL(keyspace, typeField, timeField string, depth int, exclude []string) string {
-	// Depth-2: for each object-valued top-level pair (minus excluded), emit its
-	// children as "<parent>.<child>". A nested comprehension + ARRAY_FLATTEN (rather
-	// than a correlated multi-range comprehension, which the engine doesn't support).
-	depth2 := "[]"
-	if depth >= 2 {
-		when := `WHEN TYPE_NAME(q.val) = "object"`
-		if len(exclude) > 0 {
-			quoted := make([]string, len(exclude))
-			for i, e := range exclude {
-				quoted[i] = strconv.Quote(e)
-			}
-			when += " AND q.name NOT IN [" + strings.Join(quoted, ", ") + "]"
-		}
-		depth2 = `ARRAY_FLATTEN(
-             (ARRAY (ARRAY {"pp": q.name || "." || c.name, "vt": TYPE_NAME(c.val)}
-                       FOR c IN OBJECT_PAIRS(q.val) END)
-                FOR q IN OBJECT_PAIRS(r) ` + when + ` END), 1)`
-	}
-	return `SELECT t.rt AS ` + "`type`" + `, pth.pp AS ` + "`path`" + `, pth.vt AS val_type,
-       COUNT(*) AS docs,
-       MIN(t.ts) AS first_seen,
-       MAX(t.ts) AS last_seen,
-       SPLIT(MIN(t.ts || "|" || t.id), "|")[1] AS first_id
-FROM (
-  SELECT META(r).id AS id, IFMISSING(r.` + "`" + typeField + "`" + `, "") AS rt, r.` + "`" + timeField + "`" + ` AS ts,
-         ARRAY_CONCAT(
-           (ARRAY {"pp": p.name, "vt": TYPE_NAME(p.val)} FOR p IN OBJECT_PAIRS(r) END),
-           ` + depth2 + `
-         ) AS paths
-  FROM ` + "`" + keyspace + "`" + ` r
-) t
-UNNEST t.paths AS pth
-GROUP BY t.rt, pth.pp, pth.vt`
+func init() {
+	// census.sql++ needs a post-processing step the generic runner doesn't have:
+	// the read-time coverage join against census_totals.sql++ (a stored ratio
+	// wouldn't merge — numerator and denominator each do).
+	builtinSQLOverride["census.sql++"] = (*cli).runBuiltinCensusSQL
 }
 
-// censusTotalsSQL builds the per-record-type total count (the coverage denominator).
-func censusTotalsSQL(keyspace, typeField string) string {
-	tf := "`" + typeField + "`"
-	return `SELECT IFMISSING(r.` + tf + `, "") AS rt, COUNT(*) AS n FROM ` + "`" + keyspace + "`" + ` r GROUP BY IFMISSING(r.` + tf + `, "")`
+// renderBuiltinSQL resolves + renders one embedded builtin with the given URI
+// params (defaults applied, unknown/missing-required params error loudly).
+func renderBuiltinSQL(name string, params map[string]string) (string, error) {
+	q, ok := builtinq.Lookup(name)
+	if !ok {
+		return "", fmt.Errorf("no embedded builtin %q", name)
+	}
+	resolved, err := q.Resolve(params)
+	if err != nil {
+		return "", err
+	}
+	return q.Render(resolved)
 }
 
 // censusSQLRow mirrors the census SQL projection (the mergeable core columns).
@@ -100,43 +75,14 @@ type censusSQLRow struct {
 }
 
 // runBuiltinCensusSQL executes `.multi run --queries builtin:census.sql++?keyspace=...`
-// as pure SQL++ and prints rows in the SAME shape as the native builtin:census (so the
-// two are byte-comparable). Params match builtin:census: keyspace (required),
-// type-field, time-field, depth (default 2), exclude (comma-list).
-// censusParamsFromRef reads the builtin:census[.sql++] URI params, applying defaults.
-// keyspace is returned RAW ("" if absent) — run requires it, but show substitutes a
-// placeholder. Shared by run and `.multi show`.
-func censusParamsFromRef(r queriesRef) (keyspace, typeField, timeField string, depth int, exclude []string) {
-	keyspace = r.params["keyspace"]
-	typeField = r.params["type-field"]
-	if typeField == "" {
-		typeField = "type"
-	}
-	timeField = r.params["time-field"]
-	if timeField == "" {
-		timeField = "timestamp"
-	}
-	depth = 2
-	if d := r.params["depth"]; d != "" {
-		if n, e := strconv.Atoi(d); e == nil {
-			depth = n
-		}
-	}
-	if ex := r.params["exclude"]; ex != "" {
-		for _, e := range strings.Split(ex, ",") {
-			if e = strings.TrimSpace(e); e != "" {
-				exclude = append(exclude, e)
-			}
-		}
-	}
-	return keyspace, typeField, timeField, depth, exclude
-}
-
-func (c *cli) runBuiltinCensusSQL(args multiArgs, r queriesRef) {
-	keyspace, typeField, timeField, depth, exclude := censusParamsFromRef(r)
-	if keyspace == "" {
-		fmt.Fprintf(c.stderr, "%s: .multi run --queries builtin:census.sql++: needs a keyspace, "+
-			"e.g. builtin:census.sql++?keyspace=sessions\n", c.prog)
+// as pure SQL++ (the embedded builtins/census.sql++ template) and prints rows in the
+// SAME shape as the native builtin:census (so the two are byte-comparable). Params
+// are the file's declared set: keyspace (required), type-field, time-field, depth,
+// exclude — census_totals.sql++ receives the subset it shares.
+func (c *cli) runBuiltinCensusSQL(args multiArgs, r queriesRef, q builtinq.Query) {
+	resolved, err := q.Resolve(r.params)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)
 		c.failed = true
 		return
 	}
@@ -153,7 +99,7 @@ func (c *cli) runBuiltinCensusSQL(args multiArgs, r queriesRef) {
 		return
 	}
 
-	rows, totals, err := runCensusSQL(sess, keyspace, typeField, timeField, depth, exclude)
+	rows, totals, err := runCensusSQL(sess, resolved)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run --queries builtin:census.sql++: %v\n", c.prog, err)
 		c.failed = true
@@ -162,10 +108,21 @@ func (c *cli) runBuiltinCensusSQL(args multiArgs, r queriesRef) {
 	c.emitCensusSQLRows(rows, totals)
 }
 
-// runCensusSQL runs the census + totals statements and returns the parsed rows and the
-// per-type totals. Split out so the oracle test can call it directly.
-func runCensusSQL(sess *glue.Session, keyspace, typeField, timeField string, depth int, exclude []string) ([]censusSQLRow, map[string]int64, error) {
-	cres, err := sess.Run(censusSQL(keyspace, typeField, timeField, depth, exclude))
+// runCensusSQL renders + runs the census and totals statements and returns the parsed
+// rows and per-type totals. resolved is census.sql++'s full resolved param set;
+// totals receives the subset it declares.
+func runCensusSQL(sess *glue.Session, resolved map[string]string) ([]censusSQLRow, map[string]int64, error) {
+	censusStmt, err := renderBuiltinSQL("census.sql++", resolved)
+	if err != nil {
+		return nil, nil, err
+	}
+	totalsStmt, err := renderBuiltinSQL("census_totals.sql++", map[string]string{
+		"keyspace": resolved["keyspace"], "type-field": resolved["type-field"],
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	cres, err := sess.Run(censusStmt)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -178,7 +135,7 @@ func runCensusSQL(sess *glue.Session, keyspace, typeField, timeField string, dep
 		rows = append(rows, row)
 	}
 
-	tres, err := sess.Run(censusTotalsSQL(keyspace, typeField))
+	tres, err := sess.Run(totalsStmt)
 	if err != nil {
 		return nil, nil, err
 	}
