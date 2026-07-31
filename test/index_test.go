@@ -959,3 +959,92 @@ func equalStrs(a, b []string) bool {
 	}
 	return true
 }
+
+// TestSecondaryIndexIncremental is the ISSUE-12 guard: on an append-only corpus a
+// STALE index catches up incrementally from its stored cursor watermark (fold only
+// the tail; glue.IndexBuildCounts distinguishes catch-up from rebuild), while any
+// append-only violation — here whole-file rotation — falls back to a FULL rebuild so
+// no stale entry survives. Before this, ONE appended record cost a full re-index
+// (~10x slower than not indexing at all on the n1k1-for-ai corpus).
+func TestSecondaryIndexIncremental(t *testing.T) {
+	// MULTI-RECORD containers (jsonl), not per-doc files: the watermark is a byte
+	// position within a container, so per-doc-file keyspaces (no position in the
+	// record id) always take the full path — the safe degradation.
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "default", "customer")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeF := func(name string, lines ...string) {
+		if err := os.WriteFile(filepath.Join(ksDir, name),
+			[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeF("a.jsonl",
+		`{"id":"c1","name":"Alice","country":"US","age":30}`,
+		`{"id":"c2","name":"Bob","country":"UK","age":45}`,
+		`{"id":"c3","name":"Carol","country":"US","age":25}`)
+	writeF("b.jsonl",
+		`{"id":"c4","name":"Dave","country":"FR","age":52}`,
+		`{"id":"c5","name":"Eve","country":"US","age":38}`)
+	if err := os.MkdirAll(filepath.Join(root, ".n1k1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".n1k1", "catalog.json"),
+		[]byte(siCatalog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	q := `SELECT c.id AS id FROM default:customer c WHERE c.country = "US"`
+
+	run := func(wantIDs []string) {
+		t.Helper()
+		store, conv := flatRootConv(t, root, q)
+		rows := flatRootRows(t, conv, testGlueExec(t, false, store, conv))
+		if got := idJSONs(rows); !equalStrs(got, wantIDJSONs(wantIDs)) {
+			t.Fatalf("want ids %v, got %v", wantIDs, got)
+		}
+	}
+
+	fullBase, cuBase := glue.IndexBuildCounts()
+
+	// Initial build (full) + correct answer.
+	run([]string{"c1", "c3", "c5"})
+	full1, cu1 := glue.IndexBuildCounts()
+	if full1 == fullBase {
+		t.Fatalf("initial open should full-build (full %d->%d, catchup %d->%d)", fullBase, full1, cuBase, cu1)
+	}
+
+	// APPEND a new matching record: the stale open must CATCH UP, not rebuild.
+	f, err := os.OpenFile(filepath.Join(ksDir, "a.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(`{"id":"c6","name":"Frank","country":"US","age":61}` + "\n")
+	f.Close()
+	run([]string{"c1", "c3", "c5", "c6"})
+	full2, cu2 := glue.IndexBuildCounts()
+	if cu2 == cu1 {
+		t.Fatalf("append should be an incremental catch-up (catchup %d->%d)", cu1, cu2)
+	}
+	if full2 != full1 {
+		t.Fatalf("append must NOT full-rebuild (full %d->%d)", full1, full2)
+	}
+
+	// Fresh again: no build activity at all on the next query.
+	run([]string{"c1", "c3", "c5", "c6"})
+	if f, c := glue.IndexBuildCounts(); f != full2 || c != cu2 {
+		t.Fatalf("fresh open must not build (full %d->%d, catchup %d->%d)", full2, f, cu2, c)
+	}
+
+	// ROTATE a container away (delete b.jsonl, which held c5): insert-only can't
+	// retract, so the anomaly forces a FULL rebuild — no stale c5 may survive.
+	if err := os.Remove(filepath.Join(ksDir, "b.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	run([]string{"c1", "c3", "c6"})
+	full3, _ := glue.IndexBuildCounts()
+	if full3 == full2 {
+		t.Fatalf("rotation must force a full rebuild (full %d->%d)", full2, full3)
+	}
+}

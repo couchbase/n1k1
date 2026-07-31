@@ -26,21 +26,28 @@ package glue
 // DatastoreScanIndex -> secondaryIndex.Scan yields docIDs, and the following
 // Fetch uses the (embedded, real) keyspace's Fetch to read the docs.
 //
-// Definitions come from .n1k1/catalog.json (idx_si_catalog.go). Freshness is the
-// simple, static-data model the user asked for: the built bbolt file records a
-// signature of the source directory (file count + newest mtime); on open we
-// rebuild only if that signature changed. No fingerprint manifest yet -- if a
-// query needs stronger freshness it can delete the .n1k1 artifact to force a
-// rebuild.
+// Definitions come from .n1k1/catalog.json (idx_si_catalog.go). Freshness: the
+// built bbolt file records a coarse signature of the source directory (file count
+// + newest mtime) as the cheap staleness TRIGGER, plus a cursor watermark
+// (per-container offsets + boundary-record fingerprints — the same primitives the
+// .multi cursors use). A stale open first tries an INCREMENTAL catch-up: fold only
+// the records past the watermark, insert-only, committed atomically with the
+// advanced watermark (ISSUE-12 — one appended record used to cost a full rebuild,
+// ~10x slower than not indexing at all on a live corpus). The full rebuild remains
+// for: first build, legacy artifacts, per-doc-file keyspaces (no in-container
+// positions to watermark), forced .reindex, and any append-only violation
+// (rotated/truncated/rewritten container — insert-only can't retract entries).
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -57,9 +64,24 @@ import (
 
 const (
 	siEntriesBucket = "entries" // encode(keys)+docID -> nil
-	siMetaBucket    = "meta"    // "sig" -> source signature
+	siMetaBucket    = "meta"    // "sig" -> source signature; "water"/"water_fp" -> cursor watermark
 	siSigKey        = "sig"
+	siWaterKey      = "water"    // JSON map[container]offset — the index's append watermark (ISSUE-12)
+	siWaterFPKey    = "water_fp" // JSON map[container]hash — boundary-record fingerprints (rewrite guard)
 )
+
+// Incremental-vs-full build counters (atomics), exported for observability + tests:
+// on an append-only corpus a stale open should COUNT as a catch-up, not a rebuild.
+var (
+	indexBuildsFull    atomic.Int64
+	indexBuildsCatchUp atomic.Int64
+)
+
+// IndexBuildCounts reports how many secondary-index (re)builds ran FULL vs how many
+// were incremental watermark catch-ups since process start.
+func IndexBuildCounts() (full, catchup int64) {
+	return indexBuildsFull.Load(), indexBuildsCatchUp.Load()
+}
 
 // SecondaryIndexMode controls whether/when catalog-declared secondary indexes are
 // used, set from the CLI's -index flag (see DESIGN-indexing.md "CLI control"):
@@ -813,8 +835,27 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 		return nil, err
 	}
 	if force || !fresh {
-		if err := buildIndex(slot.si.db, ks, def, srcDir, sig, onDoc); err != nil {
-			return nil, err
+		// The cursor primitive as the index's internal consumer (DESIGN-cep.md
+		// "Adjacent application", ISSUE-12): a stale index first tries an INCREMENTAL
+		// catch-up — fold only the records past the stored per-container watermark
+		// (insert-only, the append-only easy case) — and falls back to the full
+		// rebuild when it can't prove that's sound: no stored watermark (legacy /
+		// first build), or the SOURCE violated append-only (a rotated, truncated, or
+		// fingerprint-mismatched container leaves entries a fold can't retract).
+		caughtUp := false
+		if !force {
+			caughtUp, err = catchUpIndex(slot.si.db, ks, def, srcDir, sig, onDoc)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !caughtUp {
+			if err := buildIndex(slot.si.db, ks, def, srcDir, sig, onDoc); err != nil {
+				return nil, err
+			}
+			indexBuildsFull.Add(1)
+		} else {
+			indexBuildsCatchUp.Add(1)
 		}
 	}
 	// Re-home to the current keyspace wrapper (Indexer()/Fetch route through it).
@@ -841,6 +882,12 @@ func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, 
 	}
 	defer src.Close()
 
+	// Observe the scan through a nil-since cursor filter: it admits every record
+	// while capturing the per-container watermark + boundary fingerprints the NEXT
+	// stale open needs for an incremental catch-up instead of another full rebuild.
+	filter := NewRecordScanFilter(nil, nil)
+	scan := filter.wrap(src)
+
 	return db.Update(func(tx *bolt.Tx) error {
 		if err := tx.DeleteBucket([]byte(siEntriesBucket)); err != nil &&
 			err != bolt.ErrBucketNotFound {
@@ -855,7 +902,7 @@ func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, 
 		var keyBuf []byte
 		var scanned int
 		for {
-			ok, err := src.Next(&rec)
+			ok, err := scan.Next(&rec)
 			if err != nil {
 				return fmt.Errorf("secondary-index build, next: %w", err)
 			}
@@ -867,40 +914,14 @@ func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, 
 				onDoc(scanned)
 			}
 
-			doc := value.NewValue(append([]byte(nil), rec.Doc...))
-
-			// Partial-index condition: skip docs that don't satisfy WHERE.
-			if def.condition != nil {
-				cv, err := def.condition.Evaluate(doc, ctx)
-				if err != nil {
-					return fmt.Errorf("secondary-index build, where eval: %w", err)
-				}
-				if !cv.Truth() {
-					continue
-				}
+			entry, ok, err := indexEntryForDoc(ctx, def, &rec, &keyBuf)
+			if err != nil {
+				return fmt.Errorf("secondary-index build: %w", err)
 			}
-
-			keyBuf = keyBuf[:0]
-			skip := false
-			for _, ke := range def.rangeKey {
-				kv, err := ke.Evaluate(doc, ctx)
-				if err != nil {
-					return fmt.Errorf("secondary-index build, key eval: %w", err)
-				}
-				// A MISSING leading key means the doc isn't in the index (matches
-				// GSI semantics: missing leading key -> not indexed).
-				if kv.Type() == value.MISSING {
-					skip = true
-					break
-				}
-				keyBuf = encodeValue(keyBuf, kv)
-			}
-			if skip {
+			if !ok {
 				continue
 			}
-			keyBuf = append(keyBuf, rec.ID...)
-
-			if err := b.Put(append([]byte(nil), keyBuf...), nil); err != nil {
+			if err := b.Put(entry, nil); err != nil {
 				return err
 			}
 		}
@@ -908,13 +929,181 @@ func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, 
 			onDoc(scanned) // final count
 		}
 
-		// Record the source signature so the next open can skip a rebuild.
+		// Record the source signature + the cursor watermark so the next open can
+		// skip a rebuild (fresh) or fold just the tail (stale + watermark).
 		mb, err := tx.CreateBucketIfNotExists([]byte(siMetaBucket))
 		if err != nil {
 			return err
 		}
+		if err := putIndexWater(mb, filter.NewWater(), filter.FingerprintWater()); err != nil {
+			return err
+		}
 		return mb.Put([]byte(siSigKey), []byte(sig))
 	})
+}
+
+// indexEntryForDoc evaluates one record against the index definition: the partial
+// WHERE condition, then the range-key expressions, encoded order-preserving with the
+// doc id appended — the bolt entry key. ok=false when the doc isn't indexed (WHERE
+// false, or a MISSING leading key — GSI semantics). Shared by the full build and the
+// incremental catch-up, so the two paths cannot drift.
+func indexEntryForDoc(ctx *GlueContext, def *indexDef, rec *records.Record, keyBuf *[]byte) ([]byte, bool, error) {
+	doc := value.NewValue(append([]byte(nil), rec.Doc...))
+
+	if def.condition != nil {
+		cv, err := def.condition.Evaluate(doc, ctx)
+		if err != nil {
+			return nil, false, fmt.Errorf("where eval: %w", err)
+		}
+		if !cv.Truth() {
+			return nil, false, nil
+		}
+	}
+
+	kb := (*keyBuf)[:0]
+	for _, ke := range def.rangeKey {
+		kv, err := ke.Evaluate(doc, ctx)
+		if err != nil {
+			return nil, false, fmt.Errorf("key eval: %w", err)
+		}
+		if kv.Type() == value.MISSING {
+			return nil, false, nil
+		}
+		kb = encodeValue(kb, kv)
+	}
+	kb = append(kb, rec.ID...)
+	*keyBuf = kb
+	return append([]byte(nil), kb...), true, nil
+}
+
+// catchUpIndex tries the INCREMENTAL path for a stale index (ISSUE-12): seed a
+// cursor filter at the stored watermark, fold ONLY the records past it (insert-only
+// — bolt Put by entry key is idempotent, so an at-least-once replay is harmless),
+// and commit entries + advanced watermark + signature in ONE transaction. Returns
+// caughtUp=false (no error) when the full rebuild is required instead: no stored
+// watermark (legacy sidecar / first build), no entries bucket, or the source
+// violated append-only — a rotated (deleted), truncated, or rewritten-in-place
+// container has entries no fold can retract, exactly the cursor anomaly taxonomy.
+func catchUpIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, onDoc func(int)) (bool, error) {
+	var water map[string]int64
+	var waterFP map[string]string
+	haveState := false
+	err := db.View(func(tx *bolt.Tx) error {
+		mb := tx.Bucket([]byte(siMetaBucket))
+		eb := tx.Bucket([]byte(siEntriesBucket))
+		if mb == nil || eb == nil {
+			return nil
+		}
+		w, fp, err := getIndexWater(mb)
+		if err != nil || len(w) == 0 {
+			return err
+		}
+		water, waterFP, haveState = w, fp, true
+		return nil
+	})
+	if err != nil || !haveState {
+		return false, err
+	}
+
+	ctx := NewGlueContext(time.Now())
+	opts := ScanWalkOptions
+	opts.PathPrefix = ""
+	src, err := records.Walk(srcDir, opts)
+	if err != nil {
+		return false, fmt.Errorf("secondary-index catch-up, walk %q: %w", srcDir, err)
+	}
+	defer src.Close()
+
+	filter := NewRecordScanFilter(water, waterFP)
+	scan := filter.wrap(src)
+
+	// Collect the delta OUTSIDE the write tx (the scan dominates; the tx stays short),
+	// then decide: any append-only violation voids the fold.
+	var entries [][]byte
+	var keyBuf []byte
+	var rec records.Record
+	var folded int
+	for {
+		ok, err := scan.Next(&rec)
+		if err != nil {
+			return false, fmt.Errorf("secondary-index catch-up, next: %w", err)
+		}
+		if !ok {
+			break
+		}
+		folded++
+		if onDoc != nil && folded%512 == 0 {
+			onDoc(folded)
+		}
+		entry, ok, err := indexEntryForDoc(ctx, def, &rec, &keyBuf)
+		if err != nil {
+			return false, fmt.Errorf("secondary-index catch-up: %w", err)
+		}
+		if ok {
+			entries = append(entries, entry)
+		}
+	}
+	if rotated, truncated, rewritten := filter.SourceAnomalies(); len(rotated)+len(truncated)+len(rewritten) > 0 {
+		return false, nil // stale entries need retraction -> full rebuild
+	}
+	if onDoc != nil {
+		onDoc(folded)
+	}
+
+	newWater := filter.NewWater()
+	newFP := WaterFPMerge(newWater, filter.ObservedWater(), filter.FingerprintWater(), water, waterFP)
+	return true, db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(siEntriesBucket))
+		if b == nil {
+			return fmt.Errorf("secondary-index catch-up: entries bucket vanished")
+		}
+		for _, e := range entries {
+			if err := b.Put(e, nil); err != nil {
+				return err
+			}
+		}
+		mb, err := tx.CreateBucketIfNotExists([]byte(siMetaBucket))
+		if err != nil {
+			return err
+		}
+		if err := putIndexWater(mb, newWater, newFP); err != nil {
+			return err
+		}
+		return mb.Put([]byte(siSigKey), []byte(sig))
+	})
+}
+
+// putIndexWater / getIndexWater persist the index's cursor watermark (+ boundary
+// fingerprints) in the meta bucket as JSON.
+func putIndexWater(mb *bolt.Bucket, water map[string]int64, fp map[string]string) error {
+	wb, err := json.Marshal(water)
+	if err != nil {
+		return err
+	}
+	if err := mb.Put([]byte(siWaterKey), wb); err != nil {
+		return err
+	}
+	fb, err := json.Marshal(fp)
+	if err != nil {
+		return err
+	}
+	return mb.Put([]byte(siWaterFPKey), fb)
+}
+
+func getIndexWater(mb *bolt.Bucket) (map[string]int64, map[string]string, error) {
+	var water map[string]int64
+	var fp map[string]string
+	if wb := mb.Get([]byte(siWaterKey)); len(wb) > 0 {
+		if err := json.Unmarshal(wb, &water); err != nil {
+			return nil, nil, err
+		}
+	}
+	if fb := mb.Get([]byte(siWaterFPKey)); len(fb) > 0 {
+		if err := json.Unmarshal(fb, &fp); err != nil {
+			return nil, nil, err
+		}
+	}
+	return water, fp, nil
 }
 
 // indexFresh reports whether the built index's stored signature matches the

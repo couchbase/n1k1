@@ -839,9 +839,22 @@ The shape lines up cleanly:
 
 This is a distinct workstream from the agent-facing verbs (it needs no new CLI surface — it's an
 internal caller of the same `RunCursorPack` + high-water), but it validates the primitive from a
-second direction and would turn index maintenance from O(corpus) per open into O(delta). *(Open: FTS
-segment merge under incremental adds; whether the watermark lives in the index catalog or the cursor
-store; interaction with the non-monotonic rewind case for mutable keyspaces.)*
+second direction and would turn index maintenance from O(corpus) per open into O(delta).
+
+> **Status — SI SHIPPED.** The SI builder (`glue/idx_si.go`) is now a cursor consumer: the built
+> bbolt records a per-container watermark + boundary-record fingerprints (`RecordScanFilter`, the
+> exact primitives `.multi cursor` uses) beside the coarse mtime signature, which becomes just the
+> cheap staleness *trigger*. A stale open folds only the records past the watermark (insert-only;
+> bolt Put by entry key is idempotent, so at-least-once replay is safe) and commits entries +
+> advanced watermark + signature in ONE transaction. Full rebuild remains for: first build / legacy
+> artifacts, per-doc-file keyspaces (no in-container positions), `.reindex --force`, and any
+> append-only violation — `SourceAnomalies`' rotated/truncated/rewritten trio, since insert-only
+> can't retract (ISSUE-12 ask #4's guard). The watermark lives in the index artifact itself (the
+> catalog side of the open question), so index and position commit atomically.
+> `glue.IndexBuildCounts()` exposes full-vs-catchup; guard: `TestSecondaryIndexIncremental`
+> (append → catch-up, fresh → no work, rotation → full rebuild with no stale entry). *(Still open:
+> FTS incremental adds — deliberately deferred to the bleve/zapx fork workstream, where segment-level
+> append is the whole point; `diff`-mode maintenance for mutable keyspaces.)*
 
 ## The engine gap for `follow` (Phase 6)
 
