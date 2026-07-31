@@ -253,9 +253,17 @@ at-or-below the watermark. So today:
   the committed position (acked as `pruned_rotated`; disclosed cost: a same-named file reappearing
   later replays from byte 0). `RecordScanFilter.SourceAnomalies`; guard:
   `TestMultiCursorRotationDisclosure`.
-- **Fail-loud on truncation** is arguably right for `mode: append`'s contract (the source violated
-  append-only), with an explicit override that re-baselines that container — mirroring
-  `--allow-drift`'s shape: the caller acknowledges the discontinuity.
+- **Fail-loud on truncation — ✅ SHIPPED**: a truncated container REFUSES `advance` (error kind
+  `source-truncated`, position untouched) — the source violated `mode: append`'s contract, and
+  committing past it would entrench the loss (under the never-rewinding max-merge the container
+  even stays *dead* until the file regrows past its old offset: future appends below it are
+  skipped too). `--accept-truncation` acknowledges the discontinuity (the `--allow-drift` shape)
+  and re-baselines each truncated container at the position this scan observed
+  (`RecordScanFilter.ObservedWater`): rewritten content below the old offset is not re-delivered,
+  future appends deliver again. With an explicit `--to`, the token wins — the flag only waives the
+  refusal. `peek` stays read-only-and-disclosing; a census cursor stays disclosure-only (its fold
+  is additive and never rewinds, so blocking it would only lose more). Guard: the truncation act
+  of `TestMultiCursorRotationDisclosure`.
 - **Prefix fingerprints** (per-container head hash alongside the offset) would detect
   rewrite-in-place that preserves length — the one case size alone cannot catch. Heavier; future
   work, likely arriving with the `git://` provider's content-identity fingerprints.

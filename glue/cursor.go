@@ -400,6 +400,22 @@ func (f *RecordScanFilter) NewWater() map[string]int64 {
 	return out
 }
 
+// ObservedWater is what this scan actually saw, per container — the position of the
+// last record observed, with no merge into the committed water (unlike NewWater's
+// max-merge, which never rewinds). It is how a caller re-baselines a TRUNCATED
+// container at its current content (`advance --accept-truncation`): under max-merge
+// alone a truncated container is dead until the file regrows past its old offset —
+// every future append below it is skipped too.
+func (f *RecordScanFilter) ObservedWater() map[string]int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]int64, len(f.seen))
+	for k, v := range f.seen {
+		out[k] = v
+	}
+	return out
+}
+
 // SourceAnomalies reports the committed containers whose source violated the
 // append-only assumption this scan ("append-mostly, with whole-file rotation" —
 // DESIGN-cep.md): rotated = held in the committed water but NOTHING observed this
@@ -457,9 +473,12 @@ type CursorRunResult struct {
 	NewWater     map[string]int64 // recomputed high-water (the candidate `to`)
 	// Rotated / Truncated disclose committed containers whose source violated
 	// append-only this scan (see RecordScanFilter.SourceAnomalies) — surfaced in the
-	// peek/advance envelope so evidence loss is an event, never silent.
+	// peek/advance envelope so evidence loss is an event, never silent. Observed is
+	// the un-merged per-container extent this scan saw (RecordScanFilter.ObservedWater)
+	// — what `advance --accept-truncation` re-baselines a truncated container to.
 	Rotated   []string
 	Truncated []string
+	Observed  map[string]int64
 	Report    *MultiQueryRunReport
 }
 
@@ -498,6 +517,9 @@ func (s *Session) runCursorPack(dets []MultiQueryEntry, filter *RecordScanFilter
 	if filter != nil {
 		res.NewWater = filter.NewWater()
 		res.Rotated, res.Truncated = filter.SourceAnomalies()
+		if len(res.Truncated) > 0 {
+			res.Observed = filter.ObservedWater()
+		}
 	}
 	return res, nil
 }

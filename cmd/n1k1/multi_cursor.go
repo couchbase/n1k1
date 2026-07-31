@@ -68,6 +68,7 @@ type cursorArgs struct {
 	idField       string   // --id-field <name>, create-only diff (default: id)
 	quiet         bool     // --quiet, advance-only (ack only, no labelResults echo)
 	pruneRotated  bool     // --prune-rotated, advance-only (drop rotated containers from the committed position)
+	acceptTrunc   bool     // --accept-truncation, advance-only (acknowledge truncated containers; re-baseline each to its current extent)
 	force         bool     // --force, advance --to only (commit a rewinding/unknown position anyway)
 	allowDrift    bool     // --allow-drift, advance only (commit even though the query edited since create)
 	expect        string   // --expect <committed_id>, advance only (compare-and-swap: refuse if moved)
@@ -214,6 +215,8 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 			a.quiet = !hasEq || val == "true" || val == "1"
 		case "prune-rotated":
 			a.pruneRotated = !hasEq || val == "true" || val == "1"
+		case "accept-truncation":
+			a.acceptTrunc = !hasEq || val == "true" || val == "1"
 		case "force":
 			a.force = !hasEq || val == "true" || val == "1"
 		case "allow-drift":
@@ -949,6 +952,30 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
+	// Fail-loud on truncation (DESIGN-cep.md, "append-mostly with whole-file
+	// rotation" rung 2): a truncated container means the SOURCE violated mode:
+	// append's contract, and committing past it silently entrenches the loss — worse,
+	// under the never-rewinding max-merge the container stays dead until the file
+	// regrows past its old offset (future appends below it are skipped too). Refuse,
+	// position untouched, unless the caller acknowledges the discontinuity with
+	// --accept-truncation (the --allow-drift shape) — which re-baselines each
+	// truncated container to its CURRENT extent: rewritten content below the old
+	// offset is not re-delivered, and future appends deliver again. Rotation does
+	// NOT refuse: nothing mis-delivers, disclosure (+ --prune-rotated) suffices.
+	if len(res.Truncated) > 0 && !a.acceptTrunc {
+		env.Status = "error"
+		env.To = encodeWater(committed)
+		env.Error = &cursorErr{Kind: "source-truncated", Message: fmt.Sprintf(
+			"%d committed container(s) were truncated/rewritten below their watermark (see \"truncated\"); "+
+				"the source violated append-only, and records below the old offset are being skipped. "+
+				"Re-run with --accept-truncation to acknowledge the loss and re-baseline each at its "+
+				"current extent (no re-delivery of rewritten content; future appends deliver again).",
+			len(res.Truncated))}
+		c.printJSON(env)
+		c.failed = true
+		return
+	}
+
 	// advance: commit. --to lets the agent commit to the exact head it peeked
 	// (the two-step); --to-file reads that token from a file (a many-container
 	// append position is large — tens of KB — and shouldn't ride argv). Otherwise
@@ -997,6 +1024,18 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 			env.Dropped, env.Rewound, env.Unknown = dropped, rewound, unknown
 		}
 	}
+	// --accept-truncation: re-baseline each truncated container at the extent this
+	// scan observed (NewWater's max-merge kept the old, higher offset). Skipped when
+	// an explicit --to was given — the caller named the exact position, so the token
+	// wins; the flag then only waives the refusal above.
+	if a.acceptTrunc && toTok == "" {
+		for _, k := range res.Truncated {
+			if v, ok := res.Observed[k]; ok {
+				newWater[k] = v
+			}
+		}
+	}
+
 	// --prune-rotated: deliberately shrink the committed position by the containers
 	// whose files rotated away (disclosed in env.Rotated). Without this the position
 	// map grows with every file ever seen. The cost is disclosed in help: if a
@@ -1516,12 +1555,23 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        never rewinds, so nothing double-delivers). Evidence leaving
                        the corpus is an event, never silent; a field that reads 0
                        NOW may still exist in an accumulated census.
-  advance NAME [--to <pos> | --to-file <path>] [--quiet] [--force] [--prune-rotated]
+  advance NAME [--to <pos> | --to-file <path>] [--quiet] [--force]
+               [--prune-rotated] [--accept-truncation]
                        commit (get + move). Echoes the delta unless --quiet.
                        --prune-rotated drops the rotated containers from the
                        committed position (acked as "pruned_rotated"; without it the
                        position map holds every container ever seen). Cost: if a
                        same-named file later reappears, it replays from byte 0.
+                       A TRUNCATED container REFUSES the advance (error kind
+                       "source-truncated", position untouched): the source violated
+                       append-only, and committing past it would entrench the loss —
+                       the container even stays dead until the file regrows past its
+                       old offset. --accept-truncation acknowledges the discontinuity
+                       (the --allow-drift shape) and re-baselines each truncated
+                       container at its CURRENT extent: rewritten content below the
+                       old offset is not re-delivered; future appends deliver again.
+                       (A census cursor stays disclosure-only: its fold is additive
+                       and never rewinds, so blocking it would only lose more.)
                        --to <pos> commits the exact position peek reported (two-step);
                        the token is OPAQUE (survives argv verbatim). --to-file reads it
                        from a file (positions can be large — an append position is a

@@ -584,31 +584,71 @@ func TestMultiCursorRotationDisclosure(t *testing.T) {
 		t.Fatalf("rotated disclosure must persist while the position holds b: %v", pv["rotated"])
 	}
 
-	// advance --prune-rotated: drops b from the committed position (acked), keeps a.
+	// Fail-loud on truncation: a bare advance REFUSES (kind "source-truncated"),
+	// position untouched -- the source violated append-only, and committing past it
+	// would entrench the loss.
 	out.Reset()
+	c.failed = false
 	c.cmdMulti("cursor advance ROT --quiet --prune-rotated --cursor-store " + store)
 	av := env()
+	if ev, _ := av["error"].(map[string]interface{}); ev == nil || ev["kind"] != "source-truncated" {
+		t.Fatalf("truncated advance must refuse with source-truncated: %s", out.String())
+	}
+	if !c.failed {
+		t.Fatalf("source-truncated refusal must set failure")
+	}
+	sidecar := func() map[string]interface{} {
+		b, _ := os.ReadFile(filepath.Join(store, "ROT.json"))
+		var sc map[string]interface{}
+		json.Unmarshal(b, &sc)
+		w, _ := sc["water"].(map[string]interface{})
+		return w
+	}
+	if w := sidecar(); len(w) != 2 {
+		t.Fatalf("refused advance must leave the position untouched: %v", w)
+	}
+
+	// --accept-truncation (+ --prune-rotated): acknowledges the discontinuity --
+	// b pruned from the position, a RE-BASELINED at its current (smaller) extent so
+	// future appends deliver again (under max-merge alone it would stay dead until
+	// the file regrew past the old offset).
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance ROT --quiet --prune-rotated --accept-truncation --cursor-store " + store)
+	av = env()
+	if av["status"] == "error" || c.failed {
+		t.Fatalf("--accept-truncation advance should commit: %s", out.String())
+	}
 	if av["pruned_rotated"] != float64(1) {
 		t.Fatalf("prune ack missing: %s", out.String())
 	}
-	b, _ := os.ReadFile(filepath.Join(store, "ROT.json"))
-	var sc map[string]interface{}
-	json.Unmarshal(b, &sc)
-	water, _ := sc["water"].(map[string]interface{})
+	water := sidecar()
 	if len(water) != 1 {
 		t.Fatalf("pruned water should hold only a.jsonl: %v", water)
 	}
-	for k := range water {
-		if !strings.Contains(k, "a.jsonl") {
-			t.Fatalf("pruned water holds wrong container: %v", water)
+	// Watermark positions are record-START offsets: the truncated file's one record
+	// starts at 0, so the re-baselined water is 0 (that record stays skipped —
+	// admit needs pos > water — while an append at start 8 delivers).
+	for k, v := range water {
+		if !strings.Contains(k, "a.jsonl") || v.(float64) != 0 {
+			t.Fatalf("truncated container not re-baselined at its observed position: %v", water)
 		}
 	}
 
-	// After the prune, rotation disclosure clears (nothing held that is missing).
+	// After the acknowledgment, disclosures clear -- and a fresh append DELIVERS
+	// (the re-baseline revived the container; the rewritten {"n":9} is NOT re-delivered).
 	out.Reset()
 	c.cmdMulti("cursor peek ROT --cursor-store " + store)
-	if pv = env(); pv["rotated"] != nil {
-		t.Fatalf("rotated should clear after prune: %s", out.String())
+	if pv = env(); pv["rotated"] != nil || pv["truncated"] != nil || pv["count"] != float64(0) {
+		t.Fatalf("disclosures should clear after prune+accept: %s", out.String())
+	}
+	f, _ = os.OpenFile(aPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString(`{"n":10}` + "\n")
+	f.Close()
+	out.Reset()
+	c.cmdMulti("cursor peek ROT --cursor-store " + store)
+	if pv = env(); pv["count"] != float64(1) {
+		t.Fatalf("append after re-baseline must deliver (container was revived): %s", out.String())
 	}
 }
 
