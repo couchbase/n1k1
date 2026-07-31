@@ -357,10 +357,16 @@ type cursorEnvelope struct {
 	// boundary-record fingerprint (water_fp) no longer matches the record at that
 	// offset — the file was replaced in place WITHOUT shrinking, the violation a
 	// size check cannot see.
-	Rotated       []string `json:"rotated,omitempty"`
-	Truncated     []string `json:"truncated,omitempty"`
-	Rewritten     []string `json:"rewritten,omitempty"`
-	PrunedRotated int      `json:"pruned_rotated,omitempty"`
+	// The disclosure keys (rotated/truncated/rewritten) say what was SEEN this scan;
+	// the accepted_* keys say what an --accept-truncation advance ACTED ON (ISSUE-18
+	// ask #4) — a caller can tell "I was told" from "I acknowledged" without reading
+	// the sidecar.
+	Rotated            []string `json:"rotated,omitempty"`
+	Truncated          []string `json:"truncated,omitempty"`
+	Rewritten          []string `json:"rewritten,omitempty"`
+	AcceptedTruncation []string `json:"accepted_truncation,omitempty"`
+	AcceptedRewritten  []string `json:"accepted_rewritten,omitempty"`
+	PrunedRotated      int      `json:"pruned_rotated,omitempty"`
 
 	// ISSUE-17: the query file can be edited after create; `pack` is the baseline
 	// (creation-time) id, QueriesCurrent is the id re-hashed from the query NOW. They
@@ -1036,16 +1042,35 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 			env.Dropped, env.Rewound, env.Unknown = dropped, rewound, unknown
 		}
 	}
-	// --accept-truncation: re-baseline each truncated container at the extent this
-	// scan observed (NewWater's max-merge kept the old, higher offset). Skipped when
-	// an explicit --to was given — the caller named the exact position, so the token
-	// wins; the flag then only waives the refusal above.
-	if a.acceptTrunc && toTok == "" {
+	// --accept-truncation: re-baseline each truncated container at the position this
+	// scan observed (NewWater's max-merge kept the old, higher offset). Applied WITH
+	// or WITHOUT an explicit --to (ISSUE-18): the documented safe loop is
+	// `peek -> advance --to-file <to>`, and peek's token carries the max-merged,
+	// never-rewound water — it CANNOT express the rewind, so "the token wins" here
+	// silently skipped the re-baseline, cleared the disclosure, and every record
+	// later appended below the stale mark vanished. Lower-only: a hand-crafted --to
+	// that rewinds a truncated container even deeper (deliberate replay) is honored.
+	if a.acceptTrunc {
 		for _, k := range res.Truncated {
 			if v, ok := res.Observed[k]; ok {
-				newWater[k] = v
+				if cur, held := newWater[k]; !held || cur > v {
+					newWater[k] = v
+				}
 			}
 		}
+		// Post-condition (ISSUE-18 ask #2): an acknowledgment that leaves a truncated
+		// container's mark above its observed content is strictly worse than the
+		// refusal — the disclosure is consumed but the silence returns. Fail loud;
+		// this should be unreachable, which is exactly why it must not be silent.
+		for _, k := range res.Truncated {
+			if v, ok := res.Observed[k]; !ok || newWater[k] > v {
+				c.cursorFail(a.name, "accept-failed", fmt.Errorf(
+					"internal: --accept-truncation left container %q committed above its observed content; position NOT committed", k))
+				return
+			}
+		}
+		env.AcceptedTruncation = res.Truncated
+		env.AcceptedRewritten = res.Rewritten
 	}
 
 	// --prune-rotated: deliberately shrink the committed position by the containers
@@ -1591,7 +1616,13 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
                        --allow-drift shape) and re-baselines each violating
                        container at its CURRENT content: nothing below the old
                        offset is re-delivered; future appends deliver again, and
-                       the fingerprint re-stamps to the new content.
+                       the fingerprint re-stamps to the new content. The
+                       re-baseline applies with or without --to/--to-file (a
+                       peeked token carries the never-rewound water, so it cannot
+                       express the rewind itself — ISSUE-18); a --to that rewinds
+                       a truncated container even deeper is honored. The advance
+                       acks what it acted on as "accepted_truncation" /
+                       "accepted_rewritten", distinct from the disclosure keys.
                        (A census cursor stays disclosure-only: its fold is additive
                        and never rewinds, so blocking it would only lose more.)
                        --to <pos> commits the exact position peek reported (two-step);

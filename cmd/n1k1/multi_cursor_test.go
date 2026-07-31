@@ -16,6 +16,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -772,6 +773,122 @@ func TestMultiCursorRewriteFingerprint(t *testing.T) {
 	}
 	if fp, _ := sidecar()["water_fp"].(map[string]interface{}); len(fp) != 1 {
 		t.Fatalf("advance should backfill water_fp on a legacy sidecar: %v", sidecar()["water_fp"])
+	}
+}
+
+// TestMultiCursorAcceptTruncationRebaseline is the ISSUE-18 regression: an
+// acknowledged truncation must ACTUALLY re-baseline — including through the
+// documented safe loop (`peek` -> `advance --to-file <to>`), where the peeked token
+// carries the never-rewound max-merged water and so cannot express the rewind
+// itself ("the token wins" used to skip the re-baseline, clear the disclosure, and
+// silently drop every record later appended below the stale mark). Shape follows
+// the issue's repro: equal-length records, truncate 4 -> 2, acknowledge, append 3
+// brand-new records, assert ALL 3 deliver.
+func TestMultiCursorAcceptTruncationRebaseline(t *testing.T) {
+	rec := func(n int) string { return fmt.Sprintf(`{"n":%d,"pad":"xxxxxxxxxx"}`, 100+n) } // fixed width
+	for _, viaToFile := range []bool{false, true} {
+		name := "plain-advance"
+		if viaToFile {
+			name = "peek-to-file-loop"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			ks := filepath.Join(root, "default", "events")
+			if err := os.MkdirAll(ks, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tPath := filepath.Join(ks, "t.jsonl")
+			write := func(ns ...int) {
+				var b strings.Builder
+				for _, n := range ns {
+					b.WriteString(rec(n) + "\n")
+				}
+				if err := os.WriteFile(tPath, []byte(b.String()), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			appendRecs := func(ns ...int) {
+				f, _ := os.OpenFile(tPath, os.O_APPEND|os.O_WRONLY, 0o644)
+				for _, n := range ns {
+					f.WriteString(rec(n) + "\n")
+				}
+				f.Close()
+			}
+			write(1, 2, 3, 4)
+			pack := writeMultiQueryEntries(t, map[string]string{"all": "-- label: all\nSELECT e.n FROM events e"})
+			store := t.TempDir()
+
+			var out, errb bytes.Buffer
+			c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+			env := func() map[string]interface{} {
+				var e map[string]interface{}
+				json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+				return e
+			}
+
+			out.Reset()
+			c.cmdMulti("cursor create T --queries " + pack + " --from start --cursor-store " + store)
+			out.Reset()
+			c.cmdMulti("cursor advance T --quiet --cursor-store " + store) // consume all 4
+			if env()["status"] != "advanced" {
+				t.Fatalf("baseline advance: %s", out.String())
+			}
+
+			write(1, 2) // truncate to the first 2 records
+
+			// Acknowledge — plain, or through the documented peek -> --to-file loop.
+			adv := "cursor advance T --quiet --accept-truncation --cursor-store " + store
+			if viaToFile {
+				out.Reset()
+				c.cmdMulti("cursor peek T --cursor-store " + store)
+				toTok, _ := env()["to"].(string)
+				if toTok == "" {
+					t.Fatalf("peek gave no to token: %s", out.String())
+				}
+				tf := filepath.Join(t.TempDir(), "to.tok")
+				if err := os.WriteFile(tf, []byte(toTok), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				adv += " --to-file " + tf
+			}
+			out.Reset()
+			c.failed = false
+			c.cmdMulti(adv)
+			av := env()
+			if av["status"] == "error" || c.failed {
+				t.Fatalf("accept advance failed: %s", out.String())
+			}
+			acc, _ := av["accepted_truncation"].([]interface{})
+			if len(acc) != 1 || !strings.Contains(acc[0].(string), "t.jsonl") {
+				t.Fatalf("accepted_truncation ack missing: %s", out.String())
+			}
+
+			// The committed mark must now be AT the truncated content (the last record's
+			// start), not above the file's end.
+			b, _ := os.ReadFile(filepath.Join(store, "T.json"))
+			var sc map[string]interface{}
+			json.Unmarshal(b, &sc)
+			water, _ := sc["water"].(map[string]interface{})
+			recLen := int64(len(rec(1)) + 1)
+			for k, v := range water {
+				if int64(v.(float64)) != recLen { // start of record 2
+					t.Fatalf("mark not re-baselined: water[%s]=%v, want %d", k, v, recLen)
+				}
+			}
+
+			// The whole point (ISSUE-18 §2): records appended AFTER the acknowledgment
+			// must ALL deliver — none may fall below a stale mark.
+			appendRecs(900, 901, 902)
+			out.Reset()
+			c.cmdMulti("cursor peek T --cursor-store " + store)
+			pv := env()
+			if pv["count"] != float64(3) {
+				t.Fatalf("appends after acknowledgment lost: want 3, got %v (%s)", pv["count"], out.String())
+			}
+			if pv["truncated"] != nil {
+				t.Fatalf("truncated should not re-fire after a real re-baseline: %s", out.String())
+			}
+		})
 	}
 }
 
