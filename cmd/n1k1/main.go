@@ -192,6 +192,38 @@ func main() {
 		}
 		sources, multiSource = fileSources, true
 	}
+
+	// jq-like stdin: with -c/-f (which take stdin's place in the exec switch, so this
+	// can't clash with the bare-stdin-is-SQL-statements batch path) and PIPED stdin,
+	// expose the piped NDJSON as a keyspace -- when there's NO datastore at all, or a
+	// `-` (or `name=-`) source names it. `-` -> keyspace `stdin`; `name=-` -> keyspace
+	// `name`; other sources stay files, so you can join piped data against a file corpus:
+	//   cat x.jsonl | n1k1 -c 'SELECT * FROM stdin s'
+	//   n1k1 -c '.multi show --queries builtin:census.sql++' ds | n1k1 -c 'SELECT RAW s.sql FROM stdin s'
+	if (*cFlag != "" || *fFlag != "") && !isTTY(os.Stdin) {
+		fileSrcs, stdinName, wantStdin := stdinSources(fargs)
+		if wantStdin {
+			tmpDir, terr := os.MkdirTemp("", "n1k1-stdin-")
+			if terr != nil {
+				fmt.Fprintf(os.Stderr, "%s: stdin: %v\n", prog, terr)
+				os.Exit(1)
+			}
+			defer os.RemoveAll(tmpDir)
+			fpath := filepath.Join(tmpDir, "stdin.jsonl")
+			fh, ferr := os.Create(fpath)
+			if ferr == nil {
+				_, ferr = io.Copy(fh, os.Stdin)
+				fh.Close()
+			}
+			if ferr != nil {
+				fmt.Fprintf(os.Stderr, "%s: reading stdin: %v\n", prog, ferr)
+				os.Exit(1)
+			}
+			sources = append(fileSrcs, glue.Source{Name: stdinName, Path: fpath})
+			multiSource = true
+		}
+	}
+
 	dir := "."
 	explicit := false
 	if !multiSource && len(fargs) > 0 {
@@ -467,6 +499,12 @@ usage: %[1]s [flags] [datastore-dir | file | source...]
   %[1]s -c "SELECT 1+1"
   %[1]s -f script.sql++ path/to/datastore-dir
   echo "SELECT 1+1" | %[1]s
+
+  # with -c/-f, PIPED JSON is queryable as a keyspace named 'stdin' (jq-like) --
+  # when there's no datastore, or a '-' (or name=-) source names it:
+  cat data.jsonl | %[1]s -c "SELECT s.type, COUNT(*) FROM stdin s GROUP BY s.type"
+  %[1]s -c '.multi show --queries builtin:census.sql++' ds | %[1]s -mode yaml -c "SELECT RAW s.sql FROM stdin s"
+  cat metrics.jsonl | %[1]s -c "SELECT * FROM hosts h JOIN metrics m ON h.id=m.id" ./hosts metrics=-
 
   # dotted/hyphenated keyspaces need backticks -- and backticks are command-
   # substitution inside "double quotes", so wrap the -c arg in 'single quotes'

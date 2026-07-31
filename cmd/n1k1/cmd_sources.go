@@ -45,6 +45,28 @@ func parseSourceArgs(args []string) (sources []glue.Source, multi bool) {
 	return out, true
 }
 
+// stdinSources decides how a piped-stdin `stdin` keyspace fits with the positional
+// source args (the jq-like `FROM stdin` feature): stdin is wanted when there are NO args
+// at all, or a `-` (or `name=-`) appears among them. Every other arg becomes a file
+// source. Returns the file sources, the keyspace name for stdin (default "stdin", or the
+// `name` of a `name=-`), and whether stdin is wanted. The caller applies this only when
+// -c/-f is set and stdin is piped (so it never clashes with bare-stdin-is-statements).
+func stdinSources(fargs []string) (fileSrcs []glue.Source, stdinName string, wantStdin bool) {
+	stdinName = "stdin"
+	wantStdin = len(fargs) == 0
+	for _, a := range fargs {
+		if n, p := splitSourceArg(a); p == "-" {
+			wantStdin = true
+			if n != "" {
+				stdinName = n
+			}
+		} else {
+			fileSrcs = append(fileSrcs, glue.Source{Name: n, Path: p})
+		}
+	}
+	return fileSrcs, stdinName, wantStdin
+}
+
 // splitSourceArg splits a `name=path` source spec into its name and path. The name
 // part is honored only when it's a plausible bare identifier -- non-empty and free of
 // path separators and glob metacharacters -- so an `=` inside a path (rare) or a

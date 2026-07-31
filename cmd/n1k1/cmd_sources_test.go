@@ -60,3 +60,29 @@ func TestParseSourceArgs(t *testing.T) {
 		t.Errorf("names = %q/%q/%q, want a / (derived) / (derived)", srcs[0].Name, srcs[1].Name, srcs[2].Name)
 	}
 }
+
+// TestStdinSources: the jq-like `FROM stdin` gating — no args or a `-`/`name=-` wants
+// stdin; a real dir does not; a `name=-` renames the stdin keyspace.
+func TestStdinSources(t *testing.T) {
+	cases := []struct {
+		args      []string
+		wantStdin bool
+		stdinName string
+		nFiles    int
+	}{
+		{nil, true, "stdin", 0},                     // no datastore -> stdin is the data
+		{[]string{"-"}, true, "stdin", 0},           // bare -
+		{[]string{"metrics=-"}, true, "metrics", 0}, // named stdin
+		{[]string{"./dir"}, false, "stdin", 1},      // a real dir: stdin NOT wanted
+		{[]string{"./dir", "-"}, true, "stdin", 1},  // mix: dir + stdin
+		{[]string{"a=./x", "b=-"}, true, "b", 1},    // named dir + named stdin
+		{[]string{"./a", "./b"}, false, "stdin", 2}, // two dirs, no stdin
+	}
+	for _, tc := range cases {
+		files, name, want := stdinSources(tc.args)
+		if want != tc.wantStdin || name != tc.stdinName || len(files) != tc.nFiles {
+			t.Errorf("stdinSources(%v) = files=%d name=%q want=%v; expected files=%d name=%q want=%v",
+				tc.args, len(files), name, want, tc.nFiles, tc.stdinName, tc.wantStdin)
+		}
+	}
+}
