@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // series(start, stop[, step]) — a streaming table-valued source used in FROM.
 // Emits {n} for each value start..stop (inclusive), one row at a time — no array
 // is ever built, so `FROM series(1, 1000000) AS x` stays bounded-memory.

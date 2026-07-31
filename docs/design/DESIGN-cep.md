@@ -602,9 +602,10 @@ the continuous-operation engine work lands.
 
 File-based packs (`--queries <dir>`) will want parameters — a threshold, a date window, a field
 name — without editing files or duplicating them per variant. The embedded builtins shipped the
-contract (`-- param: <name> <type> [= <default>]` front-matter + typed `$(name)` substitution,
-`cmd/n1k1/builtins`); this section designs its extension to user packs, and above all the
-**identity story**: what a parameter does to `spec_hash`, drift, and a cursor.
+contract (`-- param: <name> <type> [= <default>]` front-matter + typed `$name` substitution —
+SQL++ named-parameter SYNTAX, ONE grammar, bound early; `cmd/n1k1/builtins`); this section
+designs its extension to user packs, and above all the **identity story**: what a parameter
+does to `spec_hash`, drift, and a cursor.
 
 **Axes, not conflated.** Three different questions, three different mechanisms:
 - *Which physical data?* → `--bind` (logical keyspace → glob). Already shipped; stays the only
@@ -612,15 +613,21 @@ contract (`-- param: <name> <type> [= <default>]` front-matter + typed `$(name)`
 - *What values/identifiers does the query take?* → params (this section).
 - *When/how is it driven?* → run / cursor / monitor cadence (unchanged).
 
-**Mechanism: pre-parse typed substitution, not engine named parameters.** The fork's named
-parameters (`$name`) are fully plumbed in glue (`Session.NamedArgs` → planner + eval
+**Mechanism: ONE syntax (SQL++ `$name`), bound EARLY for packs.** There are not two parameter
+grammars: a pack parameter is written exactly as a SQL++ named parameter, and n1k1 binds it at
+load time (pre-parse constant folding) instead of engine-runtime. The fork's runtime named
+parameters are fully plumbed in glue (`Session.NamedArgs` → planner + eval
 `NamedParameter`), and for an *ad-hoc single statement* they are the principled value mechanism
 (a future `-args` CLI flag; no rendering, no injection surface). But a PACK's economics are
 literal-driven: the Aho-Corasick predicate index prunes on **string literals extracted at plan
 time**, and the compiled lane **bakes literals into generated code** — `WHERE s.type = $t` has no
 extractable literal, so every parameterized gate degrades to always-wake and drops out of the
-compile lane. Pre-parse substitution happens before the planner ever looks: the engine sees a
-literal, and fusion/pruning/compiled all work unchanged. (Same reason macros are pre-parse.)
+compile lane. Early binding happens before the planner ever looks: the engine sees a
+literal, and fusion/pruning/compiled all work unchanged (same reason macros are pre-parse) —
+same syntax, different binding TIME, chosen per context: packs fold early; a future ad-hoc
+`-args` flag can pass the same `$name` as true runtime args. Resolution is quote- and
+comment-aware and matches the longest DECLARED name (`$type-field` binds `type-field`;
+`$depth - 1` needs the spacing); an undeclared `$word` in a pack errors naming the declared set.
 Injection is closed by typing, as in builtins: `ident` renders backticked and rejects backticks,
 `int` must parse, `str` renders via a quoted literal, `list` as a JSON string array.
 

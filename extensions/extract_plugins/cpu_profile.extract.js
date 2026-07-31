@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // cpu_profile.extract.js — an OPAQUE recipe for cbcollect's binary Go CPU-profile logs
 // (gzipped pprof protobuf: goxdcr_cprof.log, projector_cprof.log). These genuinely
 // can't be framed into rows, so this recipe CLAIMS them and marks them opaque: `FROM

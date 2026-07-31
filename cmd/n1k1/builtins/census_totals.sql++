@@ -7,6 +7,6 @@
 -- Companion to census.sql++: coverage = census.docs / totals.n per record type,
 -- computed at READ time (a stored ratio wouldn't merge; the numerator and
 -- denominator each do).
-SELECT IFMISSING(r.$(type-field), "") AS rt, COUNT(*) AS n
-FROM $(keyspace) r
-GROUP BY IFMISSING(r.$(type-field), "")
+SELECT IFMISSING(r.$type-field, "") AS rt, COUNT(*) AS n
+FROM $keyspace r
+GROUP BY IFMISSING(r.$type-field, "")

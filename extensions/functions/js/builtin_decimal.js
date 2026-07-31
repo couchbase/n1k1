@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // builtin_decimal.js — exact fixed-point DECIMAL arithmetic, as a multi-export JS module.
 //
 // JS numbers (and SQL++ numbers) are float64, so `0.1 + 0.2 !== 0.3`. These functions do

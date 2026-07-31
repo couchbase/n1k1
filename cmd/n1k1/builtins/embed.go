@@ -26,17 +26,25 @@
 //	    silently running a different query than the one they validated against.
 //
 //	-- param: <name> <type> [= <default>]
-//	    One declared substitution parameter (repeatable). A `$(name)` placeholder in
-//	    the SQL body is replaced by the (validated, safely rendered) value from the
-//	    URI query-string; no `=` means REQUIRED. Types:
+//	    One declared substitution parameter (repeatable). A `$name` reference in the
+//	    SQL body — SQL++'s own named-parameter syntax, ONE grammar — is replaced by
+//	    the (validated, safely rendered) value from the URI query-string; no `=`
+//	    means REQUIRED. Types:
 //	      ident  an identifier/path rendered `backticked` (keyspace, field names)
 //	      int    an integer rendered bare
 //	      list   a comma-separated list rendered as a JSON string array (empty -> [])
 //
-// Value-only substitution is deliberate: the template's SQL STRUCTURE is static, so
-// what `.multi show` prints is exactly what runs (and exactly what a user forks) —
-// structural variation is expressed IN SQL++ (e.g. `WHEN $(depth) >= 2 AND ...`),
-// never in Go string-building.
+// The syntax is SQL++ named parameters; the BINDING is early (pre-parse constant
+// folding) rather than engine-runtime, because a pack's economics are literal-driven
+// (the predicate index prunes on plan-time literals; the compiled lane bakes them) —
+// a runtime $param gate would degrade to always-wake. Resolution is quote-aware
+// (a $ inside a string/backtick literal is data) and matches the LONGEST declared
+// name with a non-name-character boundary (so `$type-field` binds the declared
+// `type-field`; arithmetic needs spacing: `$depth - 1`, since `$depth-1` reads as
+// an undeclared name and errors). Value-only substitution is deliberate: the
+// template's SQL STRUCTURE is static, so what `.multi show` prints is exactly what
+// runs (and exactly what a user forks) — structural variation is expressed IN SQL++
+// (e.g. `WHEN $depth >= 2 AND ...`), never in Go string-building.
 package builtins
 
 import (
@@ -55,7 +63,7 @@ var builtinFS embed.FS
 
 // Param is one declared substitution parameter of a builtin query.
 type Param struct {
-	Name     string // the $(name) placeholder / URI query-string key
+	Name     string // the $name reference / URI query-string key
 	Type     string // "ident" | "int" | "list"
 	Default  string // raw default value ("" is a valid default)
 	Required bool   // no `= default` was declared
@@ -68,7 +76,7 @@ type Query struct {
 	Version     string // `-- version:` front-matter (the ARTIFACT's version), "" if undeclared
 	Description string
 	Params      []Param
-	Template    string               // the SQL body with $(name) placeholders
+	Template    string               // the SQL body with $name references
 	Entry       glue.MultiQueryEntry // the full parsed entry (fixtures ride along)
 }
 
@@ -181,33 +189,75 @@ func (q Query) Resolve(given map[string]string) (map[string]string, error) {
 	return out, nil
 }
 
-var placeholderRE = regexp.MustCompile(`\$\(([A-Za-z0-9_-]+)\)`)
+// nameCharRE matches characters that may appear in a $name reference.
+var nameCharRE = regexp.MustCompile(`^[A-Za-z0-9_-]`)
 
-// Render substitutes the resolved params into the template, each value validated
-// and rendered per its declared type (ident -> `backticked`, int -> bare digits,
-// list -> a JSON string array). A leftover placeholder (template names a param it
-// never declared) is an error — an embedded-file defect, never silent.
+// Render substitutes the resolved params into the template's `$name` references
+// (SQL++ named-parameter syntax, bound early), each value validated and rendered per
+// its declared type (ident -> `backticked`, int -> bare digits, list -> a JSON
+// string array). Quote-aware: a $ inside a "…" / '…' / `…` literal is data. Each
+// reference binds the LONGEST declared param name it prefixes, bounded by a
+// non-name character ($type-field binds `type-field`; arithmetic needs spacing:
+// `$depth - 1`). A $word matching NO
+// declared param is an error — an undeclared parameter silently passed through
+// would surface later as an engine named-arg the pack never supplies.
 func (q Query) Render(resolved map[string]string) (string, error) {
-	byName := map[string]Param{}
-	for _, p := range q.Params {
-		byName[p.Name] = p
+	// Longest declared names first, so the greedy match is deterministic.
+	sorted := append([]Param(nil), q.Params...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i].Name) > len(sorted[j].Name) })
+
+	var out strings.Builder
+	t := q.Template
+	var quote byte // active string/ident delimiter, 0 when outside
+	for i := 0; i < len(t); i++ {
+		ch := t[i]
+		switch {
+		case quote != 0:
+			if ch == quote {
+				quote = 0
+			}
+		case ch == '-' && i+1 < len(t) && t[i+1] == '-':
+			// A `--` line comment: copied verbatim to end-of-line — an apostrophe in
+			// prose ("it's") must not open a string, and no substitution happens there.
+			for i < len(t) && t[i] != '\n' {
+				out.WriteByte(t[i])
+				i++
+			}
+			if i < len(t) {
+				out.WriteByte('\n')
+			}
+			continue
+		case ch == '"' || ch == '\'' || ch == '`':
+			quote = ch
+		case ch == '$' && i+1 < len(t) && nameCharRE.MatchString(t[i+1:]):
+			matched := false
+			for _, p := range sorted {
+				rest := t[i+1:]
+				if strings.HasPrefix(rest, p.Name) &&
+					(len(rest) == len(p.Name) || !nameCharRE.MatchString(rest[len(p.Name):])) {
+					v, err := renderValue(p, resolved[p.Name])
+					if err != nil {
+						return "", err
+					}
+					out.WriteString(v)
+					i += len(p.Name)
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				end := i + 1
+				for end < len(t) && nameCharRE.MatchString(t[end:]) {
+					end++
+				}
+				return "", fmt.Errorf("builtin %s: $%s matches no declared param (declared: %s)",
+					q.Name, t[i+1:end], q.paramNames())
+			}
+			continue
+		}
+		out.WriteByte(ch)
 	}
-	var rerr error
-	sql := placeholderRE.ReplaceAllStringFunc(q.Template, func(m string) string {
-		name := placeholderRE.FindStringSubmatch(m)[1]
-		p, ok := byName[name]
-		if !ok {
-			rerr = fmt.Errorf("builtin %s: template placeholder $(%s) has no declared param", q.Name, name)
-			return m
-		}
-		v, err := renderValue(p, resolved[p.Name])
-		if err != nil {
-			rerr = err
-			return m
-		}
-		return v
-	})
-	return sql, rerr
+	return out.String(), nil
 }
 
 func renderValue(p Param, val string) (string, error) {

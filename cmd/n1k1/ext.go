@@ -122,7 +122,15 @@ type extEntry struct {
 	code               string   // full source, or "" when not retrievable
 	nExamples          int      //
 	fns                []string // for a "javascript-module" row: the SQL functions it defines
+	// meta is the artifact's `// key: value` front-matter (glue.JSFrontMatter): the
+	// JS mirror of *.sql++ front-matter. `version` (the ARTIFACT's version, not
+	// n1k1's) is the blessed key; every other key (labels, annotations, whatever a
+	// team invents) is captured too so it stays filterable/analyzable, never dropped.
+	meta map[string]string
 }
+
+// version is the artifact's declared `// version:` front-matter, "" if undeclared.
+func (e extEntry) version() string { return e.meta["version"] }
 
 // gatherExtensions collects EVERY loaded extension across the kinds -- scalar/aggregate/
 // stream (glue.ListExtensions), extract plugins (ListExtractPlugins), and macros
@@ -188,6 +196,11 @@ func (c *cli) gatherExtensions() []extEntry {
 		out = append(out, extEntry{name: "@" + m.Name, kind: "macro", origin: origin,
 			code: m.Source, nExamples: len(glue.ExtExamplesFor("macro", m.Name))})
 	}
+	// Capture each artifact's `// key: value` front-matter (version + any other keys)
+	// from its source, uniformly across kinds.
+	for i := range out {
+		out[i].meta = glue.JSFrontMatter(out[i].code)
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].kind != out[j].kind {
 			return out[i].kind < out[j].kind
@@ -209,7 +222,11 @@ func (c *cli) extList() {
 		if e.nExamples > 0 {
 			ex = fmt.Sprintf("  (%d example%s)", e.nExamples, plural(e.nExamples))
 		}
-		fmt.Fprintf(c.stderr, "  %-22s %-22s %s%s\n", e.name, e.kind, e.origin, ex)
+		ver := e.version()
+		if ver == "" {
+			ver = "-" // undeclared artifact version (add `// version: v1.0` front-matter)
+		}
+		fmt.Fprintf(c.stderr, "  %-22s %-22s %-6s %s%s\n", e.name, e.kind, ver, e.origin, ex)
 		if len(e.fns) > 0 { // a module: list the functions it defines
 			fmt.Fprintln(c.stderr, c.style.Dim("      fns: "+strings.Join(e.fns, ", ")))
 		}
@@ -228,10 +245,27 @@ func (c *cli) extShow(name string) {
 	for _, e := range c.gatherExtensions() {
 		if strings.TrimPrefix(e.name, "@") == q {
 			fmt.Fprintf(c.stderr, "%s  [%s]  %s", e.name, e.kind, e.origin)
+			if v := e.version(); v != "" {
+				fmt.Fprintf(c.stderr, "  version=%s", v)
+			}
 			if e.nExamples > 0 {
 				fmt.Fprintf(c.stderr, "  (%d example%s)", e.nExamples, plural(e.nExamples))
 			}
 			fmt.Fprintln(c.stderr)
+			// The rest of the front-matter (labels/annotations/anything a team invented)
+			// — captured uniformly, shown here so it's discoverable + analyzable.
+			if len(e.meta) > 0 {
+				keys := make([]string, 0, len(e.meta))
+				for k := range e.meta {
+					if k != "version" {
+						keys = append(keys, k)
+					}
+				}
+				sort.Strings(keys)
+				for _, k := range keys {
+					fmt.Fprintln(c.stderr, c.style.Dim("  "+k+": "+e.meta[k]))
+				}
+			}
 			if e.code == "" {
 				fmt.Fprintln(c.stderr, c.style.Dim("  (source not available for an inline extension)"))
 				return

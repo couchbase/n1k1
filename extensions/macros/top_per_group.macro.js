@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // top_per_group.macro.js — keep the top-N rows per partition, ranked by an ORDER BY.
 //
 // The "N slowest ops per node", "top 3 error types per keyspace", "the highest-latency

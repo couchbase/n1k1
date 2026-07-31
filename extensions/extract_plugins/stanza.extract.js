@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // stanza.extract.js — a JS EXTRACT RECIPE demonstrating the STREAMING imperative path
 // (extractStream, DESIGN-extensions.md "Extract functions"). It parses a ".stanza"
 // file: blank-line-delimited records, each a block of "key: value" lines. For example

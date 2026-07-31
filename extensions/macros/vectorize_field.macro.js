@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // vectorize_field.macro.js — batch-embed a text field of a keyspace into per-row
 // {id, text, vec}, ready to materialize as a searchable vec keyspace (DESIGN-vectors.md).
 // Sugars the explicit GROUP-BY-page batching wall so you don't hand-write it:

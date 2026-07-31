@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // toml2.extract.js — a JS EXTRACT RECIPE that parses TOML files, as a DEMO of the
 // imperative extract(file, emit) path (DESIGN-extensions.md "Extract functions").
 //

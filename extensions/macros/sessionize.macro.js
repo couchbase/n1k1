@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // sessionize.macro.js — group consecutive events into sessions/episodes, starting a
 // new session whenever the gap to the previous event exceeds a threshold.
 //

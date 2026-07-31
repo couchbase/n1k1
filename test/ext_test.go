@@ -22,6 +22,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	builtinjs "github.com/couchbase/n1k1/extensions/functions/js"
+	"github.com/couchbase/n1k1/extensions/macros"
 	"github.com/couchbase/n1k1/glue"
 )
 
@@ -640,5 +642,22 @@ func TestExtRegisterExtensionGlob(t *testing.T) {
 	// EJSON_DECODE (builtin_ejson) strips the tag off a DECIMAL_ADD (builtin_decimal) result.
 	if got := extRawRows(t, sess, `SELECT RAW EJSON_DECODE(DECIMAL_ADD("1.5", "1.5"))`); len(got) != 1 || got[0] != `3` {
 		t.Fatalf(`EJSON_DECODE(DECIMAL_ADD("1.5","1.5")) = %v, want [3]`, got)
+	}
+}
+
+// TestShippedJSArtifactVersions: every SHIPPED JS artifact (built-in macros + built-in
+// JS modules) declares `// version:` front-matter — the artifact's own version (not
+// n1k1's), the same contract as the embedded *.sql++ builtins. A new shipped artifact
+// without one fails here, not in a user's compatibility puzzle.
+func TestShippedJSArtifactVersions(t *testing.T) {
+	for _, m := range macros.Builtins() {
+		if v := glue.JSFrontMatter(m.Source)["version"]; v == "" {
+			t.Errorf("built-in macro %s: missing `// version:` front-matter", m.Name)
+		}
+	}
+	for _, b := range builtinjs.Builtins() {
+		if v := glue.JSFrontMatter(b.Source)["version"]; v == "" {
+			t.Errorf("built-in JS module %s: missing `// version:` front-matter", b.Name)
+		}
 	}
 }

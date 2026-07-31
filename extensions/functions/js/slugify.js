@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // slugify(s) -> a lowercase, dash-separated URL slug. Shows JS string/regexp
 // builtins (a full ES runtime is available) returning a string value.
 function slugify(s) {

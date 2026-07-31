@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // geomean — geometric mean, as a JS aggregate (3-callback protocol).
 // State {logsum,n}; accumulate log(v) for numeric positives (log-sum is
 // numerically stabler than a running product), then exp(mean) at the end.

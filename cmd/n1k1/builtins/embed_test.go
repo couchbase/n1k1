@@ -57,13 +57,13 @@ func TestRegistryLint(t *testing.T) {
 			if rerr != nil {
 				t.Fatalf("%s: Render: %v", q.Name, rerr)
 			}
-			if strings.Contains(sql, "$(") {
-				t.Errorf("%s: rendered SQL still contains a placeholder:\n%s", q.Name, sql)
+			if strings.Contains(sql, "$") { // no unresolved $name may survive (adjust if a builtin ever needs a literal $)
+				t.Errorf("%s: rendered SQL still contains a $ reference:\n%s", q.Name, sql)
 			}
 			// Every DECLARED param must appear in the template (a declared-but-unused
 			// param is a doc lie).
 			for _, p := range q.Params {
-				if !strings.Contains(q.Template, "$("+p.Name+")") {
+				if !strings.Contains(q.Template, "$"+p.Name) {
 					t.Errorf("%s: declared param %q never used in the template", q.Name, p.Name)
 				}
 			}

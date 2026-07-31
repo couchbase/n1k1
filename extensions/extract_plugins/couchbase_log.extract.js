@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // couchbase_log.extract.js — a JS EXTRACT RECIPE for cbcollect_info's couchbase.log:
 // tens of MB of ====-delimited command dumps (uname/date/ntpq/sysctl/...). It supplies
 // only describe() (the cheap, once-per-file planning pass, run in goja); the per-record

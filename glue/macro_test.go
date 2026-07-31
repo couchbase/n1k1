@@ -129,11 +129,11 @@ func TestExpandMacrosStringAndCommentSafety(t *testing.T) {
 	resetMacroRegistry()
 	regMacro("box", nil, func(a *MacroArgs, c *MacroCtx) (string, error) { return "X", nil })
 	for _, s := range []string{
-		`SELECT '@box()' AS a`,           // single-quoted string
-		`SELECT "@box()" AS a`,           // double-quoted string
-		"SELECT 1 -- @box()\nFROM t",     // line comment
-		"SELECT 1 /* @box() */ FROM t",   // block comment
-		"SELECT `@box()` AS a",           // backtick identifier
+		`SELECT '@box()' AS a`,         // single-quoted string
+		`SELECT "@box()" AS a`,         // double-quoted string
+		"SELECT 1 -- @box()\nFROM t",   // line comment
+		"SELECT 1 /* @box() */ FROM t", // block comment
+		"SELECT `@box()` AS a",         // backtick identifier
 	} {
 		if got, err := ExpandMacros(s); err != nil || got != s {
 			t.Errorf("ExpandMacros(%q) = %q, %v; want unchanged (macro inside string/comment)", s, got, err)
@@ -175,11 +175,11 @@ func TestExpandMacrosArityErrors(t *testing.T) {
 		return "ok", err
 	})
 	cases := map[string]string{
-		"@m()":                "missing required argument",
-		"@m(1, 2, 3)":         "too many positional",
-		"@m(1, c => 2)":       "unknown named argument",
-		"@m(1, a => 2)":       "given both positionally and by name",
-		"@m(a => 1, 2)":       "positional argument \"2\" after a named",
+		"@m()":          "missing required argument",
+		"@m(1, 2, 3)":   "too many positional",
+		"@m(1, c => 2)": "unknown named argument",
+		"@m(1, a => 2)": "given both positionally and by name",
+		"@m(a => 1, 2)": "positional argument \"2\" after a named",
 	}
 	for call, want := range cases {
 		if _, err := ExpandMacros(call); err == nil || !strings.Contains(err.Error(), want) {
@@ -234,8 +234,8 @@ func TestJSMacroGrepContext(t *testing.T) {
 	for _, want := range []string{
 		"3 PRECEDING", "2 FOLLOWING", // named + default coerced as raw
 		"ctx__m1", "near__m2", // hygiene gensym, pass-global counter
-		`sev = "ERROR"`,       // predicate spliced verbatim
-		"FROM logs",           // identifier arg spliced verbatim
+		`sev = "ERROR"`, // predicate spliced verbatim
+		"FROM logs",     // identifier arg spliced verbatim
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expansion missing %q in:\n%s", want, out)
@@ -314,5 +314,31 @@ func TestListMacros(t *testing.T) {
 	got := ListMacros()
 	if len(got) != 2 || got[0].Name != "aaa" || got[1].Name != "bbb" {
 		t.Fatalf("ListMacros load-order = %+v", got)
+	}
+}
+
+// TestJSFrontMatter pins the JS artifact front-matter convention (the *.sql++ mirror):
+// leading `// key: value` lines are captured — ALL keys, not just version, so labels/
+// annotations/anything a team invents stays filterable — and the first prose comment
+// or code line ends the block.
+func TestJSFrontMatter(t *testing.T) {
+	m := JSFrontMatter("// version: v1.2\n// team: devinfra\n//\n// prose — ignored: yes\nfunction f() {}\n")
+	if m["version"] != "v1.2" || m["team"] != "devinfra" {
+		t.Fatalf("front-matter not captured: %v", m)
+	}
+	if _, leaked := m["prose — ignored"]; leaked {
+		t.Fatalf("prose after the block must not be captured: %v", m)
+	}
+	// A spaced "key" is prose, not front-matter (the `// NOTE about: x` case).
+	if m := JSFrontMatter("// NOTE about: things\n// version: v9\n"); m != nil {
+		t.Fatalf("prose first line must end the block: %v", m)
+	}
+	// Blank comment-free source: nil.
+	if m := JSFrontMatter("function g() {}\n"); m != nil {
+		t.Fatalf("no front-matter: got %v", m)
+	}
+	// Keys are lowercased; values verbatim.
+	if m := JSFrontMatter("// Version:   V1.0-rc1  \n"); m["version"] != "V1.0-rc1" {
+		t.Fatalf("key casing/value trim: %v", m)
 	}
 }

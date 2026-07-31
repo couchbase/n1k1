@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // builtin_ejson.js — SQL++ helpers to convert VARIANT values to & from the EJSON-tagged
 // typed-JSON form (e.g. {"$numberDecimal":"0.3"}) that the DECIMAL_* family and other
 // marshal:"variant" functions produce. Thin SQL++-facing wrappers over the host `ejson`

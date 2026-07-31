@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // grep_context.macro.js — grep-style -A/-B/-C context, as a one-line SQL++ macro.
 //
 // Selecting the rows within N lines of a match is the most natural log question,

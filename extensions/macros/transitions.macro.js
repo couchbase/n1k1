@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // transitions.macro.js — keep only rows where a field CHANGES value vs the previous
 // row (per partition), carrying the previous value alongside.
 //

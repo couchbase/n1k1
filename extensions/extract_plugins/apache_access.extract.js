@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // apache_access.extract.js — a JS EXTRACT RECIPE for Apache/nginx "combined" access
 // logs. It supplies only describe() (the cheap, once-per-file planning pass, run in
 // goja); the per-row extract runs natively on records.SpecApply — no per-row JS.

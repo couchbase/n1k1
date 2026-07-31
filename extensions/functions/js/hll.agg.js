@@ -1,3 +1,5 @@
+// version: v1.0
+//
 // hll — approximate distinct count (HyperLogLog), as a MERGEABLE JS aggregate.
 //
 // This is the flagship for the merge() hook (DESIGN-census.md engine-ask #2): a
