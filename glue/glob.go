@@ -15,9 +15,11 @@ package glue
 
 // Inline glob keyspaces (DESIGN-data.md "Mode 2b"): a backtick-quoted glob used as
 // a FROM keyspace name -- `FROM `./data/**/*.json`` -- resolves to a synthetic
-// keyspace = the union of the glob's matches. No cbq grammar/parser change: the
-// backticks make it one quoted identifier (the parser hands us the literal string),
-// and this wrapper recognizes a glob-shaped name in the "default" namespace.
+// keyspace = the union of the glob's matches. A BARE record-file path (no glob
+// metacharacter, e.g. `FROM `/tmp/x/window.jsonl``) resolves the same way to a
+// one-file keyspace. No cbq grammar/parser change: the backticks make it one quoted
+// identifier (the parser hands us the literal string), and this wrapper recognizes
+// a glob- or file-shaped name in the "default" namespace.
 //
 // The wrapper sits INNERMOST (file datastore -> glob -> flat/si), so the outer
 // flat/secondary-index wrappers keep their type identities (IsFlatDatastore / the
@@ -35,6 +37,7 @@ package glue
 // via RecordsGlob), so the query's -formats lockdown applies and new files show up.
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -92,7 +95,7 @@ func (p *globNamespace) Datastore() datastore.Datastore { return p.ds }
 func (p *globNamespace) Id() string                     { return flatRootNamespace }
 func (p *globNamespace) Name() string                   { return flatRootNamespace }
 
-func (p *globNamespace) KeyspaceIds() ([]string, errors.Error)   { return p.KeyspaceNames() }
+func (p *globNamespace) KeyspaceIds() ([]string, errors.Error) { return p.KeyspaceNames() }
 func (p *globNamespace) KeyspaceNames() ([]string, errors.Error) {
 	if p.inner != nil {
 		return p.inner.KeyspaceNames() // globs are query-time, not enumerable
@@ -111,6 +114,25 @@ func (p *globNamespace) KeyspaceByName(name string) (datastore.Keyspace, errors.
 			return nil, errors.NewError(err, "glob keyspace "+name)
 		}
 		return ks, nil
+	}
+	// A BARE record-file path (no glob metacharacter) is an inline keyspace too:
+	// `FROM `/tmp/x/window.jsonl` c` used to error "no keyspace" while `/tmp/x/*.jsonl`
+	// worked, forcing a give-the-file-its-own-dir-and-glob workaround. The scan side
+	// already degenerates cleanly (GlobFiles on a metacharacter-free pattern walks just
+	// that file, and the IDEA-0001 re-anchor keeps extract-plugin framing intact), so
+	// only this resolution gate refused. Same prefix convention as globs; gated on the
+	// record-file extension check (recipes included) + an existing regular file, so
+	// ordinary keyspace names still delegate to the real "default" unchanged.
+	if records.IsRecordFile(name) {
+		if abs := globAbsPattern(name, p.ds.dataRoot); abs != "" {
+			if fi, err := os.Stat(abs); err == nil && fi.Mode().IsRegular() {
+				ks, err := newGlobKeyspace(p, name, p.ds.dataRoot)
+				if err != nil {
+					return nil, errors.NewError(err, "file keyspace "+name)
+				}
+				return ks, nil
+			}
+		}
 	}
 	if p.inner != nil {
 		return p.inner.KeyspaceByName(name)

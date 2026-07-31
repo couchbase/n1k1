@@ -245,4 +245,20 @@ func TestGlobKeyspace(t *testing.T) {
 	if g := rowsOf("SELECT x.v FROM `" + absGlob + "` AS x"); len(g) != 3 {
 		t.Errorf("absolute `%s` rows = %v, want 3", absGlob, g)
 	}
+
+	// A BARE record-file path (no glob metacharacter) is an inline keyspace too --
+	// it used to error "no keyspace" (only globs resolved), forcing a
+	// give-the-file-its-own-dir-and-glob workaround. Absolute + root-relative forms.
+	absFile := filepath.Join(root, "a", "b", "2.json")
+	if g := rowsOf("SELECT x.v FROM `" + absFile + "` AS x"); len(g) != 1 || g[0] != `{"v":2}` {
+		t.Errorf("bare absolute file `%s` = %v, want [{\"v\":2}]", absFile, g)
+	}
+	if g := rowsOf("SELECT x.v FROM `a/1.json` AS x"); len(g) != 1 || g[0] != `{"v":1}` {
+		t.Errorf("bare root-relative file `a/1.json` = %v, want [{\"v\":1}]", g)
+	}
+
+	// A path that is NOT an existing record file still errors (no silent empty).
+	if _, err := s.Run("SELECT x.v FROM `" + filepath.Join(root, "a", "nope.json") + "` AS x"); err == nil {
+		t.Errorf("nonexistent bare file should still error, got rows")
+	}
 }
