@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/couchbase/n1k1/glue"
 )
 
 // TestMultiCursorAppendLoop drives the full Phase-1 CLI loop over a growing jsonl
@@ -382,6 +384,115 @@ func TestMultiCursorAnnotations(t *testing.T) {
 	}
 	if specB, _ := shB["spec_hash"].(string); specB != specA || specA == "" {
 		t.Errorf("spec_hash must be independent of annotations: CC-A=%q CC-B=%q", specA, specB)
+	}
+}
+
+// TestMultiCursorHashSchemeUpgrade guards the spec_hash-across-versions fix: a sidecar
+// whose `queries` id was stamped by an OLDER binary under an older normalization scheme
+// (scheme 1 = ends-only TrimSpace; the n1k1-for-ai team hit exactly this when ISSUE-05's
+// scheme 2 landed and every advance started refusing with a false query-drift) must
+// peek clean, advance WITHOUT --allow-drift, be re-stamped to the current scheme -- and
+// a real edit must still drift.
+func TestMultiCursorHashSchemeUpgrade(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "default", "events"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default", "events", "e.jsonl"),
+		[]byte(`{"n":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The query carries an interior blank line -- the shape whose hash scheme 2 moved.
+	qfile := filepath.Join(t.TempDir(), "q.sql++")
+	body := "-- label: CC-S\n-- a prose preamble\n\nSELECT e.n FROM events e"
+	if err := os.WriteFile(qfile, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	env := func() map[string]interface{} {
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+	sidecarPath := filepath.Join(store, "CC-S.json")
+	rewrite := func(mut func(m map[string]interface{})) {
+		b, err := os.ReadFile(sidecarPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		mut(m)
+		nb, _ := json.Marshal(m)
+		if err := os.WriteFile(sidecarPath, nb, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out.Reset()
+	c.cmdMulti("cursor create CC-S --queries " + qfile + " --from start --cursor-store " + store)
+	if env()["ok"] != true {
+		t.Fatalf("create: %s (stderr %s)", out.String(), errb.String())
+	}
+
+	// Simulate the old binary: re-stamp the sidecar with the SCHEME-1 id, no scheme field.
+	dets, err := glue.LoadPack(qfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := glue.QueriesIDUnderScheme("CC-S", dets, 1)
+	curID := glue.QueriesID("CC-S", dets)
+	if oldID == curID {
+		t.Fatal("test premise broken: scheme 1 and 2 ids should differ for this query")
+	}
+	rewrite(func(m map[string]interface{}) {
+		m["queries"] = oldID
+		delete(m, "hash_scheme")
+	})
+
+	// peek: NOT drifted (no queries_current), and advance succeeds WITHOUT --allow-drift.
+	out.Reset()
+	c.cmdMulti("cursor peek CC-S --cursor-store " + store)
+	if pv := env(); pv["queries_current"] != nil || pv["status"] == "error" {
+		t.Fatalf("old-scheme sidecar peeked as drifted: %s", out.String())
+	}
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance CC-S --quiet --cursor-store " + store)
+	if av := env(); av["status"] == "error" || c.failed {
+		t.Fatalf("old-scheme sidecar refused advance: %s", out.String())
+	}
+
+	// The advance re-stamped the sidecar to the CURRENT scheme.
+	b, _ := os.ReadFile(sidecarPath)
+	var m map[string]interface{}
+	json.Unmarshal(b, &m)
+	if m["queries"] != curID {
+		t.Fatalf("advance did not re-stamp to the current scheme id: got %v, want %s", m["queries"], curID)
+	}
+	if s, _ := m["hash_scheme"].(float64); int(s) != glue.QueriesHashScheme {
+		t.Fatalf("advance did not stamp hash_scheme: got %v", m["hash_scheme"])
+	}
+
+	// A REAL edit still drifts: peek surfaces queries_current, advance refuses.
+	if err := os.WriteFile(qfile, []byte(body+" WHERE e.n > 0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	c.cmdMulti("cursor peek CC-S --cursor-store " + store)
+	if env()["queries_current"] == nil {
+		t.Fatalf("real edit not surfaced as drift: %s", out.String())
+	}
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor advance CC-S --quiet --cursor-store " + store)
+	if ev, _ := env()["error"].(map[string]interface{}); ev == nil || ev["kind"] != "query-drift" {
+		t.Fatalf("real edit must refuse advance with query-drift: %s", out.String())
 	}
 }
 

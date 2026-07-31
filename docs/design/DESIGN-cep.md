@@ -602,8 +602,18 @@ recipes), `.multi lint`. *New:* treat a recipe dir as desired-state; `plan` (dif
 > `--source-ref` **auto-captures** the queries dir's git HEAD (+`-dirty`) when unset (the ISSUE-03 #5
 > ask). Metadata stays OUT of `SpecHash`/`PackID` (the delta identity), so a retag never re-baselines —
 > asserted by `TestMultiCursorAnnotations` (two cursors, same pack, different metadata → equal
-> `spec_hash`). ⚠ `SpecHash`/`PackID` are still not stable across n1k1 *binary* versions (they hash the
-> post-rewrite statement text); pinning them to raw source is a separate open item.
+> `spec_hash`).
+
+> **Amended — `spec_hash` is stable across n1k1 versions (hash-scheme versioning).** The queries id
+> (`glue.QueriesID`, né `PackID`) hashes raw source text under a NORMALIZATION SCHEME, and the
+> conventions evolve (scheme 1 = ends-only `TrimSpace`; scheme 2 = ISSUE-05's blank-line-invariant
+> normalizer — whose landing re-hashed every file with interior blank lines and made `advance` refuse
+> with a false `query-drift` on every cursor stamped by an older binary). Now: each scheme's
+> normalizer is kept frozen in `queriesHashNormalizers` (a change = a NEW scheme, never an edit);
+> drift comparison is `QueriesIDMatches` — the stored id matching under ANY known scheme is NOT
+> drift; `advance` re-stamps `queries` to the current scheme (`hash_scheme` in the sidecar and in
+> `show`/`list --long`), migrating old sidecars forward with no flag day. Only a real content edit
+> (no scheme matches) drifts. Guards: `TestQueriesIDSchemes`, `TestMultiCursorHashSchemeUpgrade`.
 
 **Phase 4 — Composition (pack DAG).** *Build on:* temp-tables / CTEs / sequence op (exist), and the
 Phase-1 labelResults journal as the materialized intermediate. *New:* a `pack:<name>` labelResults keyspace a

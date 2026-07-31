@@ -624,14 +624,15 @@ func (c *cli) cursorCreate(arg string) {
 		Name:        a.name,
 		QueriesPath: strings.Join(a.pack, ","),
 		Bind:        a.bind,
-		Queries:     glue.PackID(a.name, dets),
+		Queries:     glue.QueriesID(a.name, dets),
+		HashScheme:  glue.QueriesHashScheme,
 		Mode:        mode,
 		Description: effDesc,
 		Created:     now,
 		Updated:     now,
 	}
 	// Client-owned metadata (DESIGN-cep.md labels/annotations split): CLI flags win over
-	// front-matter. These are OUTSIDE PackID/spec_hash, so stamping provenance never moves
+	// front-matter. These are OUTSIDE QueriesID/spec_hash, so stamping provenance never moves
 	// the position -- see CursorState.Annotations. Populated before Save; consumed keys are
 	// pulled out of `ignored` above via honoredFM.
 	ann, aerr := buildAnnotations(a, fm)
@@ -865,8 +866,12 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	// watermark. peek surfaces the drift (queries_current); advance refuses it (the
 	// committed position becomes meaningless under a different query) unless
 	// --allow-drift. `plan` used to be the drift check and was removed in the rename.
-	currentID := glue.PackID(st.Name, dets)
-	drifted := currentID != st.Queries
+	// Drift = the stored id matches under NO known hash scheme (QueriesIDMatches) --
+	// a plain == against the current scheme would fake drift on every cursor stamped
+	// by an older binary whenever a normalization scheme changes; advance re-stamps
+	// st.Queries to the current scheme below, migrating old sidecars forward.
+	currentID := glue.QueriesID(st.Name, dets)
+	drifted := glue.QueriesIDMatches(st.Queries, st.Name, dets) == 0
 	if advance && drifted && !a.allowDrift {
 		c.cursorDriftRefuse(a.name, st.Queries, currentID)
 		return
@@ -976,7 +981,8 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	moved := !waterEqual(committed, newWater)
 
 	st.Water = newWater
-	st.Queries = currentID // ISSUE-17: adopt the current query as the baseline (no-op if unchanged; re-baselines an --allow-drift advance so it isn't permanently "drifted")
+	st.Queries = currentID                 // ISSUE-17: adopt the current query as the baseline (no-op if unchanged; re-baselines an --allow-drift advance so it isn't permanently "drifted")
+	st.HashScheme = glue.QueriesHashScheme // migrate an old-scheme sidecar forward
 	st.Updated = time.Now().UTC().Format(time.RFC3339)
 	st.LastCount = len(rows)
 	if moved {
@@ -1134,7 +1140,8 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 		return
 	}
 	st.SnapVersion = newVer
-	st.Queries = currentID // ISSUE-17: adopt the current query as the baseline (see append path)
+	st.Queries = currentID                 // ISSUE-17: adopt the current query as the baseline (see append path)
+	st.HashScheme = glue.QueriesHashScheme // migrate an old-scheme sidecar forward
 	st.Updated = time.Now().UTC().Format(time.RFC3339)
 	st.LastCount = len(rows)
 	if changed {
@@ -1221,6 +1228,7 @@ func (c *cli) cursorList(arg string) {
 		Bind        string                 `json:"bind,omitempty"`
 		IdField     string                 `json:"id_field,omitempty"`
 		Schema      int                    `json:"schema,omitempty"`
+		HashScheme  int                    `json:"hash_scheme,omitempty"`
 		Description string                 `json:"description,omitempty"`
 		Annotations map[string]interface{} `json:"annotations,omitempty"`
 		Labels      map[string]string      `json:"labels,omitempty"`
@@ -1241,6 +1249,7 @@ func (c *cli) cursorList(arg string) {
 		if a.long {
 			row.QueriesPath, row.Bind, row.IdField = st.QueriesPath, st.Bind, st.IdField
 			row.Schema, row.Description = glue.CursorSchemaVersion, st.Description
+			row.HashScheme = st.HashScheme
 			row.Annotations, row.Labels, row.SourceRef = st.Annotations, st.Labels, st.SourceRef
 			row.Created, row.Updated, row.LastCount = st.Created, st.Updated, st.LastCount
 		}
@@ -1290,8 +1299,10 @@ func (c *cli) cursorCheck(arg string) {
 			if derr != nil {
 				row.Current, row.Error, row.Drifted = "", derr.Error(), true
 			} else {
-				row.Current = glue.PackID(st.Name, dets)
-				row.Drifted = row.Current != row.Baseline
+				// Any-scheme compare (not ==): a baseline stamped by an older binary
+				// under an older normalization scheme is NOT drift (see QueriesIDMatches).
+				row.Current = glue.QueriesID(st.Name, dets)
+				row.Drifted = glue.QueriesIDMatches(row.Baseline, st.Name, dets) == 0
 			}
 		}
 		if row.Drifted {
@@ -1342,7 +1353,8 @@ func (c *cli) cursorShow(arg string) {
 		IdField       string      `json:"id_field,omitempty"`
 		Committed     interface{} `json:"committed"`
 		CommittedID   string      `json:"committed_id"`
-		Schema        int         `json:"schema"` // sidecar/output schema version (ISSUE-15 §3)
+		Schema        int         `json:"schema"`                // sidecar/output schema version (ISSUE-15 §3)
+		HashScheme    int         `json:"hash_scheme,omitempty"` // QueriesID normalization scheme that stamped `queries`
 		Description   string      `json:"description,omitempty"`
 		// Client-owned metadata, echoed verbatim (outside spec_hash) -- provenance lives here.
 		Annotations   map[string]interface{} `json:"annotations,omitempty"`
@@ -1358,6 +1370,7 @@ func (c *cli) cursorShow(arg string) {
 		Bind: st.Bind,
 		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions),
 		CommittedID: committedID(st), Schema: glue.CursorSchemaVersion, Description: st.Description,
+		HashScheme:  st.HashScheme,
 		Annotations: st.Annotations, Labels: st.Labels, SourceRef: st.SourceRef,
 		Created: st.Created, Updated: st.Updated,
 		LastCount: st.LastCount, TotalAdvances: st.TotalAdvances,

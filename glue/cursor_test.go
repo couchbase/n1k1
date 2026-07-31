@@ -160,9 +160,9 @@ func TestCursorAppendDelta(t *testing.T) {
 		t.Fatalf("run4: got %d labelResults, want 0 after committing (%v)", len(r4.LabelResults), r4.LabelResults)
 	}
 
-	// PackID is stable for an unchanged pack.
-	if PackID("errs", dets) != PackID("errs", dets) {
-		t.Fatal("PackID not stable")
+	// QueriesID is stable for unchanged queries.
+	if QueriesID("errs", dets) != QueriesID("errs", dets) {
+		t.Fatal("QueriesID not stable")
 	}
 }
 
@@ -277,7 +277,7 @@ func TestLoadPack(t *testing.T) {
 
 // TestFixtureParsing covers ISSUE-05: a malformed / unterminated @fixture is a hard
 // error (not a silent drop that yields an empty golden reporting PASS), a multi-line
-// pretty-printed fixture loads, and PackID ignores cosmetic blank-line/whitespace.
+// pretty-printed fixture loads, and QueriesID ignores cosmetic blank-line/whitespace.
 func TestFixtureParsing(t *testing.T) {
 	// A pretty-printed (multi-line) fixture row loads as one document.
 	pretty := "-- label: P\n" +
@@ -320,11 +320,53 @@ func TestFixtureParsing(t *testing.T) {
 		t.Fatalf("compact fixture: err=%v rows=%d", err, len(e2.Fixture.Rows))
 	}
 
-	// PackID is invariant to interior blank lines + trailing whitespace (ISSUE-05 #4).
+	// QueriesID is invariant to interior blank lines + trailing whitespace (ISSUE-05 #4).
 	a := MultiQueryEntry{Label: "X", Stmt: "SELECT 1\nFROM t"}
 	b := MultiQueryEntry{Label: "X", Stmt: "SELECT 1   \n\n\nFROM t\n"}
-	if PackID("x", []MultiQueryEntry{a}) != PackID("x", []MultiQueryEntry{b}) {
-		t.Fatal("PackID changed under a cosmetic blank-line/whitespace reformat")
+	if QueriesID("x", []MultiQueryEntry{a}) != QueriesID("x", []MultiQueryEntry{b}) {
+		t.Fatal("QueriesID changed under a cosmetic blank-line/whitespace reformat")
+	}
+}
+
+// TestQueriesIDSchemes covers hash-scheme versioning: the normalization conventions
+// behind QueriesID evolve (scheme 1 = ends-only TrimSpace, scheme 2 = ISSUE-05
+// blank-line-invariant), and an id stamped by an older binary must NOT read as drift
+// on a newer one -- comparisons go through QueriesIDMatches (any known scheme), never
+// a bare == against the current scheme.
+func TestQueriesIDSchemes(t *testing.T) {
+	// A stmt WITH an interior blank line -- the shape whose hash the scheme-2 change
+	// moved (the n1k1-for-ai layout convention: prose preamble, blank line, SELECT).
+	dets := []MultiQueryEntry{{Label: "CC-X", Stmt: "-- why this query exists\n\nSELECT 1 FROM t"}}
+
+	cur := QueriesID("x", dets)
+	old := QueriesIDUnderScheme("x", dets, 1)
+	if cur == old {
+		t.Fatal("scheme 1 and 2 should differ on a stmt with an interior blank line")
+	}
+	// Both the current and the old-binary id identify these queries.
+	if s := QueriesIDMatches(cur, "x", dets); s != QueriesHashScheme {
+		t.Fatalf("current-scheme id: matched=%d, want %d", s, QueriesHashScheme)
+	}
+	if s := QueriesIDMatches(old, "x", dets); s != 1 {
+		t.Fatalf("scheme-1 id: matched=%d, want 1", s)
+	}
+	// A real content edit matches NO scheme -- that is drift.
+	edited := []MultiQueryEntry{{Label: "CC-X", Stmt: "-- why this query exists\n\nSELECT 2 FROM t"}}
+	if s := QueriesIDMatches(cur, "x", edited); s != 0 {
+		t.Fatalf("edited content must not match (got scheme %d)", s)
+	}
+	if s := QueriesIDMatches("", "x", dets); s != 0 {
+		t.Fatalf("empty stored id must not match (got scheme %d)", s)
+	}
+	// An unknown scheme falls back to the current normalizer (forward-compat reads).
+	if QueriesIDUnderScheme("x", dets, 99) != cur {
+		t.Fatal("unknown scheme should fall back to the current normalizer")
+	}
+	// A stmt with NO interior blank lines hashes identically under both schemes --
+	// QueriesIDMatches reports the CURRENT scheme for determinism.
+	plain := []MultiQueryEntry{{Label: "Y", Stmt: "SELECT 1 FROM t"}}
+	if s := QueriesIDMatches(QueriesID("y", plain), "y", plain); s != QueriesHashScheme {
+		t.Fatalf("ambiguous match should prefer the current scheme, got %d", s)
 	}
 }
 

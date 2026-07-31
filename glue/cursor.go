@@ -93,7 +93,12 @@ type CursorState struct {
 	Bind        string `json:"bind,omitempty"`
 	// Queries is "<name>@<sha>", the content id captured at create (the drift baseline
 	// checked on peek). The sidecar key was `pack_id` before the unification.
-	Queries string `json:"queries,omitempty"`
+	// HashScheme records which QueriesID normalization scheme stamped it (0 on a
+	// sidecar predating scheme versioning); drift comparison accepts any known
+	// scheme (QueriesIDMatches) and advance re-stamps to the current one, so an
+	// n1k1 upgrade that changes normalization never manufactures drift.
+	Queries    string `json:"queries,omitempty"`
+	HashScheme int    `json:"hash_scheme,omitempty"`
 	// Mode is the delta strategy: "append" (offset high-water, Phase 1), "diff"
 	// (snapshot-keyed-by-id, Phase 2 — mutable / current-state sources), or "census"
 	// (incremental schema census, Phase 3 — a keyspace, not a pack).
@@ -140,7 +145,7 @@ type CursorState struct {
 	// hints. Labels are indexable k=v tags. SourceRef is the git commit (with a "-dirty"
 	// suffix on an uncommitted tree) of the queries source captured at create -- "which
 	// commit produced this cursor's positions". All three are DELIBERATELY OUTSIDE the delta
-	// identity (PackID / spec_hash covers only pack content + policy), so a retag/reword or a
+	// identity (QueriesID / spec_hash covers only pack content + policy), so a retag/reword or a
 	// provenance stamp never re-baselines the committed position (the "metadata edits must
 	// not reset the cursor" rule).
 	Annotations map[string]interface{} `json:"annotations,omitempty"`
@@ -490,26 +495,78 @@ func LoadPack(path string) ([]MultiQueryEntry, error) {
 	return []MultiQueryEntry{e}, nil
 }
 
-// PackID returns a stable "<name>@<sha>" identity for a pack: name is the given
-// label, sha a short hash over each entry's id + normalized SQL (order-
-// independent), so an unchanged pack keeps its id and any edit changes it.
-func PackID(name string, dets []MultiQueryEntry) string {
+// QueriesID returns a stable "<name>@<sha>" content identity for a set of queries
+// (the value CursorState.Queries stores, whose @sha tail is surfaced as spec_hash):
+// name is the given label, sha a short hash over each entry's label + normalized SQL
+// (order-independent), so unchanged queries keep their id and any edit changes it.
+// Computed under the CURRENT hash scheme; see QueriesIDMatches for why comparisons
+// must not use == against a stored id.
+func QueriesID(name string, dets []MultiQueryEntry) string {
+	return QueriesIDUnderScheme(name, dets, QueriesHashScheme)
+}
+
+// QueriesHashScheme is the CURRENT normalization scheme QueriesID hashes under.
+// The sha is content-addressed over normalized SQL, and the normalization
+// CONVENTIONS evolve (scheme 2, ISSUE-05 #4, made the hash blank-line-invariant --
+// which re-hashed every already-stored id computed under scheme 1). Each change is
+// a new scheme here, with the old normalizer kept below, so an n1k1 upgrade can
+// never manufacture drift: comparisons accept a stored id that matches under ANY
+// known scheme (QueriesIDMatches), and advance re-stamps to the current scheme.
+const QueriesHashScheme = 2
+
+// queriesHashNormalizers maps each known scheme to its statement normalizer.
+// NEVER edit an entry in place -- a normalization improvement is a NEW scheme
+// (append here, bump QueriesHashScheme), or every committed cursor sidecar and
+// provenance ledger re-baselines and `advance` refuses with a false query-drift.
+var queriesHashNormalizers = map[int]func(string) string{
+	1: strings.TrimSpace, // pre-a64dcd7b: ends-only trim (interior blank lines counted)
+	2: normalizeQuerySQL, // ISSUE-05 #4: drop blank lines + trailing per-line whitespace
+}
+
+func QueriesIDUnderScheme(name string, dets []MultiQueryEntry, scheme int) string {
+	norm := queriesHashNormalizers[scheme]
+	if norm == nil {
+		norm = queriesHashNormalizers[QueriesHashScheme]
+	}
 	lines := make([]string, 0, len(dets))
 	for _, d := range dets {
-		lines = append(lines, d.Label+"\x00"+normalizePackSQL(d.Stmt))
+		lines = append(lines, d.Label+"\x00"+norm(d.Stmt))
 	}
 	sort.Strings(lines)
 	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	return name + "@" + hex.EncodeToString(h[:])[:8]
 }
 
-// normalizePackSQL canonicalizes a statement for identity hashing (PackID):
-// trailing per-line whitespace is stripped and blank lines dropped, so a cosmetic
-// reformat — blank lines between a comment preamble and the SELECT, trailing spaces —
-// doesn't change the pack id and churn spec_hash in a GitOps diff (ISSUE-05 #4). A
-// full SQL re-parse would be overkill; the blank-line/trailing-space collapse covers
-// the realistic reformat the doc comment ("normalized SQL") already promises.
-func normalizePackSQL(s string) string {
+// QueriesIDMatches reports whether a STORED queries id still identifies dets --
+// i.e. the id computed under ANY known hash scheme equals it. This is the drift
+// comparison peek/advance/check must use instead of `stored == QueriesID(...)`:
+// a sidecar stamped by an older binary carries an older scheme's hash, and only a
+// real content edit (no scheme matches) is drift. Returns the matched scheme
+// (0 when none), so a caller can re-stamp an old-scheme id to the current one.
+func QueriesIDMatches(stored, name string, dets []MultiQueryEntry) (matched int) {
+	if stored == "" {
+		return 0
+	}
+	// Try the current scheme first -- the overwhelmingly common case.
+	if stored == QueriesIDUnderScheme(name, dets, QueriesHashScheme) {
+		return QueriesHashScheme
+	}
+	for scheme := range queriesHashNormalizers {
+		if scheme != QueriesHashScheme && stored == QueriesIDUnderScheme(name, dets, scheme) {
+			return scheme
+		}
+	}
+	return 0
+}
+
+// normalizeQuerySQL canonicalizes a statement for identity hashing (QueriesID
+// scheme 2): trailing per-line whitespace is stripped and blank lines dropped, so a
+// cosmetic reformat — blank lines between a comment preamble and the SELECT, trailing
+// spaces — doesn't change the queries id and churn spec_hash in a GitOps diff
+// (ISSUE-05 #4). A full SQL re-parse would be overkill; the blank-line/trailing-space
+// collapse covers the realistic reformat the doc comment ("normalized SQL") already
+// promises. Frozen: a change here is a NEW scheme (see queriesHashNormalizers).
+func normalizeQuerySQL(s string) string {
 	var out []string
 	for _, ln := range strings.Split(s, "\n") {
 		if ln = strings.TrimRight(ln, " \t"); strings.TrimSpace(ln) != "" {
