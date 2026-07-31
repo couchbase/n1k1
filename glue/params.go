@@ -31,17 +31,20 @@ package glue
 //     named-parameter syntax; a stock engine parses it and binds at runtime. Our
 //     int/list(/future str) params live here: a pack using only value-typed params
 //     is standard-parseable SQL++.
-//   - IDENTIFIER position (`obj.$field`, `FROM $keyspace`) — an n1k1 PACK EXTENSION
-//     that exists only pre-parse: `obj.$field` is a stock-engine SYNTAX ERROR, and
-//     `FROM $expr` parses but means expression-as-datasource (the bound VALUE is the
-//     data), not "keyspace named by this string". The `ident` param type marks this
-//     boundary exactly. The standard runtime form for dynamic field access is
-//     `obj.[$field]` (dot-bracket); we don't use it because runtime navigation
-//     forfeits the static field path the optimizer needs, and there is no runtime
-//     equivalent at all for a parameterized keyspace.
-//   - HYPHENATED names (`$type-field`) — standard lexing reads `$type - field`; our
-//     longest-DECLARED-name match reads the declared name. Prefer underscores for
-//     value params meant to stay standard-portable.
+//   - FIELD position — write the STANDARD dynamic-field form `obj.[$field]`
+//     (dot-bracket; bare `obj.$field` is a stock-engine SYNTAX ERROR). It parses and
+//     runs on a stock engine, and n1k1's early binding COLLAPSES it to the static
+//     field path `obj.`value`` the optimizer prunes on — standard-portable file,
+//     optimal rendered SQL (see RenderStmtParams). Bare `obj.$field` also still
+//     renders (a pack-only convenience), but prefer the portable form.
+//   - FROM position (`FROM $keyspace`) — parses on a stock engine as
+//     expression-as-datasource (the bound VALUE is the data, e.g. an inline array of
+//     docs), which is not the same meaning as n1k1's early binding (a keyspace named
+//     by the value). Parse-portable, semantics diverge; there is no stock runtime
+//     equivalent for a parameterized keyspace name.
+//   - HYPHENATED names (`$type-field`) — standard lexing reads `$type - field`, so
+//     declare underscores (`type_field`) for standard-portable files; caller-supplied
+//     keys in either spelling reach the declared param (ParamKeyResolve).
 //
 // Types close the injection surface: `ident` renders `backticked` (and rejects
 // backticks), `int` must parse, `list` renders as a JSON string array. Substitution
@@ -111,8 +114,8 @@ func ParamsResolve(what string, params []QueryParam, given map[string]string) (m
 		out[p.Name] = p.Default
 	}
 	for k, v := range given {
-		if _, declared := out[k]; declared {
-			out[k] = v
+		if name, ok := ParamKeyResolve(params, k); ok {
+			out[name] = v
 		}
 	}
 	for _, p := range params {
@@ -121,6 +124,27 @@ func ParamsResolve(what string, params []QueryParam, given map[string]string) (m
 		}
 	}
 	return out, nil
+}
+
+// ParamKeyResolve maps a caller-supplied key to a declared param name: exact match
+// wins, else the hyphen/underscore-swapped spelling. URI surfaces conventionally use
+// hyphens (?type-field=...) while standard-portable $ references need underscores
+// ($type_field — standard lexing reads a hyphen as minus), so both spellings reach
+// the same declared param.
+func ParamKeyResolve(params []QueryParam, key string) (string, bool) {
+	for _, p := range params {
+		if p.Name == key {
+			return p.Name, true
+		}
+	}
+	for _, alt := range []string{strings.ReplaceAll(key, "-", "_"), strings.ReplaceAll(key, "_", "-")} {
+		for _, p := range params {
+			if p.Name == alt {
+				return p.Name, true
+			}
+		}
+	}
+	return "", false
 }
 
 // paramNameCharRE matches characters that may appear in a $name reference.
@@ -168,6 +192,21 @@ func RenderStmtParams(what, stmt string, params []QueryParam, resolved map[strin
 					v, err := renderParamValue(p, resolved[p.Name])
 					if err != nil {
 						return "", fmt.Errorf("%s: %v", what, err)
+					}
+					// The STANDARD dynamic-field idiom `obj.[$field]` (dot-bracket, the
+					// stock-parseable spelling — bare `obj.$field` is a stock syntax
+					// error) collapses under early binding to the STATIC field path
+					// `obj.`value`` the optimizer wants: a file can be written in 100%
+					// standard SQL++ and still render to the fast form.
+					cur := out.String()
+					if p.Type == "ident" && strings.HasSuffix(cur, ".[") &&
+						len(rest) > len(p.Name) && rest[len(p.Name)] == ']' {
+						out.Reset()
+						out.WriteString(cur[:len(cur)-1]) // drop the "["
+						out.WriteString(v)
+						i += len(p.Name) + 1 // skip the "]" too
+						matched = true
+						break
 					}
 					out.WriteString(v)
 					i += len(p.Name)
@@ -238,21 +277,21 @@ func paramNames(params []QueryParam) string {
 // couldn't replay both. A given key that NO entry declares is a loud error (a
 // typo'd --param silently ignored is how a threshold stays at its default).
 func ApplyParams(dets []MultiQueryEntry, given map[string]string) ([]MultiQueryEntry, map[string]string, error) {
-	declared := map[string]bool{}
+	var union []QueryParam
+	seenName := map[string]bool{}
 	for _, e := range dets {
 		for _, p := range e.Params {
-			declared[p.Name] = true
+			if !seenName[p.Name] {
+				seenName[p.Name] = true
+				union = append(union, p)
+			}
 		}
 	}
+	sort.Slice(union, func(i, j int) bool { return union[i].Name < union[j].Name })
 	for k := range given {
-		if !declared[k] {
-			all := make([]QueryParam, 0, len(declared))
-			for n := range declared {
-				all = append(all, QueryParam{Name: n})
-			}
-			sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
+		if _, ok := ParamKeyResolve(union, k); !ok {
 			return nil, nil, fmt.Errorf("no entry declares param %q (declared across the pack: %s)",
-				k, paramNames(all))
+				k, paramNames(union))
 		}
 	}
 

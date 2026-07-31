@@ -129,12 +129,8 @@ func Lookup(name string) (Query, bool) {
 // key is a loud error (a typo'd param silently ignored is how a census runs with
 // depth=2 when you asked depht=1), and a missing REQUIRED param names itself.
 func (q Query) Resolve(given map[string]string) (map[string]string, error) {
-	declared := map[string]bool{}
-	for _, p := range q.Params {
-		declared[p.Name] = true
-	}
 	for k := range given {
-		if !declared[k] {
+		if _, ok := glue.ParamKeyResolve(q.Params, k); !ok {
 			return nil, fmt.Errorf("builtin %s has no param %q (declared: %s)", q.Name, k, q.paramNames())
 		}
 	}

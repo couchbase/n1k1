@@ -57,8 +57,12 @@ func TestRegistryLint(t *testing.T) {
 			if rerr != nil {
 				t.Fatalf("%s: Render: %v", q.Name, rerr)
 			}
-			if strings.Contains(sql, "$") { // no unresolved $name may survive (adjust if a builtin ever needs a literal $)
-				t.Errorf("%s: rendered SQL still contains a $ reference:\n%s", q.Name, sql)
+			// No unresolved $name may survive OUTSIDE comments (comments render
+			// verbatim, and the census prose legitimately discusses $params).
+			for _, ln := range strings.Split(sql, "\n") {
+				if code, _, _ := strings.Cut(ln, "--"); strings.Contains(code, "$") {
+					t.Errorf("%s: rendered SQL still contains a $ reference: %s", q.Name, ln)
+				}
 			}
 			// Every DECLARED param must appear in the template (a declared-but-unused
 			// param is a doc lie).
@@ -97,8 +101,14 @@ func TestParamResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved["type-field"] != "type" || resolved["depth"] != "2" {
+	if resolved["type_field"] != "type" || resolved["depth"] != "2" {
 		t.Fatalf("defaults not applied: %v", resolved)
+	}
+	// The hyphen<->underscore bridge: the shipped URI spelling (?type-field=) reaches
+	// the underscore-declared param (standard-portable $type_field references).
+	bridged, err := q.Resolve(map[string]string{"keyspace": "s", "type-field": "kind"})
+	if err != nil || bridged["type_field"] != "kind" {
+		t.Fatalf("hyphenated key must bridge to type_field: %v %v", bridged, err)
 	}
 	sql, err := q.Render(resolved)
 	if err != nil {

@@ -20,6 +20,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	builtinq "github.com/couchbase/n1k1/cmd/n1k1/builtins"
+	"github.com/couchbase/n1k1/glue"
 )
 
 // TestCensusSQLMatchesOracle is the differential guard for the pure-SQL++ census:
@@ -74,5 +77,35 @@ func TestCensusSQLMatchesOracle(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCensusSQLTemplateIsStandard: the embedded census templates must be usable AS-IS
+// as plain parameterized SQL++ — every $reference in a STANDARD position (value params,
+// dot-bracket dynamic fields, expression-datasource FROM). Proof: the RAW template
+// parses on the engine, failing only at named-parameter BIND time, never with a syntax
+// error. This is what keeps a fork of the shown SQL runnable outside n1k1.
+func TestCensusSQLTemplateIsStandard(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "d.jsonl"), []byte(`{"n":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	for _, name := range []string{"census.sql++", "census_totals.sql++"} {
+		q, ok := builtinq.Lookup(name)
+		if !ok {
+			t.Fatalf("%s not embedded", name)
+		}
+		_, rerr := sess.Run(q.Template)
+		if rerr == nil {
+			t.Fatalf("%s: raw template ran without bound params?", name)
+		}
+		if !strings.Contains(rerr.Error(), "named parameter") {
+			t.Fatalf("%s: raw template must PARSE (bind-stage error only), got: %v", name, rerr)
+		}
 	}
 }

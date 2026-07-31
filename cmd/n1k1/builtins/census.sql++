@@ -1,9 +1,9 @@
 -- label:       census.sql++
--- version:     v1.1
+-- version:     v1.2
 -- description: the schema census, self-contained (mergeable core + read-time coverage)
 -- param: keyspace ident
--- param: type-field ident = type
--- param: time-field ident = timestamp
+-- param: type_field ident = type
+-- param: time_field ident = timestamp
 -- param: depth int = 2
 -- param: exclude list =
 
@@ -19,6 +19,14 @@
 -- of the first carrier — and MIN merges, unlike a real argmin. The CASE ... ELSE
 -- MISSING guards omit first/last_seen and first_id for a group whose records carry no
 -- timestamp, matching the native census's output exactly.
+--
+-- STANDARD-PORTABLE: this file parses as plain SQL++ on a stock engine (verified by
+-- TestCensusSQLTemplateIsStandard). Field params use the standard dynamic-field form
+-- r.[$type_field] (dot-bracket; bare r.$x is a stock syntax error) which n1k1's early
+-- binding collapses to the static path r.`type`; $depth/$exclude are ordinary value
+-- params; FROM $keyspace parses as expression-as-datasource, so on a stock engine you
+-- may even bind $keyspace to an ARRAY of documents to census it inline (META(r).id
+-- degrades there; first_id needs a real keyspace).
 SELECT c.`type`, c.`path`, c.val_type, c.docs,
        c.docs / tot.n AS coverage,
        CASE WHEN c.first_seen IS VALUED THEN c.first_seen ELSE MISSING END AS first_seen,
@@ -31,7 +39,7 @@ FROM (
          MAX(t.ts) AS last_seen,
          SPLIT(MIN(t.ts || "|" || t.id), "|")[1] AS first_id
   FROM (
-    SELECT META(r).id AS id, IFMISSING(r.$type-field, "") AS rt, r.$time-field AS ts,
+    SELECT META(r).id AS id, IFMISSING(r.[$type_field], "") AS rt, r.[$time_field] AS ts,
            ARRAY_CONCAT(
              (ARRAY {"pp": p.name, "vt": TYPE_NAME(p.val)} FOR p IN OBJECT_PAIRS(r) END),
              ARRAY_FLATTEN(
@@ -47,8 +55,8 @@ FROM (
   GROUP BY t.rt, pth.pp, pth.vt
 ) c
 JOIN (
-  SELECT IFMISSING(r.$type-field, "") AS rt, COUNT(*) AS n
+  SELECT IFMISSING(r.[$type_field], "") AS rt, COUNT(*) AS n
   FROM $keyspace r
-  GROUP BY IFMISSING(r.$type-field, "")
+  GROUP BY IFMISSING(r.[$type_field], "")
 ) tot ON tot.rt = c.`type`
 ORDER BY c.`type`, c.`path`, c.val_type
