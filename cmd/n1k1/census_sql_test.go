@@ -36,6 +36,7 @@ func TestCensusSQLMatchesOracle(t *testing.T) {
 		`{"type":"a","message":{"id":"m2"},"n":1}`,
 		`{"type":"b","timestamp":"2026-01-05","toolUseResult":{"deep":"skip"},"k":[1,2]}`,
 		`{"note":"no-type-field","timestamp":"2026-01-09","deep":{"lvl2":{"lvl3":"stop"}}}`,
+		`{"type":"c","solo":true}`, // a group with NO timestamps: first/last_seen + first_id must be OMITTED
 	}, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

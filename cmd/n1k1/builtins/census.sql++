@@ -1,38 +1,54 @@
 -- label:       census.sql++
--- version:     v1.0
--- description: the mergeable census core (per type/path/val_type)
+-- version:     v1.1
+-- description: the schema census, self-contained (mergeable core + read-time coverage)
 -- param: keyspace ident
 -- param: type-field ident = type
 -- param: time-field ident = timestamp
 -- param: depth int = 2
 -- param: exclude list =
 
--- The schema census as PURE SQL++ — the forkable sibling of the native Go
--- builtin:census (its comparison ORACLE; see TestCensusSQLMatchesOracle). Fork it:
--- swap TYPE_NAME for a value-bucketer, add a field, change the depth walk. Every
--- census column MERGES (docs->SUM, first_*->MIN, last_*->MAX), so a window census
--- folds into an accumulated one. Coverage is deliberately NOT here (a ratio doesn't
--- merge) — it's a read-time docs/total division against census_totals.sql++.
--- first_id is an argmin-as-MIN(ts || "|" || id): ISO-8601 sorts lexically, so MIN
--- over the composite yields the timestamp AND the id of the first carrier — and MIN
--- merges, unlike a real argmin.
-SELECT t.rt AS `type`, pth.pp AS `path`, pth.vt AS val_type,
-       COUNT(*) AS docs,
-       MIN(t.ts) AS first_seen,
-       MAX(t.ts) AS last_seen,
-       SPLIT(MIN(t.ts || "|" || t.id), "|")[1] AS first_id
+-- The schema census as ONE self-contained SQL++ statement — the forkable sibling of
+-- the native Go builtin:census (its comparison ORACLE; see TestCensusSQLMatchesOracle;
+-- v1.0 needed a Go-side coverage join, v1.1 does it in SQL++). Fork it: swap TYPE_NAME
+-- for a value-bucketer, add a field, change the depth walk. The inner core MERGES
+-- (docs->SUM, first_*->MIN, last_*->MAX) so a window census folds into an accumulated
+-- one; coverage deliberately lives OUTSIDE the core (a ratio doesn't merge) as a
+-- read-time docs/total join against the per-type counts (census_totals.sql++ is that
+-- denominator as a standalone query). first_id is an argmin-as-MIN(ts || "|" || id):
+-- ISO-8601 sorts lexically, so MIN over the composite yields the timestamp AND the id
+-- of the first carrier — and MIN merges, unlike a real argmin. The CASE ... ELSE
+-- MISSING guards omit first/last_seen and first_id for a group whose records carry no
+-- timestamp, matching the native census's output exactly.
+SELECT c.`type`, c.`path`, c.val_type, c.docs,
+       c.docs / tot.n AS coverage,
+       CASE WHEN c.first_seen IS VALUED THEN c.first_seen ELSE MISSING END AS first_seen,
+       CASE WHEN c.last_seen  IS VALUED THEN c.last_seen  ELSE MISSING END AS last_seen,
+       CASE WHEN c.first_id   IS VALUED THEN c.first_id   ELSE MISSING END AS first_id
 FROM (
-  SELECT META(r).id AS id, IFMISSING(r.$type-field, "") AS rt, r.$time-field AS ts,
-         ARRAY_CONCAT(
-           (ARRAY {"pp": p.name, "vt": TYPE_NAME(p.val)} FOR p IN OBJECT_PAIRS(r) END),
-           ARRAY_FLATTEN(
-             (ARRAY (ARRAY {"pp": q.name || "." || c.name, "vt": TYPE_NAME(c.val)}
-                       FOR c IN OBJECT_PAIRS(q.val) END)
-                FOR q IN OBJECT_PAIRS(r)
-                WHEN $depth >= 2 AND TYPE_NAME(q.val) = "object"
-                     AND q.name NOT IN $exclude END), 1)
-         ) AS paths
+  SELECT t.rt AS `type`, pth.pp AS `path`, pth.vt AS val_type,
+         COUNT(*) AS docs,
+         MIN(t.ts) AS first_seen,
+         MAX(t.ts) AS last_seen,
+         SPLIT(MIN(t.ts || "|" || t.id), "|")[1] AS first_id
+  FROM (
+    SELECT META(r).id AS id, IFMISSING(r.$type-field, "") AS rt, r.$time-field AS ts,
+           ARRAY_CONCAT(
+             (ARRAY {"pp": p.name, "vt": TYPE_NAME(p.val)} FOR p IN OBJECT_PAIRS(r) END),
+             ARRAY_FLATTEN(
+               (ARRAY (ARRAY {"pp": q.name || "." || c.name, "vt": TYPE_NAME(c.val)}
+                         FOR c IN OBJECT_PAIRS(q.val) END)
+                  FOR q IN OBJECT_PAIRS(r)
+                  WHEN $depth >= 2 AND TYPE_NAME(q.val) = "object"
+                       AND q.name NOT IN $exclude END), 1)
+           ) AS paths
+    FROM $keyspace r
+  ) t
+  UNNEST t.paths AS pth
+  GROUP BY t.rt, pth.pp, pth.vt
+) c
+JOIN (
+  SELECT IFMISSING(r.$type-field, "") AS rt, COUNT(*) AS n
   FROM $keyspace r
-) t
-UNNEST t.paths AS pth
-GROUP BY t.rt, pth.pp, pth.vt
+  GROUP BY IFMISSING(r.$type-field, "")
+) tot ON tot.rt = c.`type`
+ORDER BY c.`type`, c.`path`, c.val_type
