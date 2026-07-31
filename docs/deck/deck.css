@@ -155,6 +155,29 @@ html, body {
   pointer-events: none;
 }
 
+/* 3b. Compositing / rasterization guards ---------------------------------
+   Symptom this addresses: intermittently, at the zoomed-out #map / #overview
+   cameras, text — and even the watermark numerals — fails to paint, leaving
+   empty rectangles, sometimes with a visible horizontal seam where one raster
+   tile painted and its neighbour did not. That is the GPU rasterizer giving up
+   on a very large, very-downscaled 3D layer tree; it is not a layout bug, and
+   it will not reproduce in a headless/software renderer. Two cheap reductions
+   in how much has to be rastered at once:
+
+   1. A step's own subtree is entirely 2D — nothing inside a card carries a 3D
+      transform — so it does not need its own 3D rendering context. Sibling
+      steps still position in 3D because the CANVAS keeps preserve-3d.
+      impress.js sets preserve-3d inline on each step, hence !important. */
+.step { transform-style: flat !important; }
+
+/*  2. Blurred shadows on ~50 cards are the priciest thing here to raster and
+       are invisible at poster scale anyway, so drop them at those cameras. */
+.impress-on-map .step, .impress-on-overview .step { box-shadow: none; }
+
+/* Related: keep overlapping steps OFF the same z-plane. The .src cards
+   deliberately overlap their parent, so they carry data-rel-z="20" to sit in
+   front of it; at equal z the two coplanar surfaces z-fight. */
+
 /* 4. Typography ----------------------------------------------------------- */
 
 .step h1 {

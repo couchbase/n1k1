@@ -119,6 +119,22 @@ top). Slide markup uses a small set of components — `.kicker`, `.stats`
 token spans, and `pre.diagram` for the phosphor-green ASCII diagrams.
 Each panel picks its tint hue inline via `style="--hue:<deg>"`.
 
+### Rendering gotchas
+
+- **Never let two *overlapping* steps share a z-plane.** They z-fight, and
+  which one paints in front is undefined. This is why the `.src` cards
+  carry `data-rel-z="20"`: they deliberately overlap their parent, so they
+  have to sit in front of it.
+- Section 3b of `deck.css` holds two guards against an intermittent GPU
+  symptom — at the zoomed-out cameras, text and even the watermark
+  numerals sometimes fail to paint, leaving empty rectangles, sometimes
+  with a visible seam where one raster tile painted and its neighbour did
+  not. The guards flatten each step's (purely 2D) subtree and drop card
+  shadows at the poster cameras, both of which cut how much has to be
+  rastered at once. Don't strip the `!important` — impress.js sets
+  `preserve-3d` inline on every step. This class of bug will not reproduce
+  in a headless/software renderer.
+
 ### The bottom-left controls
 
 All four are wired up by the small script at the end of `index.html`;
