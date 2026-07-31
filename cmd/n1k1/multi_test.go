@@ -769,3 +769,68 @@ func TestMultiRunBind(t *testing.T) {
 		t.Errorf("must NOT render a (falsely clean) labelResults table on a gap; stdout:\n%s", out2.String())
 	}
 }
+
+// TestMultiRunParams covers --param on the run/show surface: defaults apply, --param
+// overrides, an unknown --param errors naming the declared set, and show renders a
+// missing REQUIRED param as a <placeholder> instead of refusing.
+func TestMultiRunParams(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "e.jsonl"),
+		[]byte(`{"n":1}`+"\n"+`{"n":5}`+"\n"+`{"n":9}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := writeMultiQueryEntries(t, map[string]string{
+		"p": "-- label: P\n-- param: threshold int = 4\nSELECT e.n FROM events e WHERE e.n > $threshold",
+	})
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	rows := func() int { return strings.Count(strings.TrimSpace(out.String()), "\n") + 1 }
+
+	// Default threshold=4 -> n=5, n=9.
+	out.Reset()
+	c.cmdMulti("run --queries " + pack)
+	if c.failed || rows() != 2 {
+		t.Fatalf("run under defaults: want 2 rows, got %q (stderr %s)", out.String(), errb.String())
+	}
+
+	// --param threshold=8 -> only n=9.
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("run --queries " + pack + " --param threshold=8")
+	if c.failed || rows() != 1 || !strings.Contains(out.String(), `"n":9`) {
+		t.Fatalf("run with --param: want just n=9, got %q", out.String())
+	}
+
+	// Unknown --param errors naming the declared set.
+	out.Reset()
+	errb.Reset()
+	c.failed = false
+	c.cmdMulti("run --queries " + pack + " --param treshold=8")
+	if !c.failed || !strings.Contains(errb.String(), "treshold") || !strings.Contains(errb.String(), "threshold") {
+		t.Fatalf("unknown --param must error naming the declared set: %s", errb.String())
+	}
+
+	// show renders under defaults (threshold=4 appears as the literal).
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("show --queries " + pack)
+	if c.failed || !strings.Contains(out.String(), `e.n \u003e 4`) {
+		t.Fatalf("show should render the default literal: %q", out.String())
+	}
+
+	// A REQUIRED param (no default) shows as a <placeholder> instead of refusing.
+	pack2 := writeMultiQueryEntries(t, map[string]string{
+		"q": "-- label: Q\n-- param: field ident\nSELECT e.$field FROM events e",
+	})
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("show --queries " + pack2)
+	if c.failed || !strings.Contains(out.String(), `\u003cfield\u003e`) {
+		t.Fatalf("show should placeholder a required param: %q (stderr %s)", out.String(), errb.String())
+	}
+}

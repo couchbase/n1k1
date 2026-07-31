@@ -47,7 +47,8 @@ WHERE / GROUP BY / ORDER BY / JOIN and PREPARE'd / EXECUTE'd, e.g.:
 COMMANDS
   .multi list --queries <dir>                      inventory the queries (metadata only: no dataset, no compile)
   .multi show --queries <dir | builtin:census.sql++>   print each query's SQL++ source (a viewer; also parses every *.sql++ = an existence/validity check); for a builtin, the SQL++ it generates. -mode box (TTY default) prints plain, copy-pasteable SQL; -mode yaml a literal block; -mode json/jsonlines the machine array (+ a dump/re-query tip)
-  .multi run  --queries <dir> [--bind <manifest>]  compile & execute the queries over the open dataset
+  .multi run  --queries <dir> [--bind <manifest>] [--param k=v ...]  compile & execute the queries over the open dataset
+  parameterized queries: an entry declares typed params in front-matter (-- param: threshold int = 5) and references them as SQL++ named parameters ($threshold); n1k1 binds them EARLY (before plan/compile, so index pruning + the compile lane keep their literals). --param overrides the declared default; an unknown --param errors naming the declared set; a cursor stores its resolved params at create and replays them (a later default edit never moves a live cursor; changing params = rm + create)
   .multi lint --queries <dir> [--bind <manifest>] [--census]  authoring report card (compiles, does NOT run); --census escalates to census-aware lint: cross-check each query's referenced fields against a census of its data — flags a field the data lacks (birth-in-error) + data fields no query reads
   .multi explain --queries <dir> [--bind <manifest>] [--sql]  show the fused shared-scan plan + fusion map; --sql = pretty SQL++ w/ provenance + hints (does NOT run)
   .multi test --queries <dir> [--update]           golden-fixture runner (CI): check @fixture vs @expect

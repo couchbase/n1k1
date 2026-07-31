@@ -52,31 +52,32 @@ import (
 // the per-verb flags. Unlike parseMultiArgs it does NOT require --queries (a
 // peek/advance is addressed by cursor name; --queries is create-only).
 type cursorArgs struct {
-	name          string   // the cursor NAME (first positional)
-	pack          []string // --queries <dir> (repeatable / comma-list), create-only
-	bind          string   // --bind <manifest>
-	to            string   // --to <pos>, advance-only (the opaque position token)
-	toFile        string   // --to-file <path>, advance-only (read --to from a file: large positions)
-	from          string   // --from now|start, create-only (default: now)
-	desc          string   // --desc <text>, create-only
-	annotFile     string   // --annotations-file <path>, create-only (JSON blob base; a file, since .multi's tokenizer strips the quotes raw JSON needs -- same reason as --to-file)
-	annotationKV  []string // --annotation k=v (repeatable), create-only (quote-free overlays onto the blob)
-	labels        string   // --labels k=v,... | {json}, create-only (indexable tags)
-	sourceRef     string   // --source-ref <sha>, create-only (else auto-captured from git)
-	store         string   // --cursor-store <dir> (override the default state dir)
-	mode          string   // --mode append|diff, create-only (default: append)
-	idField       string   // --id-field <name>, create-only diff (default: id)
-	quiet         bool     // --quiet, advance-only (ack only, no labelResults echo)
-	pruneRotated  bool     // --prune-rotated, advance-only (drop rotated containers from the committed position)
-	acceptTrunc   bool     // --accept-truncation, advance-only (acknowledge truncated containers; re-baseline each to its current extent)
-	force         bool     // --force, advance --to only (commit a rewinding/unknown position anyway)
-	allowDrift    bool     // --allow-drift, advance only (commit even though the query edited since create)
-	expect        string   // --expect <committed_id>, advance only (compare-and-swap: refuse if moved)
-	positions     bool     // --positions, show-only (full position map, not a summary)
-	long          bool     // --long, list-only (every cursor's full field set — one machine-readable table)
-	only          []string // --only <node,...>, compose-only (emit rows for just these)
-	terminal      bool     // --terminal, compose-only (emit rows for leaf nodes only)
-	allowRejected bool     // --allow-rejected, compose-only (don't hard-fail on a rejected node)
+	name          string            // the cursor NAME (first positional)
+	pack          []string          // --queries <dir> (repeatable / comma-list), create-only
+	bind          string            // --bind <manifest>
+	to            string            // --to <pos>, advance-only (the opaque position token)
+	toFile        string            // --to-file <path>, advance-only (read --to from a file: large positions)
+	from          string            // --from now|start, create-only (default: now)
+	desc          string            // --desc <text>, create-only
+	annotFile     string            // --annotations-file <path>, create-only (JSON blob base; a file, since .multi's tokenizer strips the quotes raw JSON needs -- same reason as --to-file)
+	annotationKV  []string          // --annotation k=v (repeatable), create-only (quote-free overlays onto the blob)
+	labels        string            // --labels k=v,... | {json}, create-only (indexable tags)
+	sourceRef     string            // --source-ref <sha>, create-only (else auto-captured from git)
+	params        map[string]string // --param k=v (repeatable): pack query parameters -- create binds + stores them; peek/advance replay the STORED ones
+	store         string            // --cursor-store <dir> (override the default state dir)
+	mode          string            // --mode append|diff, create-only (default: append)
+	idField       string            // --id-field <name>, create-only diff (default: id)
+	quiet         bool              // --quiet, advance-only (ack only, no labelResults echo)
+	pruneRotated  bool              // --prune-rotated, advance-only (drop rotated containers from the committed position)
+	acceptTrunc   bool              // --accept-truncation, advance-only (acknowledge truncated containers; re-baseline each to its current extent)
+	force         bool              // --force, advance --to only (commit a rewinding/unknown position anyway)
+	allowDrift    bool              // --allow-drift, advance only (commit even though the query edited since create)
+	expect        string            // --expect <committed_id>, advance only (compare-and-swap: refuse if moved)
+	positions     bool              // --positions, show-only (full position map, not a summary)
+	long          bool              // --long, list-only (every cursor's full field set — one machine-readable table)
+	only          []string          // --only <node,...>, compose-only (emit rows for just these)
+	terminal      bool              // --terminal, compose-only (emit rows for leaf nodes only)
+	allowRejected bool              // --allow-rejected, compose-only (don't hard-fail on a rejected node)
 
 	// census cursor (create --queries builtin:census?keyspace=..&...): filled from the
 	// builtin:census ref's params, not from standalone flags.
@@ -190,6 +191,20 @@ func parseCursorArgs(arg string) (cursorArgs, error) {
 				}
 			}
 			a.sourceRef = val
+		case "param":
+			if !hasEq {
+				if err := need(&i, &val, "--param"); err != nil {
+					return a, err
+				}
+			}
+			pk, pv, pok := strings.Cut(val, "=")
+			if pk = strings.TrimSpace(pk); !pok || pk == "" {
+				return a, fmt.Errorf("--param %q must be key=value", val)
+			}
+			if a.params == nil {
+				a.params = map[string]string{}
+			}
+			a.params[pk] = pv
 		case "cursor-store":
 			if !hasEq {
 				if err := need(&i, &val, "--cursor-store"); err != nil {
@@ -579,6 +594,15 @@ func (c *cli) cursorCreate(arg string) {
 		c.cursorFail(a.name, "queries-load", err)
 		return
 	}
+	// Bind the pack's query parameters NOW (--param over declared defaults) and store
+	// the RESOLVED set: peek/advance replay exactly these values, so a later
+	// front-matter default change can never silently move this cursor, and QueriesID
+	// below hashes the rendered statements -- params are inside the delta identity.
+	dets, resolvedParams, err := glue.ApplyParams(dets, a.params)
+	if err != nil {
+		c.cursorFail(a.name, "bad-args", err)
+		return
+	}
 	sess, binding, err := c.multiSession(a.bind)
 	if err != nil {
 		c.cursorFail(a.name, "open", err)
@@ -654,6 +678,7 @@ func (c *cli) cursorCreate(arg string) {
 		Bind:        a.bind,
 		Queries:     glue.QueriesID(a.name, dets),
 		HashScheme:  glue.QueriesHashScheme,
+		Params:      resolvedParams,
 		Mode:        mode,
 		Description: effDesc,
 		Created:     now,
@@ -872,6 +897,20 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 	dets, err := loadPackPaths(strings.Split(st.QueriesPath, ","))
 	if err != nil {
 		c.cursorFail(a.name, "queries-load", err)
+		return
+	}
+	// Params are FIXED at create (stored resolved in the sidecar) and replayed here —
+	// a different value against a position advanced under the old one is the ISSUE-17
+	// hazard. A --param on peek/advance is therefore a hard error, not an override.
+	if len(a.params) > 0 {
+		c.cursorFail(a.name, "bad-args", fmt.Errorf(
+			"params are fixed at create (this cursor stored: %s); rm + create to change them",
+			paramsSummary(st.Params)))
+		return
+	}
+	dets, _, err = glue.ApplyParams(dets, st.Params)
+	if err != nil {
+		c.cursorFail(a.name, "queries-load", fmt.Errorf("replaying stored params: %v", err))
 		return
 	}
 	sess, binding, err := c.multiSession(st.Bind)
@@ -1344,6 +1383,7 @@ func (c *cli) cursorList(arg string) {
 		Annotations map[string]interface{} `json:"annotations,omitempty"`
 		Labels      map[string]string      `json:"labels,omitempty"`
 		SourceRef   string                 `json:"source_ref,omitempty"`
+		Params      map[string]string      `json:"params,omitempty"`
 		Created     string                 `json:"created,omitempty"`
 		Updated     string                 `json:"updated,omitempty"`
 		LastCount   int                    `json:"last_count,omitempty"`
@@ -1362,6 +1402,7 @@ func (c *cli) cursorList(arg string) {
 			row.Schema, row.Description = glue.CursorSchemaVersion, st.Description
 			row.HashScheme = st.HashScheme
 			row.Annotations, row.Labels, row.SourceRef = st.Annotations, st.Labels, st.SourceRef
+			row.Params = st.Params
 			row.Created, row.Updated, row.LastCount = st.Created, st.Updated, st.LastCount
 		}
 		out = append(out, row)
@@ -1407,6 +1448,9 @@ func (c *cli) cursorCheck(arg string) {
 		row := checkRow{Cursor: n, Baseline: st.Queries, Current: st.Queries}
 		if st.Mode != "census" && st.QueriesPath != "" { // pack-backed cursor: re-hash its query
 			dets, derr := loadPackPaths(strings.Split(st.QueriesPath, ","))
+			if derr == nil {
+				dets, _, derr = glue.ApplyParams(dets, st.Params) // replay the stored params
+			}
 			if derr != nil {
 				row.Current, row.Error, row.Drifted = "", derr.Error(), true
 			} else {
@@ -1471,6 +1515,7 @@ func (c *cli) cursorShow(arg string) {
 		Annotations   map[string]interface{} `json:"annotations,omitempty"`
 		Labels        map[string]string      `json:"labels,omitempty"`
 		SourceRef     string                 `json:"source_ref,omitempty"`
+		Params        map[string]string      `json:"params,omitempty"` // resolved at create; replayed on every peek/advance
 		Created       string                 `json:"created,omitempty"`
 		Updated       string                 `json:"updated,omitempty"`
 		LastCount     int                    `json:"last_count"`
@@ -1482,7 +1527,7 @@ func (c *cli) cursorShow(arg string) {
 		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions),
 		CommittedID: committedID(st), Schema: glue.CursorSchemaVersion, Description: st.Description,
 		HashScheme:  st.HashScheme,
-		Annotations: st.Annotations, Labels: st.Labels, SourceRef: st.SourceRef,
+		Annotations: st.Annotations, Labels: st.Labels, SourceRef: st.SourceRef, Params: st.Params,
 		Created: st.Created, Updated: st.Updated,
 		LastCount: st.LastCount, TotalAdvances: st.TotalAdvances,
 	})
@@ -1564,7 +1609,7 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
 (occasional) = create/list/show/rm.
 
   create NAME --queries <dir> [--bind <m>] [--from now|start] [--mode append|diff]
-              [--id-field <name>] [--desc <t>]
+              [--id-field <name>] [--desc <t>] [--param k=v ...]
               [--annotation k=v ...] [--annotations-file <f>] [--labels k=v,...] [--source-ref <sha>]
   create NAME --queries "builtin:census?keyspace=<ks>[&type-field=f&time-field=f&depth=1|2&exclude=a,b]"
               [--bind <m>] [--from now|start]
@@ -1661,3 +1706,20 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
 Safe agent loop: peek (look) -> act -> advance --to <pos> --quiet. Each response is
 one JSON envelope; switch on "status" (pending | advanced | empty | error).
 `
+
+// paramsSummary renders a cursor's stored params compactly for error messages.
+func paramsSummary(params map[string]string) string {
+	if len(params) == 0 {
+		return "(none)"
+	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + params[k]
+	}
+	return strings.Join(parts, ", ")
+}

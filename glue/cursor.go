@@ -117,6 +117,12 @@ type CursorState struct {
 	// shape of git's SHA-as-position: a committed position carrying content identity.
 	Water   map[string]int64  `json:"water,omitempty"`
 	WaterFP map[string]string `json:"water_fp,omitempty"`
+	// Params are the pack's RESOLVED query parameters captured at create (defaults
+	// baked in, --param overrides applied — glue.ApplyParams) and replayed on every
+	// peek/advance/check, so a later front-matter DEFAULT change can never silently
+	// move a live cursor, and the rendered statement QueriesID hashes always reflects
+	// exactly these values. A param change is a new standing question: rm + create.
+	Params map[string]string `json:"params,omitempty"`
 
 	// --- diff mode ---
 	// IdField is the result field whose value keys the snapshot (default "id"); a

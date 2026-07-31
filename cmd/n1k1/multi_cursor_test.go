@@ -1271,3 +1271,102 @@ func TestMultiCursorDiffLoop(t *testing.T) {
 		t.Fatalf("show: want diff/snap:1, got %v", env)
 	}
 }
+
+// TestMultiCursorParams covers parameterized packs on the cursor lifecycle
+// (DESIGN-cep.md "Parameterized packs"): create binds --param over declared defaults
+// and STORES the resolved set; params land inside the delta identity (different
+// values => different spec_hash); peek/advance REPLAY the stored params (--param
+// there errors); and — the crux — editing a front-matter DEFAULT does not move a
+// live cursor, while a real template edit still drifts.
+func TestMultiCursorParams(t *testing.T) {
+	root := t.TempDir()
+	ks := filepath.Join(root, "default", "events")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ks, "e.jsonl"),
+		[]byte(`{"n":1}`+"\n"+`{"n":5}`+"\n"+`{"n":9}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	qfile := filepath.Join(t.TempDir(), "q.sql++")
+	body := func(dflt int) string {
+		return fmt.Sprintf("-- label: P\n-- param: threshold int = %d\nSELECT e.n FROM events e WHERE e.n > $threshold", dflt)
+	}
+	if err := os.WriteFile(qfile, []byte(body(0)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := t.TempDir()
+
+	var out, errb bytes.Buffer
+	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
+	env := func() map[string]interface{} {
+		var e map[string]interface{}
+		json.Unmarshal([]byte(strings.TrimSpace(out.String())), &e)
+		return e
+	}
+
+	// create with --param threshold=4: only n=5 and n=9 match from start.
+	out.Reset()
+	c.cmdMulti("cursor create P --queries " + qfile + " --from start --param threshold=4 --cursor-store " + store)
+	if env()["ok"] != true {
+		t.Fatalf("create: %s (stderr %s)", out.String(), errb.String())
+	}
+	out.Reset()
+	c.cmdMulti("cursor show P --cursor-store " + store)
+	sh := env()
+	prm, _ := sh["params"].(map[string]interface{})
+	if prm["threshold"] != "4" {
+		t.Fatalf("stored params: got %v", sh["params"])
+	}
+	specA, _ := sh["spec_hash"].(string)
+
+	// Same pack, different param value => DIFFERENT spec_hash (params are identity).
+	out.Reset()
+	c.cmdMulti("cursor create P2 --queries " + qfile + " --from start --param threshold=7 --cursor-store " + store)
+	out.Reset()
+	c.cmdMulti("cursor show P2 --cursor-store " + store)
+	if specB, _ := env()["spec_hash"].(string); specB == specA || specA == "" {
+		t.Fatalf("param value must be inside the delta identity: %q vs %q", specA, specB)
+	}
+
+	// peek replays the STORED threshold=4: delivers n=5 and n=9.
+	out.Reset()
+	c.cmdMulti("cursor peek P --cursor-store " + store)
+	if pv := env(); pv["count"] != float64(2) {
+		t.Fatalf("peek under stored params: want 2, got %s", out.String())
+	}
+
+	// --param on peek is a hard error (params are fixed at create).
+	out.Reset()
+	c.failed = false
+	c.cmdMulti("cursor peek P --param threshold=0 --cursor-store " + store)
+	if ev, _ := env()["error"].(map[string]interface{}); ev == nil || ev["kind"] != "bad-args" {
+		t.Fatalf("--param on peek must refuse: %s", out.String())
+	}
+
+	// THE CRUX: editing the front-matter DEFAULT (0 -> 8) must NOT move the cursor —
+	// its stored threshold=4 replays, so no drift and the same delta.
+	c.failed = false
+	if err := os.WriteFile(qfile, []byte(body(8)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	c.cmdMulti("cursor peek P --cursor-store " + store)
+	pv := env()
+	if pv["queries_current"] != nil {
+		t.Fatalf("a default change must not drift a cursor with stored params: %s", out.String())
+	}
+	if pv["count"] != float64(2) {
+		t.Fatalf("default change leaked into a live cursor: %s", out.String())
+	}
+
+	// A REAL template edit still drifts.
+	if err := os.WriteFile(qfile, []byte(body(8)+" AND e.n < 100"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	c.cmdMulti("cursor peek P --cursor-store " + store)
+	if env()["queries_current"] == nil {
+		t.Fatalf("template edit must drift: %s", out.String())
+	}
+}

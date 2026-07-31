@@ -38,7 +38,7 @@ import (
 // (ISSUE-16) let a DAG draw its nodes from several trees — e.g. the shared tier-1
 // queries dir plus the roll-up dir — without symlinking files into one directory. A
 // duplicate node label across dirs is an error (ambiguous).
-func buildComposeNodes(dirs []string) ([]glue.ComposeNode, error) {
+func buildComposeNodes(dirs []string, params map[string]string) ([]glue.ComposeNode, error) {
 	var files []string
 	for _, dir := range dirs {
 		fs, err := filepath.Glob(filepath.Join(dir, "*.sql++"))
@@ -51,8 +51,7 @@ func buildComposeNodes(dirs []string) ([]glue.ComposeNode, error) {
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no *.sql++ files in %s", strings.Join(dirs, ", "))
 	}
-	seen := map[string]bool{}
-	var nodes []glue.ComposeNode
+	var entries []glue.MultiQueryEntry
 	for _, f := range files {
 		body, rerr := os.ReadFile(f)
 		if rerr != nil {
@@ -62,6 +61,18 @@ func buildComposeNodes(dirs []string) ([]glue.ComposeNode, error) {
 		if perr != nil {
 			return nil, fmt.Errorf("%s: %v", f, perr)
 		}
+		entries = append(entries, e)
+	}
+	// Bind query parameters DAG-wide (--param over each node's declared defaults),
+	// before node assembly, so every node's statement is rendered the same way run's
+	// pack loader renders it.
+	entries, _, err := glue.ApplyParams(entries, params)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var nodes []glue.ComposeNode
+	for _, e := range entries {
 		if seen[e.Label] {
 			return nil, fmt.Errorf("duplicate node %q (two files share the stem)", e.Label)
 		}
@@ -97,7 +108,7 @@ func (c *cli) cmdMultiCompose(arg string) {
 		c.failed = true
 		return
 	}
-	nodes, err := buildComposeNodes(a.pack)
+	nodes, err := buildComposeNodes(a.pack, a.params)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi compose: %v\n", c.prog, err)
 		c.failed = true

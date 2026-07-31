@@ -93,6 +93,10 @@ type MultiQueryEntry struct {
 	HasFixture bool    // the `-- @fixture` marker was present.
 	HasExpect  bool    // the `-- @expect` marker was present.
 
+	// Params are the entry's declared `-- param:` parameters (DESIGN-cep.md
+	// "Parameterized packs"): $name references in Stmt, bound early via ApplyParams.
+	Params []QueryParam
+
 	Path string            // the file this entry was read from (provenance).
 	Meta map[string]string // any front-matter key not promoted to a field above (raw string value).
 }
@@ -170,6 +174,11 @@ func ParseMultiQueryEntry(path, text string) (MultiQueryEntry, error) {
 		Label: strings.TrimSuffix(filepath.Base(path), ".sql++"),
 		Meta:  map[string]string{},
 	}
+	params, perr := ScanQueryParams(text)
+	if perr != nil {
+		return r, fmt.Errorf("%s: %v", path, perr)
+	}
+	r.Params = params
 
 	lines := strings.Split(text, "\n")
 

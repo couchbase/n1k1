@@ -50,9 +50,7 @@ package builtins
 import (
 	"embed"
 	"fmt"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/couchbase/n1k1/glue"
@@ -61,13 +59,10 @@ import (
 //go:embed *.sql++
 var builtinFS embed.FS
 
-// Param is one declared substitution parameter of a builtin query.
-type Param struct {
-	Name     string // the $name reference / URI query-string key
-	Type     string // "ident" | "int" | "list"
-	Default  string // raw default value ("" is a valid default)
-	Required bool   // no `= default` was declared
-}
+// Param is one declared substitution parameter of a builtin query (the shared
+// pack-parameter machinery in glue/params.go — file packs use the identical
+// declaration, syntax, and rendering via `--param k=v`).
+type Param = glue.QueryParam
 
 // Query is one embedded builtin *.sql++: its identity, artifact version, declared
 // params, and the SQL template (front-matter + fixture sections stripped).
@@ -106,48 +101,12 @@ func load() ([]Query, error) {
 		if perr != nil {
 			return nil, fmt.Errorf("builtin %s: %v", fn, perr)
 		}
-		params, serr := scanParams(string(src))
-		if serr != nil {
-			return nil, fmt.Errorf("builtin %s: %v", fn, serr)
-		}
 		out = append(out, Query{
 			Name: fn, Version: e.Version, Description: e.Description,
-			Params: params, Template: e.Stmt, Entry: e,
+			Params: e.Params, Template: e.Stmt, Entry: e,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
-}
-
-// scanParams collects every `-- param: <name> <type> [= <default>]` front-matter
-// line. Scanned from the raw source (not the front-matter map) because `param` is
-// repeatable and a map keeps only the last.
-func scanParams(src string) ([]Param, error) {
-	var out []Param
-	for _, ln := range strings.Split(src, "\n") {
-		ln = strings.TrimSpace(ln)
-		if !strings.HasPrefix(ln, "--") {
-			break // front-matter over: params must precede the SQL body
-		}
-		body := strings.TrimSpace(strings.TrimPrefix(ln, "--"))
-		val, ok := strings.CutPrefix(body, "param:")
-		if !ok {
-			continue
-		}
-		spec, dflt, hasDflt := strings.Cut(val, "=")
-		fields := strings.Fields(spec)
-		if len(fields) != 2 {
-			return nil, fmt.Errorf("bad param line %q (want: param: <name> <type> [= <default>])", ln)
-		}
-		typ := fields[1]
-		if typ != "ident" && typ != "int" && typ != "list" {
-			return nil, fmt.Errorf("param %q: unknown type %q (want ident|int|list)", fields[0], typ)
-		}
-		out = append(out, Param{
-			Name: fields[0], Type: typ,
-			Default: strings.TrimSpace(dflt), Required: !hasDflt,
-		})
-	}
 	return out, nil
 }
 
@@ -170,119 +129,23 @@ func Lookup(name string) (Query, bool) {
 // key is a loud error (a typo'd param silently ignored is how a census runs with
 // depth=2 when you asked depht=1), and a missing REQUIRED param names itself.
 func (q Query) Resolve(given map[string]string) (map[string]string, error) {
-	out := map[string]string{}
+	declared := map[string]bool{}
 	for _, p := range q.Params {
-		out[p.Name] = p.Default
+		declared[p.Name] = true
 	}
-	for k, v := range given {
-		if _, declared := out[k]; !declared {
+	for k := range given {
+		if !declared[k] {
 			return nil, fmt.Errorf("builtin %s has no param %q (declared: %s)", q.Name, k, q.paramNames())
 		}
-		out[k] = v
 	}
-	for _, p := range q.Params {
-		if p.Required && out[p.Name] == "" {
-			return nil, fmt.Errorf("builtin %s needs %s=..., e.g. builtin:%s?%s=<%s>",
-				q.Name, p.Name, q.Name, p.Name, p.Name)
-		}
-	}
-	return out, nil
+	return glue.ParamsResolve("builtin "+q.Name, q.Params, given)
 }
-
-// nameCharRE matches characters that may appear in a $name reference.
-var nameCharRE = regexp.MustCompile(`^[A-Za-z0-9_-]`)
 
 // Render substitutes the resolved params into the template's `$name` references
-// (SQL++ named-parameter syntax, bound early), each value validated and rendered per
-// its declared type (ident -> `backticked`, int -> bare digits, list -> a JSON
-// string array). Quote-aware: a $ inside a "…" / '…' / `…` literal is data. Each
-// reference binds the LONGEST declared param name it prefixes, bounded by a
-// non-name character ($type-field binds `type-field`; arithmetic needs spacing:
-// `$depth - 1`). A $word matching NO
-// declared param is an error — an undeclared parameter silently passed through
-// would surface later as an engine named-arg the pack never supplies.
+// via the shared pack-parameter renderer (glue.RenderStmtParams): SQL++
+// named-parameter syntax bound early, quote- and comment-aware, typed rendering.
 func (q Query) Render(resolved map[string]string) (string, error) {
-	// Longest declared names first, so the greedy match is deterministic.
-	sorted := append([]Param(nil), q.Params...)
-	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i].Name) > len(sorted[j].Name) })
-
-	var out strings.Builder
-	t := q.Template
-	var quote byte // active string/ident delimiter, 0 when outside
-	for i := 0; i < len(t); i++ {
-		ch := t[i]
-		switch {
-		case quote != 0:
-			if ch == quote {
-				quote = 0
-			}
-		case ch == '-' && i+1 < len(t) && t[i+1] == '-':
-			// A `--` line comment: copied verbatim to end-of-line — an apostrophe in
-			// prose ("it's") must not open a string, and no substitution happens there.
-			for i < len(t) && t[i] != '\n' {
-				out.WriteByte(t[i])
-				i++
-			}
-			if i < len(t) {
-				out.WriteByte('\n')
-			}
-			continue
-		case ch == '"' || ch == '\'' || ch == '`':
-			quote = ch
-		case ch == '$' && i+1 < len(t) && nameCharRE.MatchString(t[i+1:]):
-			matched := false
-			for _, p := range sorted {
-				rest := t[i+1:]
-				if strings.HasPrefix(rest, p.Name) &&
-					(len(rest) == len(p.Name) || !nameCharRE.MatchString(rest[len(p.Name):])) {
-					v, err := renderValue(p, resolved[p.Name])
-					if err != nil {
-						return "", err
-					}
-					out.WriteString(v)
-					i += len(p.Name)
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				end := i + 1
-				for end < len(t) && nameCharRE.MatchString(t[end:]) {
-					end++
-				}
-				return "", fmt.Errorf("builtin %s: $%s matches no declared param (declared: %s)",
-					q.Name, t[i+1:end], q.paramNames())
-			}
-			continue
-		}
-		out.WriteByte(ch)
-	}
-	return out.String(), nil
-}
-
-func renderValue(p Param, val string) (string, error) {
-	switch p.Type {
-	case "ident":
-		if val == "" || strings.ContainsAny(val, "`\n") {
-			return "", fmt.Errorf("param %s: %q is not a usable identifier", p.Name, val)
-		}
-		return "`" + val + "`", nil
-	case "int":
-		n, err := strconv.Atoi(strings.TrimSpace(val))
-		if err != nil {
-			return "", fmt.Errorf("param %s: %q is not an integer", p.Name, val)
-		}
-		return strconv.Itoa(n), nil
-	case "list":
-		var quoted []string
-		for _, e := range strings.Split(val, ",") {
-			if e = strings.TrimSpace(e); e != "" {
-				quoted = append(quoted, strconv.Quote(e))
-			}
-		}
-		return "[" + strings.Join(quoted, ", ") + "]", nil
-	}
-	return "", fmt.Errorf("param %s: unknown type %q", p.Name, p.Type)
+	return glue.RenderStmtParams("builtin "+q.Name, q.Template, q.Params, resolved)
 }
 
 func (q Query) paramNames() string {

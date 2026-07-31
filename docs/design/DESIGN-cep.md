@@ -598,7 +598,7 @@ Monitor CRUD (`create/list/show/pause/resume/reset/snooze/delete`) mirrors the C
 unbounded-source engine work), and only later add true `follow`. So monitors are useful well before
 the continuous-operation engine work lands.
 
-### Parameterized packs (design — not shipped)
+### Parameterized packs (design — ✅ SHIPPED for file packs: --param k=v on run/lint/test/show/compose + cursor create; CursorState.Params replayed on peek/advance/check; guards TestMultiRunParams + TestMultiCursorParams)
 
 File-based packs (`--queries <dir>`) will want parameters — a threshold, a date window, a field
 name — without editing files or duplicating them per variant. The embedded builtins shipped the

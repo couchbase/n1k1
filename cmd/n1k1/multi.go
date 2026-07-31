@@ -107,9 +107,10 @@ type multiArgs struct {
 	queriesTags    []string // --queries-tags: keep only entries whose front-matter tags include ANY of these
 	queriesNotTags []string // --queries-not-tags: drop entries whose tags include ANY of these
 	bind           string
-	update         bool // .multi test: record produced labelResults back into each entry's @expect
-	sql            bool // .multi explain: render the pretty SQL++ + provenance view instead of the op tree
-	census         bool // .multi lint: census-aware lint (data-driven field-existence check; was `.multi doctor`)
+	params         map[string]string // --param k=v (repeatable): pack query parameters, bound early (glue.ApplyParams)
+	update         bool              // .multi test: record produced labelResults back into each entry's @expect
+	sql            bool              // .multi explain: render the pretty SQL++ + provenance view instead of the op tree
+	census         bool              // .multi lint: census-aware lint (data-driven field-existence check; was `.multi doctor`)
 }
 
 // parseMultiArgs parses `--queries <dir>... [--bind <file>] [--update]` (also accepting
@@ -167,6 +168,22 @@ func parseMultiArgs(arg string) (multiArgs, error) {
 				val = toks[i]
 			}
 			a.bind = val
+		case "param":
+			if !hasEq {
+				i++
+				if i >= len(toks) {
+					return a, fmt.Errorf("--param needs k=v")
+				}
+				val = toks[i]
+			}
+			k, v, ok := strings.Cut(val, "=")
+			if k = strings.TrimSpace(k); !ok || k == "" {
+				return a, fmt.Errorf("--param %q must be key=value", val)
+			}
+			if a.params == nil {
+				a.params = map[string]string{}
+			}
+			a.params[k] = v
 		case "update":
 			// A boolean flag: bare `--update`, or `--update=true|false`.
 			a.update = !hasEq || val == "true" || val == "1"
@@ -179,7 +196,7 @@ func parseMultiArgs(arg string) (multiArgs, error) {
 			a.census = !hasEq || val == "true" || val == "1"
 		default:
 			return a, fmt.Errorf("unknown flag %q (want --queries <dir> [--queries-tags a,b] "+
-				"[--queries-not-tags a,b] [--bind <manifest>] [--update] [--sql] [--census])", t)
+				"[--queries-not-tags a,b] [--bind <manifest>] [--param k=v] [--update] [--sql] [--census])", t)
 		}
 	}
 	if len(a.queries) == 0 {
@@ -189,11 +206,19 @@ func parseMultiArgs(arg string) (multiArgs, error) {
 }
 
 // loadMultiQueryEntries loads one or more pack dirs as parsed entries (front-matter +
-// fixtures), the reusable glue loader. The full entry is what compile / lint / .multi test
-// all consume (Label+Stmt for run/lint; source+fixture+expect for test). Multiple dirs
-// concatenate into one pack (IDEA-0034).
-func loadMultiQueryEntries(dirs []string) ([]glue.MultiQueryEntry, error) {
-	return glue.LoadMultiQueryEntriesDirs(dirs)
+// fixtures), the reusable glue loader, and binds the pack's `-- param:` query
+// parameters early (--param overrides over declared defaults — glue.ApplyParams), so
+// everything downstream (compile / hash / lint / test) sees the rendered statements.
+// The full entry is what compile / lint / .multi test all consume (Label+Stmt for
+// run/lint; source+fixture+expect for test). Multiple dirs concatenate into one pack
+// (IDEA-0034).
+func loadMultiQueryEntries(dirs []string, params map[string]string) ([]glue.MultiQueryEntry, error) {
+	entries, err := glue.LoadMultiQueryEntriesDirs(dirs)
+	if err != nil {
+		return nil, err
+	}
+	entries, _, err = glue.ApplyParams(entries, params)
+	return entries, err
 }
 
 // selectByTags restricts a loaded pack to the entries whose front-matter `tags:` match
@@ -328,7 +353,7 @@ func (c *cli) cmdMultiList(arg string) {
 		c.failed = true
 		return
 	}
-	entries, err := loadMultiQueryEntries(args.queries)
+	entries, err := loadMultiQueryEntries(args.queries, args.params)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi list: %v\n", c.prog, err)
 		c.failed = true
@@ -443,8 +468,27 @@ func (c *cli) cmdMultiShow(arg string) {
 	}
 
 	// Otherwise: load the *.sql++ files. LoadMultiQueryEntries parses each one, so a
-	// parse error here IS the existence/validity check firing.
-	entries, err := loadMultiQueryEntries(args.queries)
+	// parse error here IS the existence/validity check firing. show is a VIEWER: a
+	// required param nobody supplied renders as a <placeholder> (the builtin-show
+	// behavior) rather than refusing, so the template shows even unbound.
+	entries, err := glue.LoadMultiQueryEntriesDirs(args.queries)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .multi show: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	showParams := map[string]string{}
+	for k, v := range args.params {
+		showParams[k] = v
+	}
+	for _, e := range entries {
+		for _, p := range e.Params {
+			if p.Required && showParams[p.Name] == "" {
+				showParams[p.Name] = "<" + p.Name + ">"
+			}
+		}
+	}
+	entries, _, err = glue.ApplyParams(entries, showParams)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi show: %v\n", c.prog, err)
 		c.failed = true
@@ -536,7 +580,7 @@ func (c *cli) cmdMultiRun(arg string) {
 	if c.runBuiltinQueries(args) {
 		return
 	}
-	dets, err := loadMultiQueryEntries(args.queries)
+	dets, err := loadMultiQueryEntries(args.queries, args.params)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)
 		c.failed = true
@@ -772,7 +816,7 @@ func (c *cli) cmdMultiLint(arg string) {
 		c.failed = true
 		return
 	}
-	dets, err := loadMultiQueryEntries(args.queries)
+	dets, err := loadMultiQueryEntries(args.queries, args.params)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi lint: %v\n", c.prog, err)
 		c.failed = true
@@ -868,7 +912,7 @@ func (c *cli) cmdMultiExplain(arg string) {
 		c.failed = true
 		return
 	}
-	dets, err := loadMultiQueryEntries(args.queries)
+	dets, err := loadMultiQueryEntries(args.queries, args.params)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi explain: %v\n", c.prog, err)
 		c.failed = true
@@ -1252,7 +1296,7 @@ func (c *cli) cmdMultiTest(arg string) {
 		c.failed = true
 		return
 	}
-	entries, err := loadMultiQueryEntries(args.queries)
+	entries, err := loadMultiQueryEntries(args.queries, args.params)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "%s: .multi test: %v\n", c.prog, err)
 		c.failed = true
