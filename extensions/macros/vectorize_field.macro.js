@@ -7,12 +7,12 @@
 //   -- ingest (JSON Lines): embed `line`, materialize a vec keyspace as .jsonl
 //   INSERT INTO `vecs/data.jsonl` (KEY UUID(), VALUE self)
 //   SELECT r.* FROM @vectorize_field(logs, field => line, id => META().id,
-//                                    batch => 256, opts => {"dim":8}) AS r;
+//                                    batch => 64, opts => {"dim":8}) AS r;
 //   -- ingest (COLUMNAR Parquet): same call, a .parquet target -> a list<float32>
 //   -- column the vectorized VECTOR_DISTANCE path reads (keep a matching `id`)
 //   INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)
 //   SELECT r.id, r.vec FROM @vectorize_field(logs, field => line, id => id,
-//                                            batch => 256, opts => {"dim":8}) AS r;
+//                                            batch => 64, opts => {"dim":8}) AS r;
 //   -- search: top-5 nearest. Over .parquet with a matching doc id, this takes the
 //   -- columnar fast path (DESIGN-vectors.md); over .jsonl it's the row lane.
 //   SELECT v.id, VECTOR_DISTANCE(v.vec, [/*8 floats*/], "cosine") AS d
@@ -29,6 +29,21 @@
 // VECTORIZE_BATCH (dim/endpoint/model/fake); text/into are forced via OBJECT_PUT. No
 // model/network with the default (empty endpoint) -> deterministic fake vectors.
 //
+// Field-tested gotchas (n1k1-for-ai team feedback -- each failed QUIETLY):
+//   1. OUTPUT SHAPE: rows come back as {id, text, vec} -- the embedded text is ALWAYS
+//      named `text`, NEVER the source field's name. `SELECT r.line AS txt` after
+//      @vectorize_field(logs, field => line, ...) yields MISSING, and SQL++ silently
+//      DROPS a missing column from the projection -- a materialized parquet then simply
+//      lacks the column, with no error anywhere downstream. Write `r.text AS txt`.
+//      After materializing, sanity-check: SELECT * FROM <target> LIMIT 1.
+//   2. BATCH SIZE: a big page can overload the model server -- batch => 256 of ~1.5KB
+//      prompts crashed a local ollama (`/tokenize: connection reset by peer`); 64 was
+//      stable. Default is 64; raise it only after your endpoint proves it out.
+//   3. OLLAMA ENDPOINT: use `/api/embed` (the batch API; returns UNIT-NORMALIZED
+//      vectors, norm 1.0), NOT the older `/api/embeddings` (raw magnitudes, e.g. norm
+//      ~23). Un-normalized vectors quietly break anything assuming euclidean ~ cosine
+//      (k-means clusters become about MAGNITUDE -- see examples/kmeans/README.md).
+//
 // The target file's extension picks the format: `.parquet` writes the columnar
 // list<float32> file the vectorized VECTOR_DISTANCE path reads; `.jsonl` writes
 // JSON Lines. Wrap the call in FROM with an alias (AS r), like any
@@ -40,7 +55,7 @@ var macro = {
     { name: "src",   required: true },        // keyspace / subquery of rows
     { name: "field", required: true },        // the text field/expr to embed (keyspace scope)
     { name: "id",    default: "META().id" },  // per-row id kept beside the vector
-    { name: "batch", default: 256 },          // rows per model round-trip (one GROUP-BY page)
+    { name: "batch", default: 64 },           // rows per model round-trip (one GROUP-BY page; see gotcha 2)
     { name: "into",  default: "vec" },        // output vector field name
     { name: "order", default: "" },           // ROW_NUMBER order (default: the id)
     { name: "opts",  default: "{}" }          // VECTORIZE_BATCH opts object: dim/endpoint/model/fake

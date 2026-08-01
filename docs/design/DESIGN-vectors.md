@@ -148,8 +148,8 @@ with **no model and no network** — the key de-risk (and the CI default, since 
 ollama dependency).
 
 **Batching without magic (explicit GROUP-BY pages):** `ARRAY_AGG` of `{id,text}` **objects** (not
-two parallel arrays) keeps id/text/vec glued; page size is a user literal (`FLOOR(t.pos/256)`); the
-**`@vectorize_field(ks, field => line, batch => 256, opts => {…})`** macro sugars the wall. The
+two parallel arrays) keeps id/text/vec glued; page size is a user literal (`FLOOR(t.pos/64)`); the
+**`@vectorize_field(ks, field => line, batch => 64, opts => {…})`** macro sugars the wall. The
 load-bearing plumbing is VERIFIED: `UNNEST` works over a *computed* `ARRAY_AGG` array, the
 `GROUP BY page → ARRAY_AGG({id,…}) → UNNEST` round-trips, and paging via `ROW_NUMBER()`
 (`FLOOR((rn-1)/N)` for 0-based) or `_meta.pos` works — so the only new code was `VECTORIZE_BATCH`.
@@ -162,7 +162,7 @@ ranking):
 -- ingest: embed `line`, materialize a columnar Parquet vec keyspace
 INSERT INTO `vecs/data.parquet` (KEY UUID(), VALUE self)
 SELECT r.id, r.vec
-  FROM @vectorize_field(logs, field => line, id => id, batch => 256,
+  FROM @vectorize_field(logs, field => line, id => id, batch => 64,
        opts => {"endpoint":"http://localhost:11434/api/embed","model":"nomic-embed-text"}) AS r;
 -- search: embed the query the same way -> top-5 (columnar fast path; qvec computed once)
 WITH q AS (VECTORIZE_BATCH([{"text":"disk full"}],
@@ -172,6 +172,23 @@ SELECT v.id, VECTOR_DISTANCE(v.vec, q, "cosine") AS d
 ```
 Over `.parquet` the once-computed `q` + kept scalar columns (numeric OR string) take the columnar
 fast path; only the vec itself is the list column.
+
+**Field-tested gotchas (n1k1-for-ai team feedback, 2026-08 — each failed QUIETLY; also in
+`.help vectorize` and the macro's header):**
+- ⚠ **ollama endpoint choice changes vector NORMS.** `/api/embed` (the batch API n1k1 targets)
+  returns **unit-normalized** vectors (norm 1.0); the older `/api/embeddings` returns raw
+  magnitudes (norm ~23 observed). Nothing downstream errors — but anything assuming
+  euclidean ≈ cosine (the kmeans pipeline, dedup-by-distance) quietly becomes about MAGNITUDE.
+  `examples/kmeans/kmeans.py fit` now samples norms and warns when they aren't ~1.
+- ⚠ **Batch size can crash the model server.** `batch => 256` of ~1.5KB prompts made a local
+  ollama reset connections (`/tokenize: connection reset by peer`); 64 was stable. The macro's
+  default is now **64** — raise it only after the endpoint proves it out.
+- ⚠ **`@vectorize_field` output is `{id, text, vec}`** — the embedded text is ALWAYS named
+  `text`, never the source field's name. `SELECT r.line AS txt` yields MISSING, SQL++ silently
+  drops the missing column from the projection, and the materialized parquet simply lacks it (no
+  error at INSERT, none at query). Check a materialized target directly:
+  `SELECT * FROM <target> LIMIT 1`. (`kmeans.py census --text-field` now fails loud when the
+  named field has no valued rows.)
 
 ## Vector element types (float32 / float64 / int8·int16 / float16 quantized)
 

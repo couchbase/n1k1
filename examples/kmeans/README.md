@@ -57,7 +57,23 @@ python3 examples/kmeans/kmeans.py fit --data <dataRoot> \
 - **Metric**: distances are euclidean. For cosine semantics, use **unit-normalized
   embeddings** (most embedding models emit these): on unit vectors euclidean and cosine
   produce the same nearest-neighbor ordering, and k-means on them ≈ spherical k-means.
+  ⚠ **ollama users: this is an endpoint choice** — `/api/embed` (the batch API n1k1
+  targets) returns unit vectors (norm 1.0); the older `/api/embeddings` returns raw
+  magnitudes (norm ~23 observed). Nothing errors on the wrong one — the clusters just
+  quietly become about magnitude. `fit` samples norms and warns when they aren't ~1.
 - **Rows without the vector field are skipped** (`IS VALUED` guard), never guessed.
+
+Embedding-with-`@vectorize_field` traps (field-tested by the n1k1-for-ai team — both
+fail silently; also in `.help vectorize`):
+
+- Its rows come back as **`{id, text, vec}`** — the embedded text is always named
+  `text`, never the source field's name. `SELECT r.line AS txt` yields MISSING and
+  SQL++ **silently drops** the column from the projection, so a materialized parquet
+  simply lacks it; the census would then show empty `top_terms` everywhere.
+  `census --text-field` now fails loud when the field has no valued rows; after any
+  materialize, sanity-check with `SELECT * FROM <target> LIMIT 1`.
+- Keep `batch` modest (the macro default is now 64): `batch => 256` of ~1.5KB prompts
+  crashed a local ollama (`/tokenize: connection reset by peer`).
 
 ## Subcommands & the flags that matter
 

@@ -63,7 +63,12 @@ def main():
     with open(path, "w") as f:
         for i in range(args.n):
             t = rng.randrange(args.clusters)
-            vec = [round(c + rng.gauss(0.0, args.noise), 6) for c in centers[t]]
+            raw = [c + rng.gauss(0.0, args.noise) for c in centers[t]]
+            # Unit-normalize, matching what real embedding models emit (and what the
+            # kmeans README's euclidean ~ cosine equivalence assumes; kmeans.py fit
+            # warns on non-unit norms, so the demo data must model the good case).
+            nrm = math.sqrt(sum(x * x for x in raw)) or 1.0
+            vec = [round(x / nrm, 6) for x in raw]
             words = rng.sample(VOCAB[t], 3)
             doc = {"id": "d%05d" % i, "vec": vec, "txt": " ".join(words)}
             f.write(json.dumps(doc) + "\n")

@@ -183,7 +183,29 @@ def min_dist_expr(args, vec_ref):
             % (vec_ref, vec_ref))
 
 
+def check_norms(args):
+    """Sample vector norms and WARN when they aren't ~unit. Euclidean k-means over
+    un-normalized vectors clusters by MAGNITUDE, not direction -- and nothing else in
+    the pipeline would error. Real-world cause (n1k1-for-ai feedback): ollama's older
+    /api/embeddings returns raw magnitudes (norm ~23) while /api/embed (the batch API)
+    returns unit vectors (norm 1.0)."""
+    rows, _ = run_sql(args, "SELECT SQRT(ARRAY_SUM(ARRAY POWER(x, 2) FOR x IN d.v END)) AS nrm "
+                            "FROM %s LIMIT 16" % valued_src(args))
+    norms = [r["nrm"] for r in rows if isinstance(r.get("nrm"), (int, float))]
+    if not norms:
+        return
+    lo, hi = min(norms), max(norms)
+    if lo < 0.9 or hi > 1.1:
+        print("WARNING: sampled vector norms are not ~1 (min %.3g, max %.3g).\n"
+              "  Euclidean k-means over un-normalized vectors clusters by MAGNITUDE, not\n"
+              "  meaning. For cosine semantics, embed with unit-normalized output --\n"
+              "  ollama: use /api/embed (batch API, unit vectors), NOT /api/embeddings\n"
+              "  (raw magnitudes) -- or normalize the vectors before fitting."
+              % (lo, hi), file=sys.stderr)
+
+
 def cmd_fit(args):
+    check_norms(args)
     # Deterministic farthest-first init (the deterministic cousin of k-means++):
     # seed with the first valued vector, then K-1 times take the doc that maximizes
     # the distance to its nearest existing seed. Each step is one SQL++ scan, capped
@@ -281,6 +303,23 @@ def cmd_census(args):
     model = load_centroids(args)
     cents = model["centroids"]
     vec, kid = bt(args.vec_field), bt(args.id_field)
+
+    if args.text_field:
+        # Fail LOUD when the text field has no valued rows: a projection of a MISSING
+        # field is silently dropped by SQL++ (and by the parquet writer), so a wrong
+        # field name would otherwise just yield empty top_terms for every cluster with
+        # no error anywhere (n1k1-for-ai feedback). Classic cause: @vectorize_field
+        # outputs {id, text, vec} -- the text is named `text`, not the source field.
+        rows, _ = run_sql(args, "SELECT COUNT(1) AS n FROM %s d WHERE d.%s IS VALUED"
+                          % (bt(args.keyspace), bt(args.text_field)))
+        if not rows or not rows[0].get("n"):
+            sys.exit("census: --text-field %r has NO valued rows in keyspace %r.\n"
+                     "  A missing field is silently dropped from SQL++ projections (and from\n"
+                     "  materialized parquet), so this would otherwise report empty top_terms\n"
+                     "  everywhere. Check the real column names: SELECT * FROM %s LIMIT 1\n"
+                     "  (note: @vectorize_field emits {id, text, vec} -- the embedded text is\n"
+                     "  always named `text`, not the source field's name)."
+                     % (args.text_field, args.keyspace, args.keyspace))
 
     sizes_stmt = ("WITH cents AS (%s) SELECT cl, COUNT(1) AS n FROM %s d "
                   "LET cl = %s WHERE d.%s IS VALUED GROUP BY cl ORDER BY cl"
