@@ -45,6 +45,7 @@ var helpTopics = []helpTopic{
 	{name: "keyspaces", blurb: "how files/dirs become keyspaces; dotted names", alias: ".keyspaces help"},
 	{name: "macro", blurb: "*.macro.js macros that expand @name(...) into SQL++", alias: ".macro help"},
 	{name: "meta", blurb: "the _meta record fields + external follow-up", alias: ".meta help"},
+	{name: "modes", blurb: "output formats: box/json/jsonlines/yaml/csv/markdown/line/list (+ |pretty)", alias: ".mode"},
 	{name: "multi", blurb: "authoring & running a set of *.sql++ queries together (shared execution)", alias: ".multi help"},
 	{name: "quoting", blurb: "backticks vs the shell vs dot-command args"},
 	{name: "reserved-words", blurb: "the SQL++ keywords you must backtick as identifiers (full list)"},
@@ -77,6 +78,8 @@ func (c *cli) cmdHelp(arg string) {
 		c.helpKeyspaces()
 	case "meta", "_meta":
 		c.helpMeta()
+	case "modes", "mode", "output", "formats":
+		c.helpModes()
 	case "quoting", "quotes":
 		c.helpQuoting()
 	case "reserved-words", "reserved", "keywords":
@@ -299,6 +302,35 @@ func (c *cli) helpExtensions() {
 	c.hline("  .extensions examples [name]  # print the examples for an extension")
 	c.hline("  .extensions test [name]      # run an extension + check every in -> out")
 	c.hline("  .extensions unload <name>    # drop an extension from the session")
+}
+
+func (c *cli) helpModes() {
+	c.hline("output modes — .mode <m> (or the -mode flag)")
+	c.hline("")
+	c.hline("Default: box|pretty at a terminal, jsonlines when piped/redirected or under -c,")
+	c.hline("so interactive output is readable and piped output is machine-readable.")
+	c.hline("")
+	c.hline("  box         the boxed unicode table (see .maxrows / .maxwidth)")
+	c.hline("  jsonlines   one JSON object per line — the pipe-friendly default (aka jsonl, ndjson)")
+	c.hline("  json        one JSON array of all rows")
+	c.hline("  yaml        YAML, with literal blocks for multi-line strings")
+	c.hline("  csv         comma-separated, with a header row")
+	c.hline("  markdown    a GitHub-flavored markdown table")
+	c.hline("  line        one \"key = value\" per line, a blank line between rows")
+	c.hline("  list        each row's values joined by | — the sqlite3/duckdb `.mode list`")
+	c.hline("              format this name comes from. NOT a passthrough: multiple columns")
+	c.hline("              are still |-joined; what it does drop is JSON quoting, which makes")
+	c.hline("              it the mode for piping ONE string column out verbatim.")
+	c.hline("")
+	c.hline("Append |pretty to any mode to 2-space-indent JSON values: .mode box|pretty")
+	c.hline("")
+	c.hline("Writing a file — a single string column in `list` mode arrives raw, so it can be")
+	c.hline("redirected as-is (here a self-contained chart page, see .help extensions):")
+	c.hline("")
+	c.hline(fmt.Sprintf("     %s -mode list -c 'SELECT RAW chart_vegalite({\"x\": ts, \"y\": total,", prog))
+	c.hline("       \"$mark\": \"line\", \"$format\": \"html\"}) FROM orders' examples/shop > chart.html")
+	c.hline("")
+	c.hline("See also: .output <file> (redirect from inside the REPL), .help extensions.")
 }
 
 func (c *cli) helpQuoting() {

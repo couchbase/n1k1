@@ -98,6 +98,7 @@ func TestHelpTopics(t *testing.T) {
 		"quoting":        "single-quote",
 		"keyspaces":      "keyspace",
 		"meta":           "_meta",
+		"modes":          "sqlite3/duckdb", // where `list` gets its name
 		"extensions":     "exports.functions", // the multi-export JS module guide
 
 		"temp-keyspaces": "CREATE",

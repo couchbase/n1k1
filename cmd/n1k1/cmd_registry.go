@@ -136,7 +136,7 @@ func builtinCmds() []Cmd {
 		{names: []string{".help"},
 			run: func(c *cli, _, arg string) bool { c.cmdHelp(arg); return false },
 			help: func(c *cli) string {
-				return ".help [<topic>]       show this help, or a deep-dive (reserved-words|quoting|keyspaces|meta|temp-keyspaces)"
+				return ".help [<topic>]       show this help, or a deep-dive (modes|reserved-words|quoting|keyspaces|meta|temp-keyspaces)"
 			}},
 
 		{names: []string{".open"},
