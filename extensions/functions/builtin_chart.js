@@ -36,6 +36,24 @@
 //       FROM orders GROUP BY status
 //
 // `@chart(...)` (extensions/macros/chart.macro.js) is a friendlier surface over this.
+//
+// ── See an actual chart: copy, paste, run ──────────────────────────────────────────
+//
+// `"$format": "html"` returns a standalone page instead of the spec, and `-mode list`
+// prints a string result raw (no JSON quoting), so one shell line writes a viewable
+// file. From a checkout, against the bundled examples/shop dataset:
+//
+//     n1k1 -mode list -c 'SELECT RAW chart_vegalite({"x": ts, "y": total, "color": status, "$mark": "line", "$title": "Orders over time", "$format": "html"}) FROM orders' examples/shop > chart.html && open chart.html
+//
+// (`open` is macOS; use `xdg-open` on Linux, `start` on Windows. Keep the statement in
+// SINGLE quotes so the shell leaves the "$mark"/"$format" keys alone.) The same via the
+// macro, which is shorter — note the [0], since a macro expands to a subquery:
+//
+//     n1k1 -mode list -c "SELECT RAW @chart(orders, x => ts, y => total, color => status, draw => 'line', title => 'Orders over time', format => 'html')[0]" examples/shop > chart.html && open chart.html
+//
+// The page inlines the data and pulls vega-embed from a CDN, so writing it works
+// offline but VIEWING needs network. Drop `"$format"` to get the bare spec for a
+// renderer you already have (Observable, Jupyter/Altair, vl-convert, …).
 
 // chanType picks Vega-Lite's measurement type for a channel — GoG's scale choice —
 // from the first non-null value, the way ggplot2/ggsql infer a scale from a column type.
