@@ -127,7 +127,7 @@ func makeJSAgg(name string) *base.Agg {
 		Update: func(vars *base.Vars, v base.Val, aggNew, agg []byte, vc *base.ValComparer) ([]byte, []byte, bool) {
 			sr := jsSharedFromVars(vars)
 			blob, rest := readJSONBlob(agg)
-			state := sr.rt.ToValue(unmarshalJSON(blob))
+			state := sr.aggStateFromJSON(blob)
 			val := valBytesToGoja(sr.rt, v)
 			next := jsAggCall(sr, updateFn, state, val)
 			return appendJSONBlob(aggNew, marshalGoja(next)), rest, true
@@ -136,7 +136,7 @@ func makeJSAgg(name string) *base.Agg {
 		Result: func(vars *base.Vars, agg, buf []byte) (base.Val, []byte, []byte) {
 			sr := jsSharedFromVars(vars)
 			blob, rest := readJSONBlob(agg)
-			state := sr.rt.ToValue(unmarshalJSON(blob))
+			state := sr.aggStateFromJSON(blob)
 			result := jsAggCall(sr, finalFn, state)
 			out := marshalGoja(result)
 			vBuf := append(buf[:0], out...)
@@ -151,8 +151,8 @@ func makeJSAgg(name string) *base.Agg {
 			sr := jsSharedFromVars(vars)
 			blobA, _ := readJSONBlob(aggA)
 			blobB, _ := readJSONBlob(aggB)
-			stateA := sr.rt.ToValue(unmarshalJSON(blobA))
-			stateB := sr.rt.ToValue(unmarshalJSON(blobB))
+			stateA := sr.aggStateFromJSON(blobA)
+			stateB := sr.aggStateFromJSON(blobB)
 			merged := jsAggCall(sr, mergeFn, stateA, stateB)
 			return appendJSONBlob(aggOut, marshalGoja(merged))
 		}
@@ -192,6 +192,43 @@ func jsAggCall(sr *jsSharedRuntime, fnName string, args ...goja.Value) (res goja
 		return goja.Undefined()
 	}
 	return out
+}
+
+// aggStateFromJSON decodes an accumulator blob into the JS value handed to
+// NAME_update/_final/_merge as `state`.
+//
+// The growableSlices pass is load-bearing, for CORRECTNESS not speed: rt.ToValue over
+// a plain Go []interface{} yields a FIXED-LENGTH slice view, so `state.rows.push(x)`
+// inside a JS aggregate silently did nothing and the row was lost. (Object property
+// writes DID persist -- map wrappers are writable -- which is exactly what made the
+// bug so easy to miss: partial state survived.) A *[]interface{} wraps as a growable
+// array, so push/pop/splice behave as any JS author expects.
+//
+// Why not the runtime's own JSON.parse, which also yields real JS arrays? Measured
+// ~2.5x slower with ~3x the allocations (BenchmarkJSAggListState): goja's parse
+// eagerly materializes the whole object graph, while ToValue wraps the decoded Go
+// graph lazily. This keeps the lazy path and pays only one cheap rewrite pass.
+func (sr *jsSharedRuntime) aggStateFromJSON(blob []byte) goja.Value {
+	return sr.rt.ToValue(growableSlices(unmarshalJSON(blob)))
+}
+
+// growableSlices rewrites every []interface{} in a decoded JSON graph into a
+// *[]interface{} (see aggStateFromJSON). Maps are mutated in place; the returned
+// value replaces the input.
+func growableSlices(x interface{}) interface{} {
+	switch t := x.(type) {
+	case []interface{}:
+		for i, e := range t {
+			t[i] = growableSlices(e)
+		}
+		return &t
+	case map[string]interface{}:
+		for k, e := range t {
+			t[k] = growableSlices(e)
+		}
+		return t
+	}
+	return x
 }
 
 // --- JSON-blob accumulator helpers: [8-byte len][JSON bytes] ---

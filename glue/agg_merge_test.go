@@ -132,3 +132,48 @@ func TestCombineAggregateHLL(t *testing.T) {
 		t.Fatalf("hll estimate %d too far from %d distinct", est, distinct)
 	}
 }
+
+// TestJSAggMutableState guards the in-place-mutation contract for JS aggregate state.
+//
+// Regression: the bridge decoded the accumulator with rt.ToValue over a plain Go
+// []interface{}, which goja wraps as a FIXED-LENGTH slice view -- so `state.rows.push(x)`
+// silently did nothing and every collected row was lost, while object property writes
+// (state.n++) kept working, hiding the bug. aggStateFromJSON now rewrites arrays to
+// *[]interface{} (growable), so ordinary JS mutation works. See ext_jsvm_agg.go.
+func TestJSAggMutableState(t *testing.T) {
+	// Collect via push (the natural JS idiom), plus a nested array and a splice/pop,
+	// so any regression to a fixed-length wrapper fails loudly here.
+	mustReg(t, RegisterJSAggregate("mq_collect", `
+		function mq_collect_init()       { return { rows: [], nested: { xs: [] }, n: 0 }; }
+		function mq_collect_update(s, v) {
+			s.rows.push(v);          // in-place array growth on the state
+			s.nested.xs.push(v);     // ... nested one level down
+			s.n++;                   // property write (always worked)
+			return s;
+		}
+		function mq_collect_final(s)     {
+			var popped = s.rows.slice(0).pop();
+			return { len: s.rows.length, nested: s.nested.xs.length, n: s.n,
+			         first: s.rows[0], last: popped };
+		}
+		function mq_collect_merge(a, b)  {
+			return { rows: a.rows.concat(b.rows),
+			         nested: { xs: a.nested.xs.concat(b.nested.xs) },
+			         n: a.n + b.n };
+		}`))
+
+	sess, err := OpenSession(t.TempDir(), "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := sess.CombineAggregate("mq_collect", [][]base.Val{vals(1, 2, 3), vals(4, 5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// All five rows must survive -- pre-fix this collapsed to len:0.
+	want := `{"first":1,"last":5,"len":5,"n":5,"nested":5}`
+	if s := string(got); s != want {
+		t.Errorf("mq_collect over 5 rows = %s, want %s\n"+
+			"(len:0 means JS array mutation on the aggregate state was dropped again)", s, want)
+	}
+}

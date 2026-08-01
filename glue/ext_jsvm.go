@@ -84,6 +84,10 @@ var (
 type jsSharedRuntime struct {
 	rt  *goja.Runtime
 	fns map[string]goja.Callable
+
+	// jsonParse caches this runtime's JSON.parse (see aggStateFromJSON), so the
+	// per-Update accumulator decode doesn't re-look it up.
+	jsonParse goja.Callable
 }
 
 // newJSSharedRuntime builds a runtime with console + all currently-registered

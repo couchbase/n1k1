@@ -40,7 +40,11 @@ tiny fork setters — `expression.RegisterFunction` (patch-05) and `algebra.Regi
 - [ ] Streaming sources don't early-terminate on `LIMIT` (the `YieldStats` LIMIT hook is
   inert) — an **unbounded source hangs under `LIMIT`**; needs engine-wide producer early-exit.
 - [ ] JS aggregate/streaming UDFs are v1: state round-trips through JSON per Update (not
-  zero-garbage); callbacks have no error channel (throw/NaN → null).
+  zero-garbage); callbacks have no error channel (throw/NaN → null). The round-trip is
+  O(state) per row, so a LIST-accumulating aggregate is O(n²) over the group — measured
+  ~0.9ms and ~17K allocs for one Update against 1000 held rows
+  (`BenchmarkJSAggListState`). Collecting thousands of rows is fine; for hot inner loops
+  use a native `base.Agg` (sparkline/histogram) instead.
 - [ ] Full cbq UDF bridge unwired — `VisitExecuteFunction` returns `NA()`; no `CREATE
   FUNCTION` DDL / metadata catalog.
 - [ ] More native `base.Agg` aggregates; streaming CTEs (single-use pipe + multi-use
@@ -113,6 +117,17 @@ are per-entry, not filename suffixes (which would be combinatorial; `DESIGN-vari
 - **JS 3-callback** (`NAME_init`/`_update`/`_final`, `glue/ext_jsvm_agg.go`): a `base.Agg`
   bridge threads state as JSON bytes in the group's spillable buffer. Trade-off: state
   round-trips through JSON per Update (not zero-garbage); no error channel.
+
+**Aggregate state is normally mutable.** `state.rows.push(x)`, nested arrays, `splice`
+and property writes all behave as a JS author expects. That is not free by construction:
+the accumulator is decoded per Update, and `rt.ToValue` over a Go `[]interface{}` yields
+a FIXED-LENGTH slice view whose `push` silently no-ops — so an early version dropped every
+collected row while `state.n++` kept working, which hid the bug behind partial state.
+`aggStateFromJSON` therefore rewrites decoded arrays to `*[]interface{}` (goja wraps a
+slice POINTER as growable). Measured cost: none — identical allocs/op to the buggy path.
+Using the runtime's own `JSON.parse` instead also fixes it but was **~2.5× slower with
+~3× the allocations** (it eagerly materializes the object graph; `ToValue` wraps lazily),
+so don't "simplify" it that way. Guard: `TestJSAggMutableState`.
 
 Both reuse the same shim, so `NAME(expr)` works in GROUP BY. Compiler mode: they dispatch
 through `base.AggCatalog[name]` (the runtime lookup group-op codegen already emits), so they
