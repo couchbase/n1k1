@@ -665,3 +665,58 @@ func TestShippedJSArtifactVersions(t *testing.T) {
 		}
 	}
 }
+
+// TestExtAggregatesMinByMaxBy covers the native argmin/argmax (ISSUE-21 lever 1):
+// MIN_BY(ret, key)/MAX_BY(ret, key) return the RET from the row with the extreme
+// KEY, skipping NULL/MISSING keys exactly like MIN/MAX, breaking key ties
+// deterministically on RET (the pair compares lexicographically), and matching the
+// classic MIN(key || "|" || ret) composite it replaces.
+func TestExtAggregatesMinByMaxBy(t *testing.T) {
+	sess := extSession(t)
+
+	rows := `[{"g":"a","ts":"2026-01-03","id":"x3"},
+	          {"g":"a","ts":"2026-01-01","id":"x1"},
+	          {"g":"a","ts":"2026-01-01","id":"x0"},
+	          {"g":"a","id":"noTs"}]`
+
+	// Bare aggregate; the 01-01 tie breaks to the smaller ret ("x0"); the missing-key
+	// row is skipped.
+	got := extRawRows(t, sess, `SELECT RAW MIN_BY(d.id, d.ts) FROM `+rows+` AS d`)
+	if len(got) != 1 || got[0] != `"x0"` {
+		t.Fatalf(`MIN_BY = %v, want ["x0"]`, got)
+	}
+	got = extRawRows(t, sess, `SELECT RAW MAX_BY(d.id, d.ts) FROM `+rows+` AS d`)
+	if len(got) != 1 || got[0] != `"x3"` {
+		t.Fatalf(`MAX_BY = %v, want ["x3"]`, got)
+	}
+
+	// Equivalence with the composite workaround it replaces (string keys).
+	got = extRawRows(t, sess, `SELECT RAW [MIN_BY(d.id, d.ts), SPLIT(MIN(d.ts || "|" || d.id), "|")[1]] FROM `+rows+` AS d`)
+	if len(got) != 1 || got[0] != `["x0","x0"]` {
+		t.Fatalf(`composite equivalence = %v, want [["x0","x0"]]`, got)
+	}
+
+	// Non-string keys (where the composite CAN'T go): numeric ordering, not lexical.
+	got = extRawRows(t, sess, `SELECT RAW MIN_BY(d.id, d.n) FROM [{"n":10,"id":"ten"},{"n":9,"id":"nine"}] AS d`)
+	if len(got) != 1 || got[0] != `"nine"` {
+		t.Fatalf(`numeric MIN_BY = %v, want ["nine"] (9 < 10 numerically)`, got)
+	}
+
+	// All keys NULL/MISSING -> NULL (the MIN/MAX skip rule).
+	got = extRawRows(t, sess, `SELECT RAW MIN_BY(d.id, d.nope) FROM [{"id":"a"},{"id":"b"}] AS d`)
+	if len(got) != 1 || got[0] != `null` {
+		t.Fatalf(`all-skipped MIN_BY = %v, want [null]`, got)
+	}
+
+	// Non-scalar RET values ride through intact (it's just the pair's second half).
+	got = extRawRows(t, sess, `SELECT RAW MIN_BY(d.o, d.k) FROM [{"k":2,"o":{"deep":true}},{"k":1,"o":{"deep":false}}] AS d`)
+	if len(got) != 1 || got[0] != `{"deep":false}` {
+		t.Fatalf(`object MIN_BY = %v, want [{"deep":false}]`, got)
+	}
+
+	// GROUP BY: one argmin per group.
+	got = extRawRows(t, sess, `SELECT RAW MIN_BY(d.id, d.ts) FROM [{"g":1,"ts":2,"id":"g1"},{"g":1,"ts":1,"id":"g1min"},{"g":2,"ts":9,"id":"g2only"}] AS d GROUP BY d.g ORDER BY MIN_BY(d.id, d.ts)`)
+	if len(got) != 2 || got[0] != `"g1min"` || got[1] != `"g2only"` {
+		t.Fatalf(`grouped MIN_BY = %v, want ["g1min","g2only"]`, got)
+	}
+}

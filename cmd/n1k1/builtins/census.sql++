@@ -19,7 +19,11 @@
 -- itself mergeable). first_id (an argmin-as-MIN(ts || "|" || id): ISO-8601 sorts
 -- lexically, so MIN over the composite carries the id of the first carrier — and MIN
 -- merges, unlike a real argmin) is OPT-IN via first-id=1: it costs a per-record
--- composite + META().id fetch that most consumers never use. The single
+-- composite + META().id fetch that most consumers never use. (On n1k1 the whole
+-- composite-and-SPLIT dance can be replaced by the native argmin —
+-- MIN_BY(META(r).id, r.[$time_field]) — identical semantics incl. the tie-break;
+-- this file keeps the portable composite so a fork still runs on a stock engine.)
+-- The single
 -- OBJECT_PAIRS walk emits each parent cell and its depth-2 children in one pass.
 -- `_meta` is always excluded: with -meta on it is the ENGINE describing the
 -- container, never corpus schema (ISSUE-20) — note the exclusion lives in the

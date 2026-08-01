@@ -49,6 +49,27 @@ func (this *extAggregate) Accept(visitor expression.Visitor) (interface{}, error
 	return visitor.VisitFunction(this)
 }
 
+// extAggArity overrides AggregateBase's fixed 1/1 arity for multi-argument
+// extension aggregates (min_by/max_by take (ret, key)). Absent = 1/1.
+var extAggArity = map[string][2]int{
+	"min_by": {2, 2},
+	"max_by": {2, 2},
+}
+
+func (this *extAggregate) MinArgs() int {
+	if a, ok := extAggArity[this.Name()]; ok {
+		return a[0]
+	}
+	return 1
+}
+
+func (this *extAggregate) MaxArgs() int {
+	if a, ok := extAggArity[this.Name()]; ok {
+		return a[1]
+	}
+	return 1
+}
+
 // Type is STRING: the extension aggregates render a unicode chart string.
 func (this *extAggregate) Type() value.Type { return value.STRING }
 

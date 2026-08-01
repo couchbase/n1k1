@@ -41,7 +41,7 @@ func init() {
 	// (base/agg_ext.go) so conv.go's VisitGroup can route computation to the
 	// native handler. Property ALLOWS_REGULAR = usable in GROUP BY and as a bare
 	// aggregate over the implicit single group.
-	for _, name := range []string{"sparkline", "histogram"} {
+	for _, name := range []string{"sparkline", "histogram", "min_by", "max_by"} {
 		if _, ok := base.AggCatalog[name]; !ok {
 			// Defensive: a name registered with the parser but absent from the
 			// engine catalog would parse then fail to execute. Skip to surface

@@ -1268,14 +1268,23 @@ func (c *Conv) VisitFinalGroup(o *plan.FinalGroup) (interface{}, error) {
 	for _, agg := range o.Aggregates() {
 		// TODO: Optimize as one aggExpr can support >=1 aggCalc.
 		operands := agg.Operands()
-		if len(operands) == 0 || operands[0] == nil {
+		aggName := strings.ToLower(agg.Name())
+		if (aggName == "min_by" || aggName == "max_by") &&
+			len(operands) >= 2 && operands[0] != nil && operands[1] != nil {
+			// A two-argument argmin/argmax: pack (ret, key) into ONE [key, ret]
+			// array value, so the byte-slice Agg protocol (one Val per Update)
+			// needs no arity change — comparing pairs lexicographically IS the
+			// (key, tie-break-on-ret) ordering (base/agg_ext.go). The GROUP AS
+			// ObjectConstruct lowering below is the precedent.
+			aggExprs = append(aggExprs, []interface{}{"exprTree",
+				expression.NewArrayConstruct(operands[1], operands[0])})
+		} else if len(operands) == 0 || operands[0] == nil {
 			// COUNT(*) has no operand expression; project a constant so the
 			// aggregate sees a non-MISSING value for every input row.
 			aggExprs = append(aggExprs, []interface{}{"json", "true"})
 		} else {
 			aggExprs = append(aggExprs, []interface{}{"exprTree", operands[0]})
 		}
-		aggName := strings.ToLower(agg.Name())
 		if _, ok := base.AggCatalog[aggName+"_distinct"]; ok && agg.Distinct() {
 			aggName += "_distinct" // e.g. COUNT(DISTINCT x), MEDIAN(DISTINCT x).
 		}

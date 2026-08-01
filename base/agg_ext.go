@@ -14,6 +14,8 @@ package base
 import (
 	"encoding/binary"
 	"math"
+
+	"github.com/buger/jsonparser"
 )
 
 // This file holds n1k1's "extension" aggregates -- new aggregate functions
@@ -186,4 +188,107 @@ func AggHistogramResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []b
 	vBuf = append(vBuf, '"')
 
 	return Val(vBuf), rest, BufUnused(buf, len(vBuf))
+}
+
+// -----------------------------------------------------
+
+// min_by(ret, key) / max_by(ret, key) — a native argmin/argmax (ISSUE-21 lever 1):
+// the RET value from the row whose KEY is minimal/maximal. Replaces the classic
+// MIN(key || "|" || ret) composite-and-SPLIT workaround: same mergeable-monoid
+// semantics (the state is one winning pair; comparing pairs lexicographically IS
+// the (key, ret) ordering, so ties on key break deterministically on ret), zero
+// concats, and it works for non-string keys. The glue lowering packs the two
+// operands into ONE array value [key, ret] (conv.go VisitGroup), so the byte-slice
+// Init/Update/Result protocol needs no arity change. Rows whose key is NULL/MISSING
+// are skipped, exactly like MIN/MAX (and like the composite, whose concat went
+// MISSING with its key); an all-skipped group yields NULL.
+func init() {
+	AggRegister("min_by", &Agg{Init: AggU64Init,
+		Update: AggPairCompareUpdate(func(cmp int) bool { return cmp < 0 }),
+		Result: AggPairSecondResult})
+	AggRegister("max_by", &Agg{Init: AggU64Init,
+		Update: AggPairCompareUpdate(func(cmp int) bool { return cmp > 0 }),
+		Result: AggPairSecondResult})
+}
+
+// AggPairCompareUpdate folds a [key, ret] pair value: keep the pair the comparer
+// prefers, comparing WHOLE pairs (lexicographic array compare = key first, ret as
+// the deterministic tie-break). State encoding matches MIN/MAX: u64 length + the
+// winning pair's bytes; length 0 = nothing folded yet.
+func AggPairCompareUpdate(comparer func(int) bool) func(
+	vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
+	return func(vars *Vars, v Val, aggNew, agg []byte, vc *ValComparer) ([]byte, []byte, bool) {
+		n := binary.LittleEndian.Uint64(agg[:8])
+
+		if !aggPairUsable(v) {
+			return append(aggNew, agg[:8+n]...), agg[8+n:], false
+		}
+
+		if n == 0 || comparer(vc.Compare(v, agg[8:8+n])) {
+			aggNew = BinaryAppendUint64(aggNew, uint64(len(v)))
+			aggNew = append(aggNew, v...)
+			return aggNew, agg[8+n:], true
+		}
+
+		return append(aggNew, agg[:8+n]...), agg[8+n:], false
+	}
+}
+
+// aggPairUsable reports whether v is a foldable [key, ret] pair: a 2-element array
+// whose KEY (element 0) is a real value — NULL/MISSING keys are skipped like
+// MIN/MAX skip them (a MISSING operand inside an array constructor arrives as
+// null, so null covers both).
+func aggPairUsable(v Val) bool {
+	parseVal, parseType := Parse(v)
+	if parseType != int(jsonparser.Array) {
+		return false
+	}
+	idx, keyOK := 0, false
+	jsonparser.ArrayEach(parseVal, func(el []byte,
+		elType jsonparser.ValueType, elOffset int, elErr error) {
+		if elErr != nil {
+			return
+		}
+		if idx == 0 && elType != jsonparser.Null && elType != jsonparser.NotExist {
+			keyOK = true
+		}
+		idx++
+	})
+	return keyOK && idx >= 2
+}
+
+// AggPairSecondResult emits the RET half (element 1) of the winning pair, NULL when
+// nothing folded. Strings are re-quoted (jsonparser.ArrayEach strips the quotes —
+// the ArrayYield pattern).
+func AggPairSecondResult(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte) {
+	n := binary.LittleEndian.Uint64(agg[:8])
+	if n == 0 {
+		return ValNull, agg[8:], buf
+	}
+	pair := agg[8 : 8+n]
+
+	out := buf[:0]
+	idx, found := 0, false
+	jsonparser.ArrayEach(pair, func(el []byte,
+		elType jsonparser.ValueType, elOffset int, elErr error) {
+		if elErr != nil || idx != 1 {
+			idx++
+			return
+		}
+		idx++
+		found = true
+		if elType == jsonparser.String {
+			out = append(out, '"')
+			out = append(out, el...)
+			out = append(out, '"')
+		} else if elType == jsonparser.Null {
+			out = append(out, "null"...)
+		} else {
+			out = append(out, el...)
+		}
+	})
+	if !found {
+		return ValNull, agg[8+n:], buf
+	}
+	return Val(out), agg[8+n:], BufUnused(buf, len(out))
 }
