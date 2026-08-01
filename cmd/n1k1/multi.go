@@ -62,6 +62,7 @@ import (
 	"github.com/couchbase/n1k1/cmd"
 	builtinq "github.com/couchbase/n1k1/cmd/n1k1/builtins"
 	"github.com/couchbase/n1k1/glue"
+	"github.com/couchbase/n1k1/records"
 )
 
 // cmdMulti dispatches the .multi command family (list | run | lint | explain | test | help).
@@ -826,6 +827,20 @@ func (c *cli) cmdMultiLint(arg string) {
 	if !ok {
 		c.failed = true
 		return
+	}
+	// ISSUE-20 §4: `_meta` availability is a FLAG dependency, not a data one — a
+	// query projecting `_meta.path` under -meta off/auto(structured) still "works",
+	// still matches, and silently drops the column (its only join key). Static lint
+	// can see that; a human cannot.
+	if glue.ScanWalkOptions.Meta != records.MetaOn {
+		for _, d := range dets {
+			if strings.Contains(d.Stmt, "_meta") {
+				fmt.Fprintf(c.stderr, "  %s %s: references _meta but -meta is %q — _meta exists only "+
+					"with -meta on (auto adds it to extracted docs only); its projections will be "+
+					"MISSING and silently dropped\n",
+					c.icon("⚠"), d.Label, glue.ScanWalkOptions.Meta.String())
+			}
+		}
 	}
 	sess, binding, err := c.multiSession(args.bind)
 	if err != nil {

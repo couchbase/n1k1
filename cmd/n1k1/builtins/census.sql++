@@ -1,34 +1,36 @@
 -- label:       census.sql++
--- version:     v1.2
--- description: the schema census, self-contained (mergeable core + read-time coverage)
+-- version:     v2.0
+-- description: the schema census — the mergeable core (coverage via census_totals.sql++)
 -- param: keyspace ident
 -- param: type_field ident = type
 -- param: time_field ident = timestamp
 -- param: depth int = 2
 -- param: exclude list =
+-- param: first_id int = 0
 
 -- The schema census as ONE self-contained SQL++ statement — the forkable sibling of
--- the native Go builtin:census (its comparison ORACLE; see TestCensusSQLMatchesOracle;
--- v1.0 needed a Go-side coverage join, v1.1 does it in SQL++). Fork it: swap TYPE_NAME
--- for a value-bucketer, add a field, change the depth walk. The inner core MERGES
--- (docs->SUM, first_*->MIN, last_*->MAX) so a window census folds into an accumulated
--- one; coverage deliberately lives OUTSIDE the core (a ratio doesn't merge) as a
--- read-time docs/total join against the per-type counts (census_totals.sql++ is that
--- denominator as a standalone query). first_id is an argmin-as-MIN(ts || "|" || id):
--- ISO-8601 sorts lexically, so MIN over the composite yields the timestamp AND the id
--- of the first carrier — and MIN merges, unlike a real argmin. The CASE ... ELSE
--- MISSING guards omit first/last_seen and first_id for a group whose records carry no
--- timestamp, matching the native census's output exactly.
+-- the native Go builtin:census (its comparison ORACLE; see TestCensusSQLMatchesOracle).
+-- Fork it: swap TYPE_NAME for a value-bucketer, add a field, change the depth walk.
+--
+-- v2.0 (ISSUE-21, shaped by its consumer's ablation): the output is the PURELY
+-- MERGEABLE core (docs->SUM, first_*->MIN, last_*->MAX), so a window census folds
+-- into an accumulated one. Coverage is deliberately NOT emitted — a ratio doesn't
+-- merge; divide at read time against census_totals.sql++ (the per-type denominator,
+-- itself mergeable). first_id (an argmin-as-MIN(ts || "|" || id): ISO-8601 sorts
+-- lexically, so MIN over the composite carries the id of the first carrier — and MIN
+-- merges, unlike a real argmin) is OPT-IN via first-id=1: it costs a per-record
+-- composite + META().id fetch that most consumers never use. The single
+-- OBJECT_PAIRS walk emits each parent cell and its depth-2 children in one pass.
+-- `_meta` is always excluded: with -meta on it is the ENGINE describing the
+-- container, never corpus schema (ISSUE-20) — note the exclusion lives in the
+-- comprehension WHEN, not a CASE branch (a branch still emits the parent cell).
 --
 -- STANDARD-PORTABLE: this file parses as plain SQL++ on a stock engine (verified by
 -- TestCensusSQLTemplateIsStandard). Field params use the standard dynamic-field form
 -- r.[$type_field] (dot-bracket; bare r.$x is a stock syntax error) which n1k1's early
--- binding collapses to the static path r.`type`; $depth/$exclude are ordinary value
--- params; FROM $keyspace parses as expression-as-datasource, so on a stock engine you
--- may even bind $keyspace to an ARRAY of documents to census it inline (META(r).id
--- degrades there; first_id needs a real keyspace).
+-- binding collapses to the static path r.`type`; $depth/$exclude/$first_id are
+-- ordinary value params; FROM $keyspace parses as expression-as-datasource.
 SELECT c.`type`, c.`path`, c.val_type, c.docs,
-       c.docs / tot.n AS coverage,
        CASE WHEN c.first_seen IS VALUED THEN c.first_seen ELSE MISSING END AS first_seen,
        CASE WHEN c.last_seen  IS VALUED THEN c.last_seen  ELSE MISSING END AS last_seen,
        CASE WHEN c.first_id   IS VALUED THEN c.first_id   ELSE MISSING END AS first_id
@@ -37,26 +39,24 @@ FROM (
          COUNT(*) AS docs,
          MIN(t.ts) AS first_seen,
          MAX(t.ts) AS last_seen,
-         SPLIT(MIN(t.ts || "|" || t.id), "|")[1] AS first_id
+         SPLIT(MIN(t.comp), "|")[1] AS first_id
   FROM (
-    SELECT META(r).id AS id, IFMISSING(r.[$type_field], "") AS rt, r.[$time_field] AS ts,
-           ARRAY_CONCAT(
-             (ARRAY {"pp": p.name, "vt": TYPE_NAME(p.val)} FOR p IN OBJECT_PAIRS(r) END),
-             ARRAY_FLATTEN(
-               (ARRAY (ARRAY {"pp": q.name || "." || c.name, "vt": TYPE_NAME(c.val)}
-                         FOR c IN OBJECT_PAIRS(q.val) END)
-                  FOR q IN OBJECT_PAIRS(r)
-                  WHEN $depth >= 2 AND TYPE_NAME(q.val) = "object"
-                       AND q.name NOT IN $exclude END), 1)
-           ) AS paths
+    SELECT IFMISSING(r.[$type_field], "") AS rt, r.[$time_field] AS ts,
+           CASE WHEN 1 = $first_id
+                THEN r.[$time_field] || "|" || META(r).id ELSE MISSING END AS comp,
+           ARRAY_FLATTEN(
+             (ARRAY ARRAY_CONCAT(
+                      [{"pp": p.name, "vt": TYPE_NAME(p.val)}],
+                      CASE WHEN $depth >= 2 AND TYPE_NAME(p.val) = "object"
+                                AND p.name NOT IN $exclude
+                           THEN (ARRAY {"pp": p.name || "." || c.name, "vt": TYPE_NAME(c.val)}
+                                   FOR c IN OBJECT_PAIRS(p.val) END)
+                           ELSE [] END)
+                FOR p IN OBJECT_PAIRS(r) WHEN p.name != "_meta" END), 1)
+           AS paths
     FROM $keyspace r
   ) t
   UNNEST t.paths AS pth
   GROUP BY t.rt, pth.pp, pth.vt
 ) c
-JOIN (
-  SELECT IFMISSING(r.[$type_field], "") AS rt, COUNT(*) AS n
-  FROM $keyspace r
-  GROUP BY IFMISSING(r.[$type_field], "")
-) tot ON tot.rt = c.`type`
 ORDER BY c.`type`, c.`path`, c.val_type

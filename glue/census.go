@@ -180,6 +180,13 @@ func (s *Session) Census(keyspace string, opts CensusOptions) (*CensusResult, er
 			}
 		}
 		for k, v := range doc {
+			// `_meta` is the ENGINE describing the container (-meta on), never corpus
+			// schema — a census reporting the observer as part of the observed is
+			// wrong by construction (ISSUE-20: 7 phantom fields, 100% coverage,
+			// indistinguishable from data).
+			if k == "_meta" {
+				continue
+			}
 			emit(k, censusTypeName(v))
 			if opts.Depth >= 2 && !exclude[k] {
 				if child, isObj := v.(map[string]interface{}); isObj {
