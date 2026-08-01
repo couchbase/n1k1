@@ -258,7 +258,7 @@ func TestJSExtractPluginSectionEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(repo, "extensions", "extract_plugins", "couchbase_log.extract.js")
+	path := filepath.Join(repo, "extensions", "extracts", "couchbase_log.extract.js")
 	if _, err := os.Stat(path); err != nil {
 		t.Skipf("example plugin not present: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestJSExtractPluginOpaqueEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(repo, "extensions", "extract_plugins", "cpu_profile.extract.js")
+	path := filepath.Join(repo, "extensions", "extracts", "cpu_profile.extract.js")
 	if _, err := os.Stat(path); err != nil {
 		t.Skipf("example plugin not present: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestRegisterExtractPluginFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(repo, "extensions", "extract_plugins", "apache_access.extract.js")
+	path := filepath.Join(repo, "extensions", "extracts", "apache_access.extract.js")
 	if _, err := os.Stat(path); err != nil {
 		t.Skipf("example plugin not present: %v", err)
 	}
@@ -444,7 +444,7 @@ func registerTOML2Plugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plugin := filepath.Join(repo, "extensions", "extract_plugins", "toml2.extract.js")
+	plugin := filepath.Join(repo, "extensions", "extracts", "toml2.extract.js")
 	if _, err := os.Stat(plugin); err != nil {
 		t.Skipf("toml2 plugin not present: %v", err)
 	}
@@ -553,7 +553,7 @@ func TestJSExtractStreamStanzaEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plugin := filepath.Join(repo, "extensions", "extract_plugins", "stanza.extract.js")
+	plugin := filepath.Join(repo, "extensions", "extracts", "stanza.extract.js")
 	if _, err := os.Stat(plugin); err != nil {
 		t.Skipf("stanza plugin not present: %v", err)
 	}

@@ -219,7 +219,7 @@ func RegisterExtensionFile(path string) (string, error) {
 // RegisterExtensionGlob registers every recognized extension file matching a filepath
 // glob, in sorted order (like RegisterExtensionDir, but pattern-based). It lets an
 // embedder pull in the shipped builtin modules by naming convention, e.g.
-// RegisterExtensionGlob("extensions/functions/js/builtin_*.js"). A non-extension match
+// RegisterExtensionGlob("extensions/functions/builtin_*.js"). A non-extension match
 // is skipped. Returns the registered names (per file; a module returns its bundle stem).
 func RegisterExtensionGlob(pattern string) ([]string, error) {
 	matches, err := filepath.Glob(pattern)

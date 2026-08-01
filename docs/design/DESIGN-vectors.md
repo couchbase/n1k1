@@ -279,7 +279,7 @@ in SQL++ today?
 
 **What shipped** (`examples/kmeans/kmeans.py` — stdlib-only driver, every data-plane step a SQL++
 statement through the stock CLI; `gen_vectors.py` — synthetic topic-clustered demo data;
-`extensions/functions/js/vector_nearest{,_dist}.js` — optional goja argmin UDFs):
+`extensions/functions/vector_nearest{,_dist}.js` — optional goja argmin UDFs):
 `fit` (farthest-first init + Lloyd iterations → `centroids.json`), `partition` (per-cluster
 `part_<k>/data.parquet` + a queryable `centroids/` keyspace), `census` (sizes + per-centroid
 exemplars via `VECTOR_DISTANCE` + per-cluster `TOKENS()` terms), `probe` (nprobe-partition scan,

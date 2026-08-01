@@ -173,7 +173,7 @@ knowledge lives in a git-cloned plugin repo. A `*.extract.js` exports up to thre
   (`file.text`, plus `path`/`name`/`ext`/`stem`) and calls `emit(doc[, id])` per record, so
   it owns framing AND parsing; records are buffered into a `records.Source`, paying the JS
   boundary once per file (not per row). **WIRED** (`glue/ext_extract_jsvm.go` →
-  `records.ExtractPlugin.Extract`). The flagship demo, `extensions/extract_plugins/toml2.extract.js`,
+  `records.ExtractPlugin.Extract`). The flagship demo, `extensions/extracts/toml2.extract.js`,
   parses TOML in JS under `.toml2` and reproduces the native Go `.toml` reader's records
   exactly.
 - **`extractStream(file, emit, emitBuffer)`** — the STREAMING sibling, for a large/irregular
@@ -195,7 +195,7 @@ knowledge lives in a git-cloned plugin repo. A `*.extract.js` exports up to thre
   the JS loop can break (the same stop protocol as a `*.stream.js` source); `Close` also
   interrupts the runtime as a backstop and waits for the goroutine before releasing the file
   (no leak, no early-Close race). **WIRED + race-clean.** Demo:
-  `extensions/extract_plugins/stanza.extract.js` (blank-line-delimited stanzas). A plugin
+  `extensions/extracts/stanza.extract.js` (blank-line-delimited stanzas). A plugin
   defines `describe`, `extract`, or `extractStream` (extract/extractStream are mutually
   exclusive); any of them may `match` a brand-new extension (`records.IsRecordFile` honors
   the registry).

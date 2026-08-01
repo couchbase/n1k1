@@ -9,12 +9,12 @@
 //  express or implied. See the License for the specific language
 //  governing permissions and limitations under the License.
 
-// Package builtinjs embeds the shipped builtin_*.js JS modules (e.g. builtin_decimal,
+// Package functions embeds the shipped builtin_*.js JS modules (e.g. builtin_decimal,
 // builtin_ejson) so the n1k1 binary can auto-register them at startup — "builtins" are
 // available with no -ext flag (mirrors extensions/macros for the built-in macros). The
 // non-builtin demo files in this directory (add_two_numbers.js, slugify.js, …) are NOT
 // embedded; they load via -ext as examples.
-package builtinjs
+package functions
 
 import (
 	"embed"

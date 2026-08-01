@@ -22,7 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	builtinjs "github.com/couchbase/n1k1/extensions/functions/js"
+	builtinjs "github.com/couchbase/n1k1/extensions/functions"
 	"github.com/couchbase/n1k1/extensions/macros"
 	"github.com/couchbase/n1k1/glue"
 )
@@ -410,19 +410,21 @@ func TestExtListUnloadReload(t *testing.T) {
 }
 
 // TestExtShippedJSExamples loads the example UDFs shipped in
-// extensions/functions/js and confirms they resolve and run, so the docs'
+// extensions/functions and confirms they resolve and run, so the docs'
 // examples can't silently rot.
 func TestExtShippedJSExamples(t *testing.T) {
-	names, err := glue.RegisterExtensionDir("../extensions/functions/js")
+	names, err := glue.RegisterExtensionDir("../extensions/functions")
 	if err != nil {
 		t.Fatalf("RegisterExtensionDir(shipped): %v", err)
 	}
-	// Scalar UDF demos (*.js), the builtin_decimal / builtin_ejson multi-export MODULES
-	// (a whole family per file), the geomean + hll aggregates (*.agg.js; hll is the
+	// Scalar UDF demos (*.js), the builtin_chart / builtin_decimal / builtin_ejson
+	// multi-export MODULES (a whole family per file; builtin_chart exports the
+	// chart_vegalite aggregate), the geomean + hll aggregates (*.agg.js; hll is the
 	// mergeable HyperLogLog sketch), and the series streaming source (*.stream.js),
 	// sorted by filename stem.
-	want := []string{"add_two_numbers", "builtin_decimal", "builtin_ejson", "celsius_to_fahrenheit",
-		"geomean", "hll", "series", "slugify", "vector_nearest", "vector_nearest_dist"}
+	want := []string{"add_two_numbers", "builtin_chart", "builtin_decimal", "builtin_ejson",
+		"celsius_to_fahrenheit", "geomean", "hll", "series", "slugify",
+		"vector_nearest", "vector_nearest_dist"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("shipped extension names = %v, want %v", names, want)
 	}
@@ -496,10 +498,10 @@ func TestExtJSStream(t *testing.T) {
 // TestExtJSDecimalModule exercises a multi-export JS MODULE (DESIGN-extensions.md "JS
 // modules"): one decimal.js file exports the whole DECIMAL_* family, and the functions
 // do EXACT base-10 arithmetic (via BigInt) that float64 can't — DECIMAL_ADD(0.1, 0.2) is
-// exactly 0.3, not 0.30000000000000004. Loads the shipped extensions/functions/js/
+// exactly 0.3, not 0.30000000000000004. Loads the shipped extensions/functions/
 // decimal.js so the test also proves the module auto-detection + loader routing.
 func TestExtJSDecimalModule(t *testing.T) {
-	src, err := os.ReadFile("../extensions/functions/js/builtin_decimal.js")
+	src, err := os.ReadFile("../extensions/functions/builtin_decimal.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +540,7 @@ func TestExtJSDecimalModule(t *testing.T) {
 // are captured PER FUNCTION and run through the scalar-UDF protocol by
 // RunExtensionExamples — the multi-function analogue of a single-file UDF's examples.
 func TestExtJSDecimalExamples(t *testing.T) {
-	src, err := os.ReadFile("../extensions/functions/js/builtin_decimal.js")
+	src, err := os.ReadFile("../extensions/functions/builtin_decimal.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,12 +637,12 @@ func TestExtJSEjsonHelper(t *testing.T) {
 // convention (the embedder-glob path), and confirms both modules' functions run —
 // including chaining the builtin_ejson EJSON_DECODE over a builtin_decimal result.
 func TestExtRegisterExtensionGlob(t *testing.T) {
-	names, err := glue.RegisterExtensionGlob("../extensions/functions/js/builtin_*.js")
+	names, err := glue.RegisterExtensionGlob("../extensions/functions/builtin_*.js")
 	if err != nil {
 		t.Fatalf("RegisterExtensionGlob: %v", err)
 	}
-	if strings.Join(names, ",") != "builtin_decimal,builtin_ejson" {
-		t.Fatalf("glob names = %v, want [builtin_decimal builtin_ejson]", names)
+	if strings.Join(names, ",") != "builtin_chart,builtin_decimal,builtin_ejson" {
+		t.Fatalf("glob names = %v, want [builtin_chart builtin_decimal builtin_ejson]", names)
 	}
 	sess := extSession(t)
 	// EJSON_DECODE (builtin_ejson) strips the tag off a DECIMAL_ADD (builtin_decimal) result.

@@ -49,7 +49,7 @@ import (
 //   - extract(file, emit) -- the IMPERATIVE escape hatch. JS receives the WHOLE
 //     decompressed file and EMITS records itself, so it owns framing AND parsing.
 //     For self-contained or irregular formats a declarative spec can't frame -- e.g.
-//     a full TOML document (see extensions/extract_plugins/toml2.extract.js). It
+//     a full TOML document (see extensions/extracts/toml2.extract.js). It
 //     pays the JS boundary once per file (not per row, since it buffers), and wires
 //     the records.ExtractPlugin.Extract seam that DESIGN-extensions.md sketched. A plugin
 //     with extract but no describe is purely imperative (records.OpenFile skips the
@@ -67,7 +67,7 @@ import (
 // Extract close over the compiled program. Reuses ext_jsvm.go's goja lifetime/
 // timeout/console patterns and ext_jsvm_stream.go's emit marshaling.
 //
-// The JS module contract (see extensions/extract_plugins/*.extract.js):
+// The JS module contract (see extensions/extracts/*.extract.js):
 //
 //	// `match` (module scope): which files this plugin claims. Shape ==
 //	// records.ExtractMatch's json: {exts:[".log"], names:["re",...], priority:N}.

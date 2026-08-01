@@ -15,7 +15,7 @@ embedding vectors — what's IN this dataset, and can centroids speed up search?
 
 Everything runs through the stock `n1k1` CLI — **no engine changes**. The driver
 (`kmeans.py`, stdlib-only Python) is just a loop + JSON plumbing around SQL++
-statements; two optional goja UDFs (`extensions/functions/js/vector_nearest*.js`) make
+statements; two optional goja UDFs (`extensions/functions/vector_nearest*.js`) make
 the argmin terser/faster. Design rationale + measured findings: `DESIGN-vectors.md`
 §"Phase 1.5".
 
@@ -100,7 +100,7 @@ ARRAY_SORT(ARRAY [ARRAY_SUM(ARRAY POWER(d.vec[q]-c[q], 2)
 ```
 
 (arrays compare elementwise, so `ARRAY_SORT` orders by distance; `[0][1]` is the winning
-index). With the UDFs loaded (`-ext extensions/functions/js`), the same thing is
+index). With the UDFs loaded (`-ext extensions/functions`), the same thing is
 `vector_nearest(d.vec, cents)`, and `vector_nearest_dist(d.vec, cents)` returns
 `[idx, dist]` — handy for outlier reports or SemDeDup-style within-cluster ordering.
 

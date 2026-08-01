@@ -18,7 +18,7 @@ Subcommands (typical order):
              scans only those, and reports recall + timing vs the brute-force scan.
 
 The SQL++ argmin needs no extensions (ARRAY_SORT over [dist, i] pairs). --use-udf swaps
-in the vector_nearest() goja UDF (extensions/functions/js/) -- same results, terser SQL.
+in the vector_nearest() goja UDF (extensions/functions/) -- same results, terser SQL.
 Note VECTOR_DISTANCE itself can't do the argmin: it requires a STATIC query vector
 (constant / $param / WITH alias), so ranging it over the centroid list is rejected; it
 IS used wherever the centroid is a per-query constant (census exemplars, probe scans).
@@ -413,7 +413,7 @@ def main():
         p.add_argument("--centroids", default=None, help="centroids.json path (default: <data>/centroids.json)")
         p.add_argument("--n1k1", dest="n1k1_bin", default=None, help="n1k1 binary (default: $N1K1, ./n1k1, or PATH)")
         p.add_argument("--use-udf", action="store_true",
-                       help="use the vector_nearest() goja UDF (loads -ext extensions/functions/js) "
+                       help="use the vector_nearest() goja UDF (loads -ext extensions/functions) "
                             "instead of the pure-SQL++ argmin")
 
     p = sub.add_parser("fit", help="k-means fit; writes centroids.json")

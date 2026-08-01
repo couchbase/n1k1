@@ -1,6 +1,11 @@
-# Example JavaScript extensions (drop-in functions)
+# JavaScript extensions (drop-in functions)
 
-Three kinds of file live here, all keyed by file name:
+Most files here are **examples** you load with `-ext`. The `builtin_*.js` ones are
+different: they are `go:embed`ed into the binary (see `embed.go`) and registered at
+startup, so they need no flag — `builtin_chart` (the `chart_vegalite()` charting
+aggregate), `builtin_decimal` (exact `DECIMAL_*` math) and `builtin_ejson`.
+
+Four kinds of file live here, all keyed by file name:
 
 - **`*.js` — a scalar function.** The SQL++ function name is the file's base name
   (minus `.js`), and the file must define a JavaScript function of that **same
@@ -17,6 +22,14 @@ Three kinds of file live here, all keyed by file name:
   → `SELECT x.n FROM series(1, 1000000) AS x WHERE x.n % 7 = 0`. (A plain `*.js`
   that *returns* an array also works in `FROM`, but materializes it first.)
 
+- **`builtin_*.js` — a multi-export MODULE** that ships inside the binary. It sets
+  `exports.functions = [...]`, one entry per SQL name, each self-describing its
+  `kind` (`scalar` (default) / `aggregate` / `stream`) plus inline golden
+  `examples`. A whole family lives in one file — `builtin_chart.js` exports the
+  `chart_vegalite()` aggregate; `builtin_decimal.js` exports `DECIMAL_ADD`,
+  `DECIMAL_SUM`, … Adding a `builtin_*.js` here ships it built-in (the embed glob
+  picks it up), so it needs a rebuild, unlike the `-ext` files.
+
 The directory *is* the catalog — add a file (or `git pull` a repo of them) and
 the function is available; no `CREATE FUNCTION` DDL, no rebuild.
 
@@ -28,20 +41,20 @@ point at several dirs and/or files:
 
 ```sh
 # a whole directory of extensions...
-n1k1 -ext extensions/functions/js  -c "SELECT slugify('Hello, World!')"  examples/shop
+n1k1 -ext extensions/functions  -c "SELECT slugify('Hello, World!')"  examples/shop
 # ...several dirs/files (repeat the flag, or comma-separate)...
-n1k1 -ext extensions/functions/js -ext ./my_udfs -ext extra.js  -c "..."  examples/shop
+n1k1 -ext extensions/functions -ext ./my_udfs -ext extra.js  -c "..."  examples/shop
 ```
 
 In the REPL, manage them at any time with the `.extensions` dot-command (alias
 `.ext`) and its sub-commands:
 
 ```
-n1k1> .extensions load extensions/functions/js     # load a dir (or file)
+n1k1> .extensions load extensions/functions     # load a dir (or file)
 loaded: add_two_numbers, celsius_to_fahrenheit, slugify
 n1k1> .extensions list                             # what's loaded
 3 loaded extension function(s):
-  add_two_numbers       javascript  extensions/functions/js/add_two_numbers.js
+  add_two_numbers       javascript  extensions/functions/add_two_numbers.js
   ...
 n1k1> SELECT add_two_numbers(o.items, 10) AS bumped, slugify(o.customer) AS slug FROM orders o;
 n1k1> .extensions unload slugify                   # disable one (reload to re-enable)
@@ -50,7 +63,7 @@ n1k1> .extensions unload slugify                   # disable one (reload to re-e
 Programmatically (embedders):
 
 ```go
-glue.RegisterExtensionDir("extensions/functions/js")     // a directory
+glue.RegisterExtensionDir("extensions/functions")     // a directory
 glue.RegisterExtensionFile("path/to/my_fn.js")           // one file (kind by extension)
 glue.RegisterJSFunc("triple", "function triple(x){return x*3;}") // inline scalar
 glue.RegisterJSAggregate("product",                              // inline aggregate

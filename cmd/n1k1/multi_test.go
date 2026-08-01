@@ -272,7 +272,7 @@ func TestExtractList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(repo, "extensions", "extract_plugins", "couchbase_log.extract.js")
+	path := filepath.Join(repo, "extensions", "extracts", "couchbase_log.extract.js")
 	if _, err := os.Stat(path); err != nil {
 		t.Skipf("example entry not present: %v", err)
 	}

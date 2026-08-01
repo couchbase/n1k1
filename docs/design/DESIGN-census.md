@@ -172,7 +172,7 @@ distinct with an explicit `too_many_distinct` marker (never silent truncation), 
   The contract lives on `base.Agg.Merge` (a native field, JS-independent), the JS bridge wires it
   when `NAME_merge` is present (`glue/ext_jsvm_agg.go`), and `glue.Session.CombineAggregate` is the
   seam that folds partials and proves `combine(part(A), part(B)) == aggregate(A ∪ B)`. The flagship
-  is a **mergeable HLL** distinct-count sketch (`extensions/functions/js/hll.agg.js`) — the one piece
+  is a **mergeable HLL** distinct-count sketch (`extensions/functions/hll.agg.js`) — the one piece
   value-level distinct-counting needs — plus a `merge` on the shipped `geomean`. Guards:
   `base.TestAggMergeMonoid` (native), `glue.TestCombineAggregateMonoid` + `TestCombineAggregateHLL`.
   Note: n1k1's GROUP BY is single-pass (one accumulator per key, no combine site), so `CombineAggregate`

@@ -26,7 +26,7 @@ Gist only -- details live in commit messages, README, and code comments.
   reuse + lazy spill temp dir. DESIGN-concurrency.md.
 - JS extension modules: multi-export `*.js` modules with a glob loader; builtin
   modules (builtin_decimal, builtin_ejson); per-export scalar / aggregate / stream
-  kinds. extensions/functions/js/. DESIGN-extensions.md.
+  kinds. extensions/functions/. DESIGN-extensions.md.
 - `versus` benchmark harness: head-to-head vs cbq (test/benchmark/versus/), with a
   compiled-codegen column. DESIGN-benchmark.md.
 - Compiled standalone EXECUTE lane: fork-free child (links base+engine+rt, no cbq),

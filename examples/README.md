@@ -183,10 +183,10 @@ generation and computes the next generation from the previous — the classic
 Scalar user-defined functions are plain JavaScript files whose base name is the
 SQL++ function name. Point `-ext` at a directory (or a single file); the kind is
 auto-detected from the file extension. `-ext` is repeatable and comma-friendly,
-so you can load several dirs/files. See `extensions/functions/js/`.
+so you can load several dirs/files. See `extensions/functions/`.
 
 ```sh
-n1k1 -ext extensions/functions/js \
+n1k1 -ext extensions/functions \
      -c "SELECT o.customer, celsius_to_fahrenheit(20) AS f, slugify(o.customer) AS slug
          FROM orders o LIMIT 3" examples/shop
 ```

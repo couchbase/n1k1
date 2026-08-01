@@ -18,7 +18,7 @@ package main
 // needed. A user -ext load of a same-named macro overrides (RegisterMacro replaces).
 
 import (
-	builtinjs "github.com/couchbase/n1k1/extensions/functions/js"
+	"github.com/couchbase/n1k1/extensions/functions"
 	"github.com/couchbase/n1k1/extensions/macros"
 	"github.com/couchbase/n1k1/glue"
 )
@@ -48,7 +48,7 @@ func registerBuiltinMacros() []error {
 // sibling of registerBuiltinMacros. Best-effort: a bad module is skipped, not fatal.
 func registerBuiltinModules() []error {
 	var errs []error
-	for _, b := range builtinjs.Builtins() {
+	for _, b := range functions.Builtins() {
 		if err := glue.RegisterBuiltinModule(b.Name, b.Source); err != nil {
 			errs = append(errs, err)
 		}

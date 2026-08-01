@@ -164,7 +164,7 @@ blob you crack yourself). Define extract INSTEAD OF (or alongside) describe:
   var match = { exts: [".toml2"], priority: 10 };
   function extract(file, emit) { emit(parseTOML(file.text), file.stem); }
 extract buffers its records, paying the JS boundary once per file (not per row). See
-extensions/extract_plugins/toml2.extract.js for a full TOML parser that matches n1k1's
+extensions/extracts/toml2.extract.js for a full TOML parser that matches n1k1's
 native .toml reader.
 
 STREAMING (extractStream(file, emit)) -- for a LARGE multi-record file that shouldn't be
@@ -196,7 +196,7 @@ stanzas):
     if (rec) emit(rec);
   }
 Define describe, extract, OR extractStream (extract and extractStream are mutually
-exclusive). See extensions/extract_plugins/stanza.extract.js.
+exclusive). See extensions/extracts/stanza.extract.js.
 
 ANNOTATED EXAMPLE (myapp.log lines: "<RFC3339> <LEVEL> <node> <msg>")
   var match = { exts: [".log"], names: ["myapp\\..*\\.log$"], priority: 20 };
