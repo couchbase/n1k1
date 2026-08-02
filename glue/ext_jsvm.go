@@ -88,6 +88,13 @@ type jsSharedRuntime struct {
 	// jsonParse caches this runtime's JSON.parse (see aggStateFromJSON), so the
 	// per-Update accumulator decode doesn't re-look it up.
 	jsonParse goja.Callable
+
+	// aggState is the JSVM-resident aggregate accumulator table: the group map
+	// holds 9-byte handles ('H' + index) instead of serialized state, and the
+	// live values stay here on the runtime they belong to (goja values cannot
+	// cross runtimes). Grows one slot per group; freed with the runtime at
+	// query end. See ext_jsvm_agg.go.
+	aggState []goja.Value
 }
 
 // newJSSharedRuntime builds a runtime with console + all currently-registered

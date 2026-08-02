@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/couchbase/n1k1/base"
 )
@@ -175,5 +176,109 @@ func TestJSAggMutableState(t *testing.T) {
 	if s := string(got); s != want {
 		t.Errorf("mq_collect over 5 rows = %s, want %s\n"+
 			"(len:0 means JS array mutation on the aggregate state was dropped again)", s, want)
+	}
+}
+
+// TestJSAggResidentHandleProtocol drives the base.Agg bridge directly with a
+// GlueContext-pinned (stable) runtime and proves the JSVM-resident state
+// contract: the accumulator blob is a FIXED 9-byte handle (8-byte length prefix
+// + 'H' + uint64) that never grows however much state the JS holds; NAME_final
+// is repeatable (pure) and does not disturb the live state; NAME_snapshot wires
+// Agg.ResultLive as the cheaper mid-flight view; and aggregation continues
+// correctly after mid-flight renders (the inflight scenario).
+func TestJSAggResidentHandleProtocol(t *testing.T) {
+	if err := RegisterJSAggregate("mq_res", `
+		function mq_res_init()        { return {rows: []}; }
+		function mq_res_update(s, v)  { s.rows.push(v); return s; }
+		function mq_res_final(s)      { return s.rows.length; }
+		function mq_res_snapshot(s)   { return {"n": s.rows.length}; }
+	`); err != nil {
+		t.Fatalf("RegisterJSAggregate: %v", err)
+	}
+
+	tmpDir, vars := MakeVars("", "n1k1jsres")
+	defer os.RemoveAll(tmpDir)
+	gctx := NewGlueContext(time.Now())
+	vars.Temps = vars.Temps[:0]
+	vars.Temps = append(vars.Temps, gctx)
+	for i := 0; i < 16; i++ {
+		vars.Temps = append(vars.Temps, nil)
+	}
+	vc := vars.Ctx.ValComparer
+
+	agg := base.Aggs[base.AggCatalog["mq_res"]]
+	if agg.ResultLive == nil {
+		t.Fatalf("mq_res defines mq_res_snapshot but Agg.ResultLive is nil")
+	}
+
+	const handleBlobLen = 8 + 9 // length prefix + 'H' + uint64 handle
+	st := agg.Init(vars, nil)
+	if len(st) != handleBlobLen {
+		t.Fatalf("Init blob = %d bytes, want %d (resident handle)", len(st), handleBlobLen)
+	}
+
+	var buf []byte
+	for i := 0; i < 100; i++ {
+		buf, _, _ = agg.Update(vars, base.Val(`{"y":1}`), buf[:0], st, vc)
+		st, buf = buf, st
+		if len(st) != handleBlobLen {
+			t.Fatalf("after update %d: blob = %d bytes, want %d (state must stay resident)",
+				i, len(st), handleBlobLen)
+		}
+	}
+
+	// Mid-flight live view (snapshot), then the terminal result TWICE: final is
+	// contractually pure, so both reads agree and the state is undisturbed.
+	live, _, _ := agg.ResultLive(vars, st, nil)
+	if string(live) != `{"n":100}` {
+		t.Fatalf("ResultLive = %s, want {\"n\":100}", live)
+	}
+	r1, _, _ := agg.Result(vars, st, nil)
+	r2, _, _ := agg.Result(vars, st, nil)
+	if string(r1) != "100" || string(r2) != "100" {
+		t.Fatalf("Result twice = %s, %s, want 100, 100 (final must be pure/repeatable)", r1, r2)
+	}
+
+	// The inflight scenario: aggregation continues after mid-flight renders.
+	buf, _, _ = agg.Update(vars, base.Val(`{"y":2}`), buf[:0], st, vc)
+	st = append(st[:0], buf...)
+	r3, _, _ := agg.Result(vars, st, nil)
+	if string(r3) != "101" {
+		t.Fatalf("Result after post-render update = %s, want 101", r3)
+	}
+}
+
+// TestJSAggMapStateResident: a state shape the v1 JSON threading could not carry
+// at all -- a JS Map (json.Marshal of its export fails -> state collapsed to null
+// between rows). Resident state holds ANY JS value, so it just works.
+func TestJSAggMapStateResident(t *testing.T) {
+	if err := RegisterJSAggregate("mq_mapdistinct", `
+		function mq_mapdistinct_init()        { return new Map(); }
+		function mq_mapdistinct_update(s, v)  { var k = JSON.stringify(v); s.set(k, (s.get(k)||0)+1); return s; }
+		function mq_mapdistinct_final(s)      { return s.size; }
+	`); err != nil {
+		t.Fatalf("RegisterJSAggregate: %v", err)
+	}
+
+	tmpDir, vars := MakeVars("", "n1k1jsmap")
+	defer os.RemoveAll(tmpDir)
+	gctx := NewGlueContext(time.Now())
+	vars.Temps = vars.Temps[:0]
+	vars.Temps = append(vars.Temps, gctx)
+	for i := 0; i < 16; i++ {
+		vars.Temps = append(vars.Temps, nil)
+	}
+	vc := vars.Ctx.ValComparer
+
+	agg := base.Aggs[base.AggCatalog["mq_mapdistinct"]]
+	st := agg.Init(vars, nil)
+	var buf []byte
+	for _, v := range []string{`1`, `2`, `2`, `3`, `3`, `3`, `"a"`, `"a"`, `null`} {
+		buf, _, _ = agg.Update(vars, base.Val(v), buf[:0], st, vc)
+		st, buf = buf, st
+	}
+	r, _, _ := agg.Result(vars, st, nil)
+	if string(r) != "5" {
+		t.Fatalf("Map-state distinct count = %s, want 5 (1, 2, 3, \"a\", null)", r)
 	}
 }

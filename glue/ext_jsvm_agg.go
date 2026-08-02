@@ -29,18 +29,40 @@ import (
 
 // A JS aggregate follows the same three-callback protocol as a native base.Agg
 // (Init/Update/Result), written in JavaScript as NAME_init()/NAME_update(state,
-// value)/NAME_final(state). The accumulator "state" is any JSON-serializable JS
-// value; between rows n1k1 threads it as JSON bytes in the group's byte buffer
-// (so it spills like every other aggregate -- DESIGN.md). This is the aggregate
-// analogue of the scalar JS UDF (ext_jsvm.go): the trio runs on the same
-// per-query/per-actor shared runtime, so it can use console.log and call other
-// loaded UDFs.
+// value)/NAME_final(state). This is the aggregate analogue of the scalar JS UDF
+// (ext_jsvm.go): the trio runs on the same per-query/per-actor shared runtime,
+// so it can use console.log and call other loaded UDFs.
 //
-// Trade-off vs a native base.Agg (e.g. sparkline/histogram): state round-trips
-// through JSON on every Update (not zero-garbage) and the callbacks can't report
-// an error (base.Agg has no error channel -- a throwing/NaN step is contained and
-// treated as a no-op / null). It's the interpreted lane: convenient, not for the
-// hottest inner loops.
+// State is JSVM-RESIDENT (DESIGN-extensions.md "JS aggregate state v2"): the
+// accumulator lives as a live goja value on the actor's pinned runtime, and the
+// group map holds only a fixed 9-byte HANDLE ('H' + uint64 index into the
+// runtime's side table). Update passes the LIVE state object -- no decode, no
+// re-encode, O(1) at the border however big the state -- so any JS value works
+// (Map/Set/closures included, not just JSON shapes), and a big accumulator
+// (charts, collected rows) no longer costs O(state) per row. goja values CANNOT
+// travel between runtimes, which is exactly why the handle pins to the
+// per-query/per-actor runtime the scalar UDFs already use; anything that must
+// cross a runtime crosses as JSON bytes instead:
+//
+//   - an eval context with no runtime to pin to (rare non-GlueContext paths,
+//     e.g. the examples runner) threads state as a JSON blob per call, the v1
+//     behavior -- correct, just slower;
+//   - a JSON-encoded partial arriving at Update/Result/Merge (from such a path,
+//     or a future spill/shard boundary) is ADOPTED: decoded once, resident
+//     thereafter. The two encodings are unambiguous ('H' never starts JSON).
+//
+// The handle's side table lives and dies with the runtime (= the query), so
+// there is no per-group free bookkeeping; Result deliberately does NOT free its
+// handle -- NAME_final must be PURE (repeatable), because it doubles as the
+// live "aggregate so far" snapshot (RunningAggsGroup) and may be called many
+// times mid-flight before the terminal call. An optional NAME_snapshot(state)
+// substitutes a cheaper progressive view for that live channel (Agg.ResultLive).
+//
+// Remaining trade-off vs a native base.Agg (e.g. sparkline/histogram): each
+// callback is still a ~µs JS boundary crossing and the callbacks can't report
+// an error (base.Agg has no error channel -- a throwing/NaN step is contained
+// and treated as a no-op / null). It's the interpreted lane: convenient, not
+// for the hottest inner loops.
 
 var jsAggNames = map[string]bool{} // JS aggregate names we've registered (reload-idempotent)
 
@@ -78,6 +100,10 @@ func RegisterJSAggregate(name, source string) error {
 	// aggregate is fold-only, exactly as before.
 	_, hasMerge := goja.AssertFunction(check.Get(name + "_merge"))
 	jsAggHasMerge[name] = hasMerge
+	// NAME_snapshot(state) is OPTIONAL: a cheaper mid-flight view for the live
+	// running-aggregates channel; absent, the (pure) NAME_final is used live too.
+	_, hasSnapshot := goja.AssertFunction(check.Get(name + "_snapshot"))
+	jsAggHasSnapshot[name] = hasSnapshot
 	recordExtExamples("javascript-aggregate", name, readJSExamples(check, name+"_final")) // inline goldens.
 
 	// Make the callbacks available in every per-query runtime (keyed distinctly so
@@ -109,53 +135,95 @@ func installJSAggregate(name string) {
 	}
 	registerExtAggregate(name, algebra.AGGREGATE_ALLOWS_REGULAR)
 	jsAggNames[name] = true
+
+	// Live running-aggregates: a JS aggregate's partial is a fixed 9-byte handle
+	// and its live view (NAME_snapshot, else the contractually-pure NAME_final)
+	// renders on demand, so it qualifies for the mid-flight "aggregate so far"
+	// channel -- the AI-client early-access / cancel / course-correct story.
+	base.RunningAggsCapable[name] = true
 }
 
-// makeJSAgg builds a base.Agg whose Init/Update/Result drive the JS callbacks,
-// carrying the accumulator state as a length-prefixed JSON blob. If the source
-// defines NAME_merge(a, b), Merge is wired too (the aggregate is mergeable).
+// makeJSAgg builds a base.Agg whose Init/Update/Result drive the JS callbacks.
+// On a stable (GlueContext-pinned) runtime the accumulator is JSVM-resident and
+// the blob is a fixed 9-byte handle; on a throwaway runtime it falls back to the
+// v1 length-prefixed JSON threading (see the file comment). If the source
+// defines NAME_merge(a, b), Merge is wired too (the aggregate is mergeable);
+// NAME_snapshot(state) wires ResultLive (the mid-flight view).
 func makeJSAgg(name string) *base.Agg {
-	initFn, updateFn, finalFn, mergeFn := name+"_init", name+"_update", name+"_final", name+"_merge"
+	initFn, updateFn, finalFn := name+"_init", name+"_update", name+"_final"
+	mergeFn, snapshotFn := name+"_merge", name+"_snapshot"
+
+	// render is the shared Result shape: decode (handle or JSON), call fn, emit.
+	// It must not disturb the accumulator -- fn is contractually pure -- so the
+	// terminal Result and the live ResultLive both reuse it safely.
+	render := func(fnName string) func(vars *base.Vars, agg, buf []byte) (base.Val, []byte, []byte) {
+		return func(vars *base.Vars, agg, buf []byte) (base.Val, []byte, []byte) {
+			sr, _ := jsSharedFromVars(vars)
+			payload, rest := readJSONBlob(agg)
+			state, _, _ := sr.jsAggStateDecode(payload)
+			result := jsAggCall(sr, fnName, state)
+			out := marshalGoja(result)
+			vBuf := append(buf[:0], out...)
+			return base.Val(vBuf), rest, base.BufUnused(buf, len(vBuf))
+		}
+	}
 
 	agg := &base.Agg{
 		Init: func(vars *base.Vars, agg []byte) []byte {
-			sr := jsSharedFromVars(vars)
+			sr, stable := jsSharedFromVars(vars)
 			state := jsAggCall(sr, initFn)
+			if stable {
+				return appendHandleBlob(agg, sr.aggStateAlloc(state))
+			}
 			return appendJSONBlob(agg, marshalGoja(state))
 		},
 
 		Update: func(vars *base.Vars, v base.Val, aggNew, agg []byte, vc *base.ValComparer) ([]byte, []byte, bool) {
-			sr := jsSharedFromVars(vars)
-			blob, rest := readJSONBlob(agg)
-			state := sr.aggStateFromJSON(blob)
+			sr, stable := jsSharedFromVars(vars)
+			payload, rest := readJSONBlob(agg)
+			state, h, isHandle := sr.jsAggStateDecode(payload)
 			val := valBytesToGoja(sr.rt, v)
 			next := jsAggCall(sr, updateFn, state, val)
+			if stable {
+				if isHandle { // steady state: re-target the same slot, same 9 bytes out.
+					sr.aggStateSet(h, next)
+					return appendHandleBlob(aggNew, h), rest, true
+				}
+				// A JSON partial arriving on a stable runtime: adopt it as resident.
+				return appendHandleBlob(aggNew, sr.aggStateAlloc(next)), rest, true
+			}
 			return appendJSONBlob(aggNew, marshalGoja(next)), rest, true
 		},
 
-		Result: func(vars *base.Vars, agg, buf []byte) (base.Val, []byte, []byte) {
-			sr := jsSharedFromVars(vars)
-			blob, rest := readJSONBlob(agg)
-			state := sr.aggStateFromJSON(blob)
-			result := jsAggCall(sr, finalFn, state)
-			out := marshalGoja(result)
-			vBuf := append(buf[:0], out...)
-			return base.Val(vBuf), rest, base.BufUnused(buf, len(vBuf))
-		},
+		Result: render(finalFn), // pure NAME_final: repeatable, never frees the handle.
 	}
 
 	// Optional NAME_merge(stateA, stateB): combine two partial accumulators into one.
 	// Wired only when the source defines it, so a fold-only aggregate stays Merge==nil.
+	// Either side may be a handle (resident) or JSON (a partial that crossed a
+	// runtime boundary); the merged state goes resident when the runtime is stable
+	// (re-targeting A's slot when A was resident -- the accumulator side of a fold).
 	if jsAggHasMerge[name] {
 		agg.Merge = func(vars *base.Vars, aggA, aggB, aggOut []byte) []byte {
-			sr := jsSharedFromVars(vars)
-			blobA, _ := readJSONBlob(aggA)
-			blobB, _ := readJSONBlob(aggB)
-			stateA := sr.aggStateFromJSON(blobA)
-			stateB := sr.aggStateFromJSON(blobB)
+			sr, stable := jsSharedFromVars(vars)
+			payloadA, _ := readJSONBlob(aggA)
+			payloadB, _ := readJSONBlob(aggB)
+			stateA, hA, aIsHandle := sr.jsAggStateDecode(payloadA)
+			stateB, _, _ := sr.jsAggStateDecode(payloadB)
 			merged := jsAggCall(sr, mergeFn, stateA, stateB)
+			if stable {
+				if aIsHandle {
+					sr.aggStateSet(hA, merged)
+					return appendHandleBlob(aggOut, hA)
+				}
+				return appendHandleBlob(aggOut, sr.aggStateAlloc(merged))
+			}
 			return appendJSONBlob(aggOut, marshalGoja(merged))
 		}
+	}
+
+	if jsAggHasSnapshot[name] {
+		agg.ResultLive = render(snapshotFn)
 	}
 	return agg
 }
@@ -164,14 +232,72 @@ func makeJSAgg(name string) *base.Agg {
 // so makeJSAgg wires base.Agg.Merge only for those (and reloads pick it up).
 var jsAggHasMerge = map[string]bool{}
 
+// jsAggHasSnapshot records which JS aggregates defined an optional NAME_snapshot
+// callback, so makeJSAgg wires base.Agg.ResultLive only for those.
+var jsAggHasSnapshot = map[string]bool{}
+
 // jsSharedFromVars resolves the per-query/per-actor JS runtime the aggregate
-// should run on (the same one the scalar UDFs use), or a throwaway if the eval
-// context isn't a *GlueContext (rare).
-func jsSharedFromVars(vars *base.Vars) *jsSharedRuntime {
-	if gc, ok := vars.Temps[0].(*GlueContext); ok {
-		return gc.jsShared()
+// should run on (the same one the scalar UDFs use). stable=true means the
+// runtime is pinned to the eval context and outlives this call -- the
+// precondition for JSVM-resident state (a handle written now resolves on the
+// next callback). A throwaway runtime (rare: eval outside a *GlueContext, e.g.
+// the examples runner) is stable=false: state must thread as JSON bytes, since
+// nothing retains the runtime -- or its handle table -- between calls.
+func jsSharedFromVars(vars *base.Vars) (sr *jsSharedRuntime, stable bool) {
+	if vars != nil && len(vars.Temps) > 0 {
+		if gc, ok := vars.Temps[0].(*GlueContext); ok {
+			return gc.jsShared(), true
+		}
 	}
-	return newJSSharedRuntime()
+	return newJSSharedRuntime(), false
+}
+
+// --- JSVM-resident accumulator handles ---
+//
+// The side table lives on the jsSharedRuntime (per query, per actor,
+// single-threaded), so handles are meaningful exactly as long as the runtime
+// is, and everything frees together at query end -- no per-group bookkeeping.
+// Handles are never reused within a query; a group's slot is re-targeted in
+// place by Update, so the table's length is bounded by the number of groups
+// (plus merge results), not the number of rows.
+
+const jsAggHandleTag = 'H' // never the first byte of JSON, so the encodings can't collide.
+
+// aggStateAlloc retains state and returns its handle.
+func (sr *jsSharedRuntime) aggStateAlloc(state goja.Value) uint64 {
+	sr.aggState = append(sr.aggState, state)
+	return uint64(len(sr.aggState) - 1)
+}
+
+// aggStateSet re-targets an existing handle (Update/Merge folding in place).
+func (sr *jsSharedRuntime) aggStateSet(h uint64, state goja.Value) {
+	if h < uint64(len(sr.aggState)) {
+		sr.aggState[h] = state
+	}
+}
+
+// jsAggStateDecode turns one accumulator payload into the live state value:
+// a 9-byte 'H'+uint64 handle resolves through the side table; anything else is
+// a JSON partial (v1 threading, or one that crossed a runtime boundary) decoded
+// via aggStateFromJSON. An unresolvable handle (wrong runtime -- can't happen
+// within one query's stream, but be contained, not corrupt) yields undefined,
+// which the JS callback sees exactly like a throwing step's no-op.
+func (sr *jsSharedRuntime) jsAggStateDecode(payload []byte) (state goja.Value, h uint64, isHandle bool) {
+	if len(payload) == 9 && payload[0] == jsAggHandleTag {
+		h = binary.LittleEndian.Uint64(payload[1:])
+		if h < uint64(len(sr.aggState)) {
+			return sr.aggState[h], h, true
+		}
+		return goja.Undefined(), h, true
+	}
+	return sr.aggStateFromJSON(payload), 0, false
+}
+
+// appendHandleBlob writes a length-prefixed resident-state handle payload.
+func appendHandleBlob(dst []byte, h uint64) []byte {
+	dst = base.BinaryAppendUint64(dst, 9)
+	dst = append(dst, jsAggHandleTag)
+	return base.BinaryAppendUint64(dst, h)
 }
 
 // jsAggCall invokes a named callback on the shared runtime, containing any

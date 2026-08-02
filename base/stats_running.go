@@ -214,8 +214,13 @@ func RunningAggsGroup(dst *RunningAggs, op string, set *store.RHStore, aggNames 
 
 			// Result appends the partial into the row's own reused aggBuf tail
 			// (no alloc once warm) and returns the unread remainder so we can walk
-			// to the next aggregate's bytes.
-			v, aggRest, _ := a.Result(vars, agg, r.AggBufTail())
+			// to the next aggregate's bytes. ResultLive, when set, is the
+			// aggregate's cheaper mid-flight view (e.g. a JS NAME_snapshot).
+			result := a.Result
+			if a.ResultLive != nil {
+				result = a.ResultLive
+			}
+			v, aggRest, _ := result(vars, agg, r.AggBufTail())
 			agg = aggRest
 			r.AddAgg(name, v)
 		}

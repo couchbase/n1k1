@@ -25,6 +25,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dop251/goja"
 
@@ -159,5 +160,39 @@ func BenchmarkJSAggListState(b *testing.B) {
 		b.Run(fmt.Sprintf("held=%d", n), func(b *testing.B) {
 			benchAggUpdate(b, "bench_lrows", state, `{"x":"2026-02-03","y":49.99}`)
 		})
+	}
+}
+
+// BenchmarkJSAggListStateResident: the same list-accumulating shape driven
+// through the REAL base.Agg bridge on a stable (GlueContext-pinned) runtime, so
+// state is JSVM-resident behind a 9-byte handle. The v1 comparison point is
+// BenchmarkJSAggListState above (state JSON round-trip per Update, O(held) per
+// row); here the accumulator grows to b.N rows over the run and the per-Update
+// cost stays FLAT -- the border is O(1) regardless of held state.
+func BenchmarkJSAggListStateResident(b *testing.B) {
+	mustRegBenchAgg(b, "bench_rrows", `
+		function bench_rrows_init(){ return {rows:[]}; }
+		function bench_rrows_update(s,v){ s.rows.push(v); return s; }
+		function bench_rrows_final(s){ return s.rows.length; }`)
+
+	tmpDir, vars := MakeVars("", "n1k1resbench")
+	defer os.RemoveAll(tmpDir)
+	gctx := NewGlueContext(time.Now())
+	vars.Temps = vars.Temps[:0]
+	vars.Temps = append(vars.Temps, gctx)
+	for i := 0; i < 16; i++ {
+		vars.Temps = append(vars.Temps, nil)
+	}
+	vc := vars.Ctx.ValComparer
+
+	agg := base.Aggs[base.AggCatalog["bench_rrows"]]
+	st := agg.Init(vars, nil)
+	row := base.Val(`{"x":"2026-02-03","y":49.99}`)
+
+	var buf []byte
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf, _, _ = agg.Update(vars, row, buf[:0], st, vc)
+		st, buf = buf, st
 	}
 }

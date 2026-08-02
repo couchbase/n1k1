@@ -270,6 +270,32 @@ func TestExtJSAggregate(t *testing.T) {
 	}
 }
 
+// TestExtJSAggregateResidentGroupBy: a Map-state JS aggregate (impossible under
+// the v1 JSON state threading -- a Map's export doesn't survive json.Marshal)
+// through a REAL GROUP BY, so the JSVM-resident handles live inside the group
+// map across groups and rows.
+func TestExtJSAggregateResidentGroupBy(t *testing.T) {
+	if err := glue.RegisterJSAggregate("jdistinct", `
+		function jdistinct_init()       { return new Map(); }
+		function jdistinct_update(s, v) { var k = JSON.stringify(v); s.set(k, (s.get(k)||0)+1); return s; }
+		function jdistinct_final(s)     { return s.size; }
+	`); err != nil {
+		t.Fatalf("RegisterJSAggregate jdistinct: %v", err)
+	}
+	sess := extSession(t)
+
+	if got := extRawRows(t, sess, `SELECT RAW jdistinct(v) FROM [1,2,2,3,3,3,"a","a",null] AS v`); len(got) != 1 || got[0] != `5` {
+		t.Fatalf("jdistinct bare = %v, want [5]", got)
+	}
+	got := extRawRows(t, sess, `SELECT x.g AS g, jdistinct(x.v) AS d
+		FROM [{"g":"a","v":1},{"g":"a","v":1},{"g":"a","v":2},{"g":"b","v":7},{"g":"b","v":8},{"g":"b","v":9}] AS x
+		GROUP BY x.g ORDER BY x.g`)
+	want := []string{`{"g":"a","d":2}`, `{"g":"b","d":3}`}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("grouped jdistinct = %v, want %v", got, want)
+	}
+}
+
 // TestExtAggregatesSparklineHistogram exercises the native, zero-garbage
 // extension aggregates over a deterministic FROM-array source (so accumulation
 // order is fixed).

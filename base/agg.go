@@ -63,6 +63,14 @@ type Agg struct {
 	// that needs to combine partials checks for nil. Single-pass GROUP BY never needs
 	// it (one accumulator per key). See glue.CombineAggregate and the JS NAME_merge hook.
 	Merge func(vars *Vars, aggA, aggB, aggOut []byte) []byte
+
+	// ResultLive, when non-nil, renders a MID-FLIGHT view of a partial accumulator
+	// for the live running-aggregates channel (RunningAggsGroup) INSTEAD of Result —
+	// same signature, must not mutate the accumulator. nil means Result is used for
+	// the live view too (fine whenever Result is pure). Exists so an aggregate whose
+	// full Result is expensive (or big) can expose a cheaper progressive snapshot —
+	// the JS NAME_snapshot hook. The terminal result path never consults it.
+	ResultLive func(vars *Vars, agg, buf []byte) (v Val, aggRest, bufOut []byte)
 }
 
 // -----------------------------------------------------

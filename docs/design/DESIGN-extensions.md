@@ -39,13 +39,13 @@ tiny fork setters — `expression.RegisterFunction` (patch-05) and `algebra.Regi
   record file (`records.IsRecordFile` honors the registry).
 - [ ] Streaming sources don't early-terminate on `LIMIT` (the `YieldStats` LIMIT hook is
   inert) — an **unbounded source hangs under `LIMIT`**; needs engine-wide producer early-exit.
-- [ ] JS aggregate/streaming UDFs are v1: state round-trips through JSON per Update (not
-  zero-garbage); callbacks have no error channel (throw/NaN → null). The round-trip is
-  O(state) per row, so a LIST-accumulating aggregate is O(n²) over the group — measured
-  ~0.9ms and ~17K allocs for one Update against 1000 held rows
-  (`BenchmarkJSAggListState`). Collecting thousands of rows is fine; for hot inner loops
-  use a native `base.Agg` (sparkline/histogram) instead. **The designed fix is
-  JSVM-resident state — see "JS aggregate state v2" below (design pass done, not built).**
+- [x] ~~JS aggregate state round-trips through JSON per Update — O(state) per row, so a
+  LIST-accumulating aggregate is O(n²) over the group (measured ~0.9ms/17K allocs per
+  Update at 1000 held rows).~~ **DONE — JSVM-resident state (see "JS aggregate state v2"
+  below): the accumulator stays a live goja value behind a fixed 9-byte handle; the same
+  list shape through the real bridge is ~0.9µs/Update FLAT regardless of held state
+  (`BenchmarkJSAggListStateResident`, ~940× at 1000 held), and non-JSON state (Map/Set)
+  now works.** Still v1: callbacks have no error channel (throw/NaN → null).
 - [ ] Full cbq UDF bridge unwired — `VisitExecuteFunction` returns `NA()`; no `CREATE
   FUNCTION` DDL / metadata catalog.
 - [ ] More native `base.Agg` aggregates; streaming CTEs (single-use pipe + multi-use
@@ -116,8 +116,9 @@ are per-entry, not filename suffixes (which would be combinatorial; `DESIGN-vari
   `algebra.Aggregate` shim (`glue/ext_agg.go`) makes the parser accept them; conv routes
   computation to `base.AggCatalog[name]`, so cbq's Cumulate* never runs.
 - **JS 3-callback** (`NAME_init`/`_update`/`_final`, `glue/ext_jsvm_agg.go`): a `base.Agg`
-  bridge threads state as JSON bytes in the group's spillable buffer. Trade-off: state
-  round-trips through JSON per Update (not zero-garbage); no error channel.
+  bridge with JSVM-RESIDENT state — the group buffer holds a 9-byte handle, the live
+  accumulator stays on the actor's runtime (see "JS aggregate state v2" below). No
+  per-row state marshal; no error channel (unchanged).
 
 **Aggregate state is normally mutable.** `state.rows.push(x)`, nested arrays, `splice`
 and property writes all behave as a JS author expects. That is not free by construction:
@@ -135,7 +136,16 @@ through `base.AggCatalog[name]` (the runtime lookup group-op codegen already emi
 compile by construction — but a compiled JS UDF needs its `Register*` to have run in the
 executing process (the baked `exprStr` must re-resolve the name).
 
-### JS aggregate state v2 — JSVM-resident state (design pass done, NOT built)
+### JS aggregate state v2 — JSVM-resident state (SHIPPED, except serialize/deserialize)
+
+**Status:** resident-by-default state, the `NAME_snapshot` live view (`Agg.ResultLive`),
+runningCapable-by-construction, and the JSON-adoption fallback are SHIPPED
+(`glue/ext_jsvm_agg.go`; guards `TestJSAggResidentHandleProtocol`,
+`TestJSAggMapStateResident`, `TestExtJSAggregateResidentGroupBy`,
+`BenchmarkJSAggListStateResident`). `serialize`/`deserialize` remain design-only: no
+boundary consumes them yet (spill carries the handle and keeps the object resident;
+cross-actor merge doesn't exist) — wire them when real evict-to-disk or
+group-partial/group-merge lands. The rest of this section is the design rationale.
 
 The v1 trade-off above (state as JSON bytes through the group map, O(state) per Update) is
 the wrong default for the advanced tier: an aggregate holding a `Map` of thousands of cells
