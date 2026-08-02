@@ -157,7 +157,9 @@ easy-to-read:
 
 # cloc emits lines of code stats.
 cloc:
-	find . | grep go | grep -v test | grep -v generated | grep -v tmp | grep -v wasm-mods | grep -v claude | \
+	find . | grep go | grep -v test | grep -v generated | grep -v github | grep -v svg | \
+                 grep -v examples | grep -v tmp | grep -v wasm-mods | \
+                 grep -v claude | grep -v ./work/ | \
        xargs cloc --by-file
 
 # ------------------------------------------------------------------
