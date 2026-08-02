@@ -224,6 +224,7 @@ func applyPostConvPasses(conv *Conv, qp *plan.QueryPlan) {
 		elideDiscarded(conv.TopOp) // drop dead projections under count(*)-style groups
 	}
 	maybeColumnarOptimize(conv.TopOp, conv.Temps) // fuse ungrouped SUM over a Parquet column
+	maybeHoistInvariants(conv.TopOp)              // hoist loop-invariant exprs above UNNEST
 	// A -> B wiring (DESIGN-merging.md §3): lower order(union-all) -> merge-scan when
 	// Track A's SortedSourceMeta proves the ORDER BY key is a normalized int64 sorted
 	// source; no-op otherwise (and unless EnableMergeRewrite). gctx is nil here

@@ -130,6 +130,7 @@ func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
 
 	if err == nil && c.TopOp != nil {
 		maybeColumnarOptimize(c.TopOp, c.Temps) // fuse ungrouped SUM over a Parquet column
+		maybeHoistInvariants(c.TopOp)           // hoist loop-invariant exprs above UNNEST
 	}
 
 	if err == nil && c.TopOp != nil {

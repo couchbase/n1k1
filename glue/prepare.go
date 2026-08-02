@@ -385,6 +385,7 @@ func (s *Session) Prepare(stmt string) (goSource string, level PrepareLevel, rea
 		elideDiscarded(conv.TopOp)
 	}
 	maybeColumnarOptimize(conv.TopOp, conv.Temps)
+	maybeHoistInvariants(conv.TopOp)
 
 	// Classify the UN-stringified tree: Preparable inspects ["exprTree", <expr>]
 	// params to decide native vs boxed. (stringifyExprTrees below would erase that

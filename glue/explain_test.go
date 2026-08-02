@@ -16,6 +16,7 @@ package glue
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -320,5 +321,98 @@ func TestExplainDisplayMatchesExec(t *testing.T) {
 	execTree := FormatConvPlan(execRes.Plan)
 	if explainTree != execTree {
 		t.Errorf("EXPLAIN display tree != exec tree\n--- EXPLAIN ---\n%s\n--- exec ---\n%s", explainTree, execTree)
+	}
+}
+
+// TestHoistInvariantsAboveUnnest: the loop-invariant hoisting pass (glue/hoist.go)
+// moves group keys / aggregate operands that reference only pre-UNNEST labels below
+// the fan-out (a `$hoist<N>` extend-project), so they evaluate once per record
+// instead of once per unnested element. Guards: (1) the plan shape rewrites (and
+// only when something qualifies), (2) results are IDENTICAL with the pass disabled,
+// including LEFT OUTER UNNEST and a post-UNNEST WHERE (the filter-between shape,
+// whose Labels must be re-pointed after the unnest's labels grow).
+func TestHoistInvariantsAboveUnnest(t *testing.T) {
+	dir := t.TempDir()
+	ks := filepath.Join(dir, "default", "orders")
+	if err := os.MkdirAll(ks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	docs := map[string]string{
+		"o1.json": `{"custId":"c1","ts":"2026-01-02","orderlines":[{"qty":2,"sku":"a"},{"qty":3,"sku":"b"}]}`,
+		"o2.json": `{"custId":"c2","ts":"2026-01-01","orderlines":[{"qty":5,"sku":"a"}]}`,
+		"o3.json": `{"custId":"c1","ts":"2026-01-03","orderlines":[]}`,
+		"o4.json": `{"custId":"c3","ts":"2026-01-04"}`,
+	}
+	for name, d := range docs {
+		if err := os.WriteFile(filepath.Join(ks, name), []byte(d), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	runRows := func(q string) (string, []string) {
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("run %q: %v", q, err)
+		}
+		rows := make([]string, 0, len(res.Rows))
+		for _, r := range res.Rows {
+			rows = append(rows, string(r))
+		}
+		sort.Strings(rows)
+		plan := ""
+		if res.Plan != nil {
+			plan = FormatConvPlan(res.Plan)
+		}
+		return plan, rows
+	}
+
+	cases := []struct {
+		name  string
+		q     string
+		hoist bool // whether the plan must contain a $hoist column
+	}{
+		{"inner unnest, invariant key+operand", `SELECT o.custId, ol.sku, COUNT(*) AS c,
+			MIN(o.ts) AS earliest FROM orders o UNNEST o.orderlines AS ol
+			GROUP BY o.custId, ol.sku`, true},
+		{"left outer unnest", `SELECT o.custId, MIN(o.ts) AS earliest, COUNT(1) AS c
+			FROM orders o LEFT OUTER UNNEST o.orderlines AS ol GROUP BY o.custId`, true},
+		{"post-unnest WHERE (filter between group and unnest)", `SELECT o.custId,
+			MIN(o.ts) AS earliest FROM orders o UNNEST o.orderlines AS ol
+			WHERE ol.qty > 2 GROUP BY o.custId`, true},
+		{"derived table + unnest (census shape)", `SELECT t.rt, pth.sku, COUNT(*) AS c,
+			MIN(t.ts2) AS earliest FROM (SELECT o.custId AS rt, o.ts AS ts2,
+			o.orderlines AS paths FROM orders o) t UNNEST t.paths AS pth
+			GROUP BY t.rt, pth.sku`, true},
+		{"nothing invariant: alias-only refs", `SELECT ol.sku, COUNT(*) AS c
+			FROM orders o UNNEST o.orderlines AS ol GROUP BY ol.sku`, false},
+		{"mixed operand references alias: not hoisted", `SELECT o.custId,
+			SUM(ol.qty) AS q FROM orders o UNNEST o.orderlines AS ol
+			GROUP BY o.custId`, true}, // the o.custId KEY hoists; SUM(ol.qty) must not.
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			plan, got := runRows(c.q)
+			if strings.Contains(plan, "$hoist") != c.hoist {
+				t.Errorf("plan $hoist presence = %v, want %v:\n%s",
+					!c.hoist, c.hoist, plan)
+			}
+
+			DisableHoistOptimize = true
+			planOff, want := runRows(c.q)
+			DisableHoistOptimize = false
+			if strings.Contains(planOff, "$hoist") {
+				t.Errorf("pass disabled but plan still hoisted:\n%s", planOff)
+			}
+
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Errorf("rows differ hoist-on vs hoist-off:\n--- on ---\n%s\n--- off ---\n%s",
+					strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
 	}
 }
