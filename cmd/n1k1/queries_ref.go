@@ -21,8 +21,8 @@ package main
 //
 //	./dir            local path (default)          -> refFile
 //	file:./dir       local path (explicit scheme)  -> refFile
-//	builtin:census   a native builtin              -> refBuiltin
-//	builtin:census@1?keyspace=logs&depth=2         versioned + parameterized builtin
+//	builtin:census.sql++   an embedded SQL++ builtin  -> refBuiltin
+//	builtin:census.sql++@v2.1?keyspace=logs&depth=2   versioned + parameterized builtin
 //	registry:...     remote/precanned (FUTURE — deferred; needs a trust story)
 //
 // Path-vs-scheme rule: a token is a SCHEME ref only if it starts with a RECOGNIZED
@@ -31,11 +31,9 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	builtinq "github.com/couchbase/n1k1/cmd/n1k1/builtins"
-	"github.com/couchbase/n1k1/glue"
 )
 
 const (
@@ -65,7 +63,9 @@ type queriesRef struct {
 // silently running a different query. (This is the builtin-versioning TODO's part
 // (a) for SQL++ builtins; a census cursor already stamps its resolved ref.)
 var builtinVersions = map[string][]string{
-	"census": {"1"}, // native Go implementation (the census.sql++ oracle)
+	// (the native Go "census" was RETIRED -- census.sql++ / census_agg.agg.js are
+	// the census now; the Go implementation survives only as the CI oracle. See
+	// parseQueriesRef's retired-name hint and DESIGN-census.md.)
 }
 
 func init() {
@@ -126,10 +126,17 @@ func parseBuiltinRef(body string) (queriesRef, error) {
 	r.name, r.version, _ = strings.Cut(head, "@")
 	r.name = strings.TrimSpace(r.name)
 	if r.name == "" {
-		return r, fmt.Errorf("builtin: needs a name, e.g. builtin:census")
+		return r, fmt.Errorf("builtin: needs a name, e.g. builtin:census.sql++")
 	}
 	vers, known := builtinVersions[r.name]
 	if !known {
+		if r.name == "census" { // retired: fail loud with the migration, not "unknown".
+			return r, fmt.Errorf("builtin:census (the native Go census) was retired -- use " +
+				"builtin:census.sql++ (forkable SQL++; same params + first-id=1 for provenance) " +
+				"or the bundled census_agg() JS aggregate (always available; fork " +
+				"extensions/functions/builtin_census_agg.js); " +
+				"the Go implementation lives on only as the CI oracle")
+		}
 		return r, fmt.Errorf("unknown builtin %q (known: %s)", r.name, strings.Join(builtinNames(), ", "))
 	}
 	if r.version != "" && !contains(vers, r.version) {
@@ -170,10 +177,6 @@ func (c *cli) runBuiltinQueries(args multiArgs) bool {
 		return true
 	}
 	r := refs[0]
-	if r.name == "census" { // native Go builtin (the oracle)
-		c.runBuiltinCensus(args, r)
-		return true
-	}
 	if q, ok := builtinq.Lookup(r.name); ok { // embedded SQL++ builtin (generic)
 		c.runBuiltinSQL(args, r, q)
 		return true
@@ -183,60 +186,20 @@ func (c *cli) runBuiltinQueries(args multiArgs) bool {
 	return true
 }
 
-// runBuiltinCensus executes `.multi run --queries builtin:census?keyspace=...` by
-// delegating to the census engine (the census "dissolves" into the queries algebra —
-// same entry point as any other queries entity). Params: keyspace (required),
-// type-field, time-field, depth (default 2), exclude (comma-list).
-func (c *cli) runBuiltinCensus(args multiArgs, r queriesRef) {
-	keyspace := r.params["keyspace"]
-	if keyspace == "" {
-		fmt.Fprintf(c.stderr, "%s: .multi run --queries builtin:census: needs a keyspace, "+
-			"e.g. builtin:census?keyspace=sessions\n", c.prog)
-		c.failed = true
-		return
-	}
-	opts := glue.CensusOptions{
-		TypeField: r.params["type-field"],
-		TimeField: r.params["time-field"],
-		Depth:     2,
-	}
-	if d := r.params["depth"]; d != "" {
-		if n, e := strconv.Atoi(d); e == nil {
-			opts.Depth = n
-		}
-	}
-	if ex := r.params["exclude"]; ex != "" {
-		for _, e := range strings.Split(ex, ",") {
-			if e = strings.TrimSpace(e); e != "" {
-				opts.Exclude = append(opts.Exclude, e)
-			}
-		}
-	}
-	sess, binding, err := c.multiSession(args.bind)
-	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: .multi run: %v\n", c.prog, err)
-		c.failed = true
-		return
-	}
-	if gap := c.reportBindingCoverage(sess, binding); gap {
-		fmt.Fprintf(c.stderr, "%s: .multi run --queries builtin:census: aborting -- unresolved keyspace above\n", c.prog)
-		c.failed = true
-		return
-	}
-	c.emitCensus(sess, keyspace, opts)
-}
-
-// builtinCensusRef reports whether queries is a single `builtin:census[...]` ref (and
-// returns it parsed). Used by `cursor create` to route to the census-cursor path.
-func builtinCensusRef(queries []string) (queriesRef, bool) {
+// retiredCensusRef reports whether queries is a single ref to the RETIRED native
+// census builtin (`builtin:census[@v][?...]`), so the cursor-create path can fail
+// with the migration message instead of treating it as a queries dir.
+func retiredCensusRef(queries []string) bool {
 	if len(queries) != 1 {
-		return queriesRef{}, false
+		return false
 	}
-	r, err := parseQueriesRef(queries[0])
-	if err != nil || r.kind != refBuiltin || r.name != "census" {
-		return queriesRef{}, false
+	q := strings.TrimSpace(queries[0])
+	if !strings.HasPrefix(q, "builtin:") {
+		return false
 	}
-	return r, true
+	head, _, _ := strings.Cut(strings.TrimPrefix(q, "builtin:"), "?")
+	name, _, _ := strings.Cut(head, "@")
+	return strings.TrimSpace(name) == "census"
 }
 
 func builtinNames() []string {

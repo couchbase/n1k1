@@ -1,5 +1,18 @@
 # Design: n1k1 census & doctor — keeping standing questions connected to reality
 
+> **⚠⚠ The NATIVE census was RETIRED (2026-08; this doc describes its design).** The census
+> shipped today is the pair of FORKABLE implementations: **`builtin:census.sql++`** (pure
+> parameterized SQL++, `.multi show` to see/fork it) and the bundled **`census_agg()`** JS
+> aggregate (`extensions/functions/builtin_census_agg.js` — one mergeable aggregate; grow it:
+> example values, histograms, deeper walks). The Go implementation survives ONLY as CI's frozen
+> differential oracle (`glue/census_oracle_test.go`, `TestCensusForkableDifferential` — ISSUE-22:
+> a second independent implementation catches the bug class goldens can't, an author's wrong
+> belief encoded consistently). An ongoing census is a REGULAR cursor over census.sql++ windows
+> folded by the consumer (the output is a mergeable monoid so the fold is plain re-aggregation),
+> or `census_agg` accumulation via its `merge()`. `.multi lint --census` no longer reads any
+> census: it inventories top-level fields with plain SQL++, so it keeps working however a census
+> fork mutates. Everything below is the design rationale (and the spec the oracle freezes).
+
 > **⚠ Naming updated (2026-07 overhaul; this doc predates it).** Census is no longer its own verb
 > or cursor mode — it's a **built-in queries source**: run it with **`.multi run --queries
 > "builtin:census?keyspace=<ks>[&type-field=&time-field=&depth=&exclude=]"`**, and an ongoing census

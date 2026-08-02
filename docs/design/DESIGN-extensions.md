@@ -210,7 +210,8 @@ Optional callbacks, all boundary-only (never per-row):
 **The whole-record pattern (collapsing UNNEST + GROUP BY in the aggregate).** An advanced
 JS aggregate does not need engine fusion to avoid the fan-out: `SELECT js_census(r) FROM
 events r` — no UNNEST, no GROUP BY — walks each record IN JS and keeps its own
-`Map<(type,path,valtype), cell>`, exactly the native `builtin:census`'s one-pass in-flight
+`Map<(type,path,valtype), cell>`, exactly the (since-retired, now test-only-oracle) native
+`builtin:census`'s one-pass in-flight
 shape. Boundary crossings drop from once-per-element to once-per-record (17.5× on the
 census corpus). Honest perf expectation: the ~1 µs/row boundary is noise; goja's
 `JSON.parse` of each record plus the interpreted walk dominate (goja ≈ 10–50× native Go for

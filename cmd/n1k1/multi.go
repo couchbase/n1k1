@@ -87,7 +87,7 @@ func (c *cli) cmdMulti(arg string) {
 		c.cmdMultiShow(rest)
 	case "census":
 		fmt.Fprintf(c.stderr, "%s: .multi census was removed -- census is a queries source now: "+
-			"`.multi run --queries \"builtin:census?keyspace=<ks>\"` (or a cursor over it)\n", c.prog)
+			"`.multi run --queries \"builtin:census.sql++?keyspace=<ks>\"` (or a cursor over it)\n", c.prog)
 		c.failed = true
 	case "doctor":
 		fmt.Fprintf(c.stderr, "%s: .multi doctor was renamed -- use `.multi lint --census` "+
@@ -436,11 +436,6 @@ func (c *cli) cmdMultiShow(arg string) {
 			c.failed = true
 			return
 		} else if perr == nil && r.kind == refBuiltin {
-			if r.name == "census" {
-				c.emitShow([]multiShowRow{{Queries: "builtin:census@" + r.version,
-					Note: "native Go builtin — no SQL++ source; use builtin:census.sql++ to see/fork the SQL++ form"}})
-				return
-			}
 			q, ok := builtinq.Lookup(r.name)
 			if !ok {
 				fmt.Fprintf(c.stderr, "%s: .multi show: builtin %q has no source to show\n", c.prog, r.name)

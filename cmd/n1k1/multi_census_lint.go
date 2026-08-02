@@ -13,10 +13,10 @@
 
 package main
 
-// `.multi lint --census` — census-aware lint, the pack↔census JOIN (DESIGN-census.md
+// `.multi lint --census` — DATA-AWARE lint, the queries↔data JOIN (DESIGN-census.md
 // Phase 2; was the `.multi doctor` verb). For each entry, cross-reference the field
-// paths it references (planner-sourced) against a census of the keyspace it scans, and
-// report:
+// paths it references (planner-sourced) against a top-level field inventory of the
+// keyspace it scans, and report:
 //
 //   - references_absent : an entry reads a top-level field the data doesn't have
 //     -> a birth-in-error / typo / renamed-or-retired field. Hard-fails (CI signal).
@@ -24,11 +24,18 @@ package main
 //     query-generation queue (informational).
 //
 // The referenced set is planner-sourced (glue.EntryReferencedFields via ExprFieldPath),
-// never a text heuristic. First check is at TOP-LEVEL granularity: high precision (no
-// false positives against a depth-limited census), and it catches the class that cost
-// the most — a query aimed at a field that never existed.
+// never a text heuristic. The check is at TOP-LEVEL granularity: high precision, and
+// it catches the class that cost the most — a query aimed at a field that never existed.
+//
+// The inventory is computed by a tiny inline SQL++ (UNNEST OBJECT_NAMES), NOT by any
+// census implementation — deliberately: the census is now the forkable
+// builtin:census.sql++ / census_agg.agg.js, and lint must keep working however a user
+// mutates their census fork. Lint asks the DATA what fields exist, not a census
+// artifact. (`--census` keeps its flag name; read it as "check against the data".)
+// `_meta` is skipped to match the census convention: engine provenance, not schema.
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -38,20 +45,24 @@ import (
 // lintCensus is the `--census` tier of `.multi lint`: the caller (cmdMultiLint) has
 // already loaded the entries and built the session (binding resolved, no gap).
 func (c *cli) lintCensus(dets []glue.MultiQueryEntry, sess *glue.Session) {
-	// Census each distinct keyspace once; the top-level field set is what we join
-	// against (present iff some census path has that first segment).
+	// Inventory each distinct keyspace once; the top-level field set is what we join
+	// against. Plain SQL++ over the data (see the file comment for why not a census).
 	censusTop := map[string]map[string]bool{} // keyspace -> set of top-level fields present
 	topLevels := func(ks string) (map[string]bool, error) {
 		if s, ok := censusTop[ks]; ok {
 			return s, nil
 		}
-		res, cerr := sess.Census(ks, glue.CensusOptions{})
+		res, cerr := sess.Run("SELECT DISTINCT RAW p FROM `" + ks + "` AS r " +
+			`UNNEST OBJECT_NAMES(r) AS p WHERE p != "_meta"`)
 		if cerr != nil {
 			return nil, cerr
 		}
 		set := map[string]bool{}
-		for _, r := range res.Rows {
-			set[glue.TopLevelField(r.Path)] = true
+		for _, row := range res.Rows {
+			var f string
+			if json.Unmarshal(row, &f) == nil && f != "" {
+				set[f] = true
+			}
 		}
 		censusTop[ks] = set
 		return set, nil

@@ -13,6 +13,18 @@
 
 package glue
 
+// THE FROZEN CENSUS ORACLE (test-only). This is the retired native Go census, kept
+// as CI's independent second opinion on the shipped forkable censuses
+// (builtin:census.sql++ and extensions/functions/js/census_agg.agg.js) — see
+// TestCensusForkableDifferential. It is deliberately a _test.go file: no user
+// surface, no docs, no support, and NO further optimization or features. An oracle
+// does not need to be fast or featureful; it needs to be DIFFERENT — an independent
+// implementation of the census spec that fails when a forkable implementation's
+// author's belief is the bug (ISSUE-22: two real bugs — a missed polymorphic parent
+// cell, an exclude-vs-omit conflation — were caught only by this differential,
+// never by the implementations' own goldens). Treat edits here as spec changes:
+// they require the same edit, independently reasoned, in both forkable censuses.
+//
 // Schema census (DESIGN-census.md) — a time-aware, type-aware key-space census over
 // an append-only corpus of schemaless records. For every (record-type, field-path,
 // value-type) it counts docs and tracks the first/last time it was seen and the id
@@ -36,8 +48,11 @@ package glue
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/couchbase/n1k1/records"
@@ -236,4 +251,153 @@ func stringField(doc map[string]interface{}, field string) string {
 		return v
 	}
 	return ""
+}
+
+// TestCensusForkableDifferential is ISSUE-22's ask made CI: the frozen Go oracle
+// (above) is compared cell-for-cell against BOTH shipped forkable censuses --
+// builtin:census.sql++ (read from the repo template; rendered with glue's own param
+// machinery) and census_agg (the bundled extensions/functions/builtin_census_agg.js
+// module) -- over an adversarial corpus. The shared core is
+// (type, path, val_type) -> docs/first_seen/last_seen; implementation-specific
+// columns (coverage, first_id, first_enc, docs_in_type, examples) are outside it.
+// Three independent implementations in three languages: a bug in any one shows up as
+// a named cell-level disagreement here, the failure mode goldens cannot catch (both
+// bugs ISSUE-22 reports were invisible to the buggy implementation's own goldens).
+func TestCensusForkableDifferential(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "c.jsonl"), []byte(strings.Join([]string{
+		`{"type":"a","timestamp":"2026-01-02","uuid":"u2","message":{"id":"m1","model":"x"},"n":5}`,
+		`{"type":"a","timestamp":"2026-01-01","uuid":"u1","message":{"id":"m0"},"n":9,"extra":true}`,
+		`{"type":"a","message":{"id":"m2"},"n":1,"_meta":{"path":"injected","size":9}}`,
+		`{"type":"b","timestamp":"2026-01-05","uuid":"u5","toolUseResult":{"deep":"skip"},"k":[1,2]}`,
+		`{"note":"no-type-field","timestamp":"2026-01-09","deep":{"lvl2":{"lvl3":"stop"}}}`,
+		`{"type":"c","solo":true}`, // no timestamps: first/last_seen omitted everywhere
+		`{"type":"b","timestamp":"2026-01-06","poly":{"x":1}}`,
+		`{"type":"b","timestamp":"2026-01-04","poly":"scalar-now"}`, // polymorphic parent cell
+	}, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	if _, err := RegisterExtensionFile("../extensions/functions/builtin_census_agg.js"); err != nil {
+		t.Fatalf("register bundled census_agg: %v", err)
+	}
+	template, err := os.ReadFile("../cmd/n1k1/builtins/census.sql++")
+	if err != nil {
+		t.Fatalf("read census.sql++ template: %v", err)
+	}
+
+	// The shared core: cell key -> "docs|first_seen|last_seen".
+	coreAdd := func(core map[string]string, typ, path, vt string, docs int64, first, last string) {
+		core[typ+"\x00"+path+"\x00"+vt] = fmt.Sprintf("%d|%s|%s", docs, first, last)
+	}
+	fromJSONRows := func(rows []map[string]interface{}) map[string]string {
+		core := map[string]string{}
+		for _, m := range rows {
+			s := func(k string) string { v, _ := m[k].(string); return v }
+			d, _ := m["docs"].(float64)
+			coreAdd(core, s("type"), s("path"), s("val_type"), int64(d), s("first_seen"), s("last_seen"))
+		}
+		return core
+	}
+
+	oracleCore := func(opts CensusOptions) map[string]string {
+		res, cerr := sess.Census("*.jsonl", opts)
+		if cerr != nil {
+			t.Fatalf("oracle census: %v", cerr)
+		}
+		core := map[string]string{}
+		for _, r := range res.Rows {
+			coreAdd(core, r.Type, r.Path, r.ValType, r.Docs, r.FirstSeen, r.LastSeen)
+		}
+		return core
+	}
+
+	sqlppCore := func(given map[string]string) map[string]string {
+		params, perr := ScanQueryParams(string(template))
+		if perr != nil {
+			t.Fatalf("scan census.sql++ params: %v", perr)
+		}
+		resolved, rerr := ParamsResolve("census.sql++", params, given)
+		if rerr != nil {
+			t.Fatalf("resolve census.sql++ params: %v", rerr)
+		}
+		sql, serr := RenderStmtParams("census.sql++", string(template), params, resolved)
+		if serr != nil {
+			t.Fatalf("render census.sql++: %v", serr)
+		}
+		res, qerr := sess.Run(sql)
+		if qerr != nil {
+			t.Fatalf("run census.sql++: %v", qerr)
+		}
+		var rows []map[string]interface{}
+		for _, raw := range res.Rows {
+			var m map[string]interface{}
+			if json.Unmarshal(raw, &m) != nil {
+				t.Fatalf("census.sql++ row not an object: %s", raw)
+			}
+			rows = append(rows, m)
+		}
+		return fromJSONRows(rows)
+	}
+
+	aggCore := func() map[string]string {
+		res, qerr := sess.Run("SELECT RAW census_agg(r) FROM `*.jsonl` AS r")
+		if qerr != nil {
+			t.Fatalf("run census_agg: %v", qerr)
+		}
+		if len(res.Rows) != 1 {
+			t.Fatalf("census_agg: want 1 row, got %d", len(res.Rows))
+		}
+		var cells []map[string]interface{}
+		if err := json.Unmarshal(res.Rows[0], &cells); err != nil {
+			t.Fatalf("census_agg cells: %v", err)
+		}
+		return fromJSONRows(cells)
+	}
+
+	diff := func(t *testing.T, name string, want, got map[string]string) {
+		t.Helper()
+		for k, w := range want {
+			g, ok := got[k]
+			if !ok {
+				t.Errorf("%s: cell only in oracle: %q", name, strings.ReplaceAll(k, "\x00", ":"))
+			} else if g != w {
+				t.Errorf("%s: cell %q differs: oracle=%s got=%s",
+					name, strings.ReplaceAll(k, "\x00", ":"), w, g)
+			}
+		}
+		for k := range got {
+			if _, ok := want[k]; !ok {
+				t.Errorf("%s: cell only in %s: %q", name, name, strings.ReplaceAll(k, "\x00", ":"))
+			}
+		}
+	}
+
+	// census_agg's bundled config is fixed (type/timestamp, depth 2, no exclusions):
+	// the three-way comparison runs on that variant; the other oracle-vs-sql++
+	// variants exercise depth/exclude.
+	t.Run("three-way depth-2", func(t *testing.T) {
+		oracle := oracleCore(CensusOptions{Depth: 2})
+		if len(oracle) == 0 {
+			t.Fatal("oracle produced no cells")
+		}
+		diff(t, "census.sql++", oracle, sqlppCore(map[string]string{
+			"keyspace": "*.jsonl", "type_field": "type", "time_field": "timestamp", "depth": "2"}))
+		diff(t, "census_agg", oracle, aggCore())
+	})
+	t.Run("oracle-vs-sql++ exclude", func(t *testing.T) {
+		diff(t, "census.sql++", oracleCore(CensusOptions{Depth: 2, Exclude: []string{"toolUseResult"}}),
+			sqlppCore(map[string]string{"keyspace": "*.jsonl", "type_field": "type",
+				"time_field": "timestamp", "depth": "2", "exclude": "toolUseResult"}))
+	})
+	t.Run("oracle-vs-sql++ depth-1", func(t *testing.T) {
+		diff(t, "census.sql++", oracleCore(CensusOptions{Depth: 1}),
+			sqlppCore(map[string]string{"keyspace": "*.jsonl", "type_field": "type",
+				"time_field": "timestamp", "depth": "1"}))
+	})
 }

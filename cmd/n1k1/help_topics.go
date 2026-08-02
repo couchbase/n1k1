@@ -431,7 +431,7 @@ func (c *cli) helpMeta() {
 	c.hline("")
 	c.hline("⚠ With -meta on, _meta becomes a FIELD of every record: it appears in OBJECT_NAMES,")
 	c.hline("  OBJECT_PAIRS, SELECT *, and any hand-written schema walk — engine provenance,")
-	c.hline("  indistinguishable from data. builtin:census[.sql++] always excludes it (a census")
+	c.hline("  indistinguishable from data. builtin:census.sql++ / census_agg() always exclude it (a census")
 	c.hline("  reporting the observer as part of the observed would be wrong by construction);")
 	c.hline("  hand-written walks should too: ... FOR p IN OBJECT_PAIRS(t) WHEN p.name != \"_meta\" END")
 	c.hline("  (the exclusion belongs in the comprehension WHEN — a CASE branch still emits the parent).")

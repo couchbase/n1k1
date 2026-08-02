@@ -132,24 +132,12 @@ type CursorState struct {
 	// position token; it bumps on each advance that changed the snapshot.
 	SnapVersion int `json:"snap_version,omitempty"`
 
-	// --- census mode (Phase 3) ---
-	// Keyspace is the keyspace being censused; CensusTypeField/TimeField/Depth/Exclude
-	// are the census options. Census is the ACCUMULATED census (folded incrementally),
-	// stored HERE with Water so both commit in one atomic write (the two-store wall).
-	Keyspace        string           `json:"keyspace,omitempty"`
-	CensusTypeField string           `json:"census_type_field,omitempty"`
-	CensusTimeField string           `json:"census_time_field,omitempty"`
-	CensusDepth     int              `json:"census_depth,omitempty"`
-	CensusExclude   []string         `json:"census_exclude,omitempty"`
-	Census          []CensusRow      `json:"census,omitempty"`
-	CensusTotals    map[string]int64 `json:"census_totals,omitempty"`
-	CensusRecords   int64            `json:"census_records,omitempty"`
-	CensusVersion   int              `json:"census_version,omitempty"` // "census:N" token; bumps on drift
-
-	// Builtin is the resolved builtin-queries ref this cursor is over, if any
-	// (e.g. "census@1") — stamped at create so a future, incompatible builtin version
-	// can detect + refuse/rebase a stale cursor rather than fold mismatched data.
-	Builtin string `json:"builtin,omitempty"`
+	// (The census-mode fields -- Keyspace, CensusTypeField/TimeField/Depth/Exclude,
+	// Census, CensusTotals, CensusRecords, CensusVersion, Builtin -- were RETIRED
+	// with the native census's census-mode cursor: an incremental census is a
+	// regular cursor over builtin:census.sql++ windows now, folded by the consumer.
+	// A stale census-mode state file loads fine (unknown JSON keys are ignored) and
+	// peek/advance fails loud with the migration via its Mode == "census".)
 
 	// Description is a free-form note set at create time (--desc).
 	Description string `json:"description,omitempty"`

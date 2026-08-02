@@ -41,7 +41,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -80,14 +79,6 @@ type cursorArgs struct {
 	terminal      bool              // --terminal, compose-only (emit rows for leaf nodes only)
 	allowRejected bool              // --allow-rejected, compose-only (don't hard-fail on a rejected node)
 
-	// census cursor (create --queries builtin:census?keyspace=..&...): filled from the
-	// builtin:census ref's params, not from standalone flags.
-	keyspace       string   // ?keyspace=<ks>
-	censusType     string   // ?type-field=<f>
-	censusTime     string   // ?time-field=<f>
-	censusDepth    int      // ?depth=1|2
-	censusExclude  []string // ?exclude=a,b
-	builtinVersion string   // the resolved builtin ref (e.g. "census@1"), stamped into state
 }
 
 func parseCursorArgs(arg string) (cursorArgs, error) {
@@ -284,12 +275,12 @@ var renamedCursorFlag = map[string]string{
 	"description": "--desc",
 	"id":          "--id-field",
 	"verbose":     "--positions",
-	// census cursor params moved into the builtin:census ref's query-string.
-	"keyspace":   `--queries "builtin:census?keyspace=<ks>"`,
-	"type-field": `builtin:census?type-field=<f>`,
-	"time-field": `builtin:census?time-field=<f>`,
-	"depth":      `builtin:census?depth=<n>`,
-	"exclude":    `builtin:census?exclude=a,b`,
+	// retired census-cursor params: the census is builtin:census.sql++ now.
+	"keyspace":   `--queries "builtin:census.sql++?keyspace=<ks>"`,
+	"type-field": `builtin:census.sql++?type-field=<f>`,
+	"time-field": `builtin:census.sql++?time-field=<f>`,
+	"depth":      `builtin:census.sql++?depth=<n>`,
+	"exclude":    `builtin:census.sql++?exclude=a,b`,
 }
 
 // cmdMultiCursor dispatches `.multi cursor <verb>`.
@@ -549,33 +540,17 @@ func (c *cli) cursorCreate(arg string) {
 		c.cursorFail("", "bad-args", fmt.Errorf("cursor NAME is required"))
 		return
 	}
-	// census stopped being a --mode; it's a queries source (checked up front so the
-	// migration error fires regardless of the --queries value).
-	if strings.EqualFold(a.mode, "census") {
+	// The native census -- and with it the census-mode cursor -- was RETIRED: the
+	// census is the forkable builtin:census.sql++ / census_agg.agg.js now (the Go
+	// implementation survives only as the CI oracle; see DESIGN-census.md). An
+	// incremental census is a REGULAR cursor over census.sql++ windows folded by
+	// the consumer -- the output is a mergeable monoid precisely so that fold is a
+	// plain re-aggregation (docs=SUM, first_*=MIN, last_*=MAX).
+	if strings.EqualFold(a.mode, "census") || retiredCensusRef(a.pack) {
 		c.cursorFail(a.name, "bad-args", fmt.Errorf(
-			`census is a queries source now, not a --mode: cursor create %s --queries "builtin:census?keyspace=<ks>"`, a.name))
-		return
-	}
-	// A census cursor is created over the `builtin:census` entity (params in its
-	// query-string), not a *.sql++ pack — separate create path.
-	if ref, ok := builtinCensusRef(a.pack); ok {
-		a.keyspace = ref.params["keyspace"]
-		a.censusType = ref.params["type-field"]
-		a.censusTime = ref.params["time-field"]
-		if d := ref.params["depth"]; d != "" {
-			if n, e := strconv.Atoi(d); e == nil {
-				a.censusDepth = n
-			}
-		}
-		if ex := ref.params["exclude"]; ex != "" {
-			for _, e := range strings.Split(ex, ",") {
-				if e = strings.TrimSpace(e); e != "" {
-					a.censusExclude = append(a.censusExclude, e)
-				}
-			}
-		}
-		a.builtinVersion = ref.name + "@" + ref.version
-		c.cursorCensusCreate(a)
+			`the native census (and its census-mode cursor) was retired: cursor over `+
+				`"builtin:census.sql++?keyspace=<ks>&..." and fold the mergeable windows, `+
+				`or accumulate with the bundled census_agg() JS aggregate (its merge() is the fold)`))
 		return
 	}
 	if len(a.pack) == 0 {
@@ -891,9 +866,11 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
-	// A census cursor has a keyspace, not a pack — its own peek/advance path.
+	// A census-mode cursor predates the native census's retirement; fail loud with
+	// the migration rather than misreading its state as a queries cursor.
 	if st.Mode == "census" {
-		c.cursorCensusPeekAdvance(a, st, store, advance)
+		c.cursorFail(a.name, "bad-args", fmt.Errorf(
+			"cursor %q is a retired census-mode cursor: rm it and cursor over builtin:census.sql++ instead", a.name))
 		return
 	}
 
@@ -1238,8 +1215,6 @@ func committedID(st *glue.CursorState) string {
 	switch st.Mode {
 	case "diff":
 		pos = fmt.Sprintf("snap:%d", st.SnapVersion)
-	case "census":
-		pos = fmt.Sprintf("census:%d", st.CensusVersion)
 	default:
 		pos = encodeWater(st.Water)
 	}
@@ -1269,8 +1244,6 @@ func (c *cli) positionToken(st *glue.CursorState) string {
 	switch st.Mode {
 	case "diff":
 		return fmt.Sprintf("snap:%d", st.SnapVersion)
-	case "census":
-		return fmt.Sprintf("census:%d", st.CensusVersion)
 	}
 	return encodeWater(st.Water)
 }
@@ -1283,9 +1256,6 @@ func (c *cli) positionToken(st *glue.CursorState) string {
 func committedField(st *glue.CursorState, verbose bool) interface{} {
 	if st.Mode == "diff" {
 		return fmt.Sprintf("snap:%d", st.SnapVersion)
-	}
-	if st.Mode == "census" {
-		return fmt.Sprintf("census:%d", st.CensusVersion)
 	}
 	if verbose || len(st.Water) <= 1 {
 		return st.Water
@@ -1571,9 +1541,6 @@ func (c *cli) cursorShow(arg string) {
 		Pack          string      `json:"queries"`                // the content id (ISSUE-15 §2a: one vocabulary)
 		QueriesPath   string      `json:"queries_path,omitempty"` // the source dir/file
 		SpecHash      string      `json:"spec_hash,omitempty"`    // the @sha tail of the id (ISSUE-15 ask 5)
-		Keyspace      string      `json:"keyspace,omitempty"`     // census mode
-		CensusCells   int         `json:"census_cells,omitempty"` // census mode
-		CensusRecords int64       `json:"census_records,omitempty"`
 		Bind          string      `json:"bind,omitempty"`
 		Mode          string      `json:"mode"`
 		IdField       string      `json:"id_field,omitempty"`
@@ -1593,7 +1560,6 @@ func (c *cli) cursorShow(arg string) {
 		TotalAdvances int                    `json:"total_advances"`
 	}{
 		Cursor: st.Name, Pack: st.Queries, QueriesPath: st.QueriesPath, SpecHash: specHash(st.Queries),
-		Keyspace: st.Keyspace, CensusCells: len(st.Census), CensusRecords: st.CensusRecords,
 		Bind: st.Bind,
 		Mode: st.Mode, IdField: st.IdField, Committed: committedField(st, a.positions),
 		CommittedID: committedID(st), Schema: glue.CursorSchemaVersion, Description: st.Description,
@@ -1682,14 +1648,17 @@ Two planes: RUN a cursor (the frequent loop) = peek/advance; MANAGE which cursor
   create NAME --queries <dir> [--bind <m>] [--from now|start] [--mode append|diff]
               [--id-field <name>] [--desc <t>] [--param k=v ...]
               [--annotation k=v ...] [--annotations-file <f>] [--labels k=v,...] [--source-ref <sha>]
-  create NAME --queries "builtin:census?keyspace=<ks>[&type-field=f&time-field=f&depth=1|2&exclude=a,b]"
+  create NAME --queries "builtin:census.sql++?keyspace=<ks>[&type-field=f&time-field=f&depth=1|2&exclude=a,b]"
               [--bind <m>] [--from now|start]
                        bind + validate; set the start position. No rows.
                        --mode diff tracks a snapshot keyed by --id-field (default id)
                        and emits {op:insert|update|delete, id, before, after}.
-                       A cursor over builtin:census accumulates a schema census of the
-                       keyspace; peek/advance fold new records + emit drift (field_added
-                       / type_changed). The census + watermark commit atomically.
+                       An INCREMENTAL census = a cursor over builtin:census.sql++: each
+                       peek/advance censuses only the appended window, and the output is
+                       a mergeable monoid (docs=SUM, first_*=MIN, last_*=MAX) so the
+                       consumer folds windows into an accumulated census — or accumulate
+                       with the bundled census_agg() aggregate (its merge() is the fold).
+                       (The native census-mode cursor was retired with builtin:census.)
                        A single-file cursor HONORS the query's front-matter (from / mode
                        / description / annotations / labels / source-ref); precedence is
                        CLI flag > front-matter > default. A front-matter key create does

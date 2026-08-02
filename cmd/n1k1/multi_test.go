@@ -117,11 +117,14 @@ func TestMultiShow(t *testing.T) {
 		t.Fatalf("show census.sql++: %v (stderr %s)", rows, errb.String())
 	}
 
-	// native builtin:census: a note, no sql.
-	rows = arr(`show --queries "builtin:census?keyspace=sessions"`)
-	if c.failed || len(rows) != 1 || rows[0]["sql"] != nil || rows[0]["note"] == nil {
-		t.Fatalf("show census: want a note and no sql, got %v", rows)
+	// the RETIRED native builtin:census: a loud migration error.
+	c.failed = false
+	errb.Reset()
+	c.cmdMulti(`show --queries "builtin:census?keyspace=sessions"`)
+	if !c.failed || !strings.Contains(errb.String(), "retired") {
+		t.Fatalf("show census: want the retirement migration error, got stderr=%q", errb.String())
 	}
+	c.failed = false
 }
 
 // newLogsBundle builds a <root>/default/logs datastore of a few log docs and returns

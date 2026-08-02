@@ -26,91 +26,74 @@ import (
 	"github.com/couchbase/n1k1/glue"
 )
 
-// TestCensusSQLMatchesOracle is the differential guard for the pure-SQL++ census:
-// `builtin:census.sql++` must produce cell-identical rows to the native Go
-// `builtin:census` (the ORACLE) over the same corpus + params. v2.0 emits the
-// mergeable core only, so the comparison runs sql++ with first-id=1 (full fidelity)
-// and strips `coverage` from the oracle (a read-time ratio, deliberately not in the
-// core — divide against census_totals.sql++). Rows are compared as CANONICAL JSON
-// (parsed, re-marshaled with sorted keys), cell for cell. The fixture is
-// deliberately adversarial: multiple record types, nested objects (depth-2), a record
-// missing the type field (-> "" bucket), records missing the timestamp (first/last-seen
-// + first_id must skip them), an array value, an excludable key, and a literal
-// `_meta` field that BOTH engines must exclude (ISSUE-20: engine provenance is never
-// corpus schema).
-func TestCensusSQLMatchesOracle(t *testing.T) {
+// TestCensusSQLViaCLI: the CLI-level plumbing of the shipped census —
+// `.multi run --queries builtin:census.sql++?...` runs, `_meta` never appears
+// (ISSUE-20), and first_id stays opt-in (default off). The CORRECTNESS guard —
+// cell-for-cell agreement of census.sql++ AND the bundled census_agg against the
+// frozen Go oracle — is glue's TestCensusForkableDifferential (the oracle is
+// test-only there; it has no CLI surface anymore). Also: the retired
+// builtin:census must fail with the migration message, not "unknown builtin".
+func TestCensusSQLViaCLI(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "c.jsonl"), []byte(strings.Join([]string{
 		`{"type":"a","timestamp":"2026-01-02","message":{"id":"m1","model":"x"},"n":5}`,
-		`{"type":"a","timestamp":"2026-01-01","message":{"id":"m0"},"n":9,"extra":true}`,
 		`{"type":"a","message":{"id":"m2"},"n":1,"_meta":{"path":"injected","size":9}}`,
 		`{"type":"b","timestamp":"2026-01-05","toolUseResult":{"deep":"skip"},"k":[1,2]}`,
-		`{"note":"no-type-field","timestamp":"2026-01-09","deep":{"lvl2":{"lvl3":"stop"}}}`,
-		`{"type":"c","solo":true}`, // a group with NO timestamps: first/last_seen + first_id must be OMITTED
 	}, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Run one census variant through the cli; return each row as CANONICAL JSON
-	// (parsed + re-marshaled: Go maps marshal with sorted keys), with dropKeys
-	// removed, sorted.
-	runCensus := func(t *testing.T, ref string, dropKeys ...string) []string {
+	runCensus := func(t *testing.T, ref string) (rows []string, stderr string, failed bool) {
 		t.Helper()
 		var out, errb bytes.Buffer
 		c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
 		c.cmdMulti(`run --queries "` + ref + `"`)
-		if c.failed {
-			t.Fatalf("%s failed: %s", ref, errb.String())
+		if txt := strings.TrimSpace(out.String()); txt != "" {
+			rows = strings.Split(txt, "\n")
 		}
-		var rows []string
-		for _, ln := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-			var m map[string]interface{}
-			if err := json.Unmarshal([]byte(ln), &m); err != nil {
-				t.Fatalf("%s: bad row %q: %v", ref, ln, err)
-			}
-			for _, k := range dropKeys {
-				delete(m, k)
-			}
-			b, _ := json.Marshal(m)
-			rows = append(rows, string(b))
-		}
-		sort.Strings(rows)
-		return rows
+		return rows, errb.String(), c.failed
 	}
 
-	// Each params variant exercises a different code path (depth, exclude, defaults).
-	for _, params := range []string{
-		"keyspace=*.jsonl&type-field=type&time-field=timestamp&depth=2&exclude=toolUseResult",
-		"keyspace=*.jsonl&type-field=type&time-field=timestamp&depth=2", // no exclude
-		"keyspace=*.jsonl&type-field=type&time-field=timestamp&depth=1", // depth-1 only
-	} {
-		t.Run(params, func(t *testing.T) {
-			oracle := runCensus(t, "builtin:census?"+params, "coverage")
-			sqlpp := runCensus(t, "builtin:census.sql++?"+params+"&first-id=1")
-			if len(oracle) != len(sqlpp) {
-				t.Fatalf("row count: oracle=%d sql++=%d\noracle:\n%s\nsql++:\n%s",
-					len(oracle), len(sqlpp), strings.Join(oracle, "\n"), strings.Join(sqlpp, "\n"))
-			}
-			for i := range oracle {
-				if oracle[i] != sqlpp[i] {
-					t.Errorf("row %d differs:\n  oracle: %s\n  sql++ : %s", i, oracle[i], sqlpp[i])
-				}
-			}
-			// ISSUE-20: the literal _meta field must appear in NEITHER census.
-			for _, rows := range [][]string{oracle, sqlpp} {
-				for _, r := range rows {
-					if strings.Contains(r, `"_meta`) {
-						t.Errorf("_meta leaked into the census: %s", r)
-					}
-				}
-			}
-			// v2.0 default: first_id (and its per-record composite cost) is OPT-IN.
-			for _, r := range runCensus(t, "builtin:census.sql++?"+params) {
-				if strings.Contains(r, "first_id") {
-					t.Errorf("first_id must be opt-in (default off): %s", r)
-				}
-			}
-		})
+	rows, stderr, failed := runCensus(t, "builtin:census.sql++?keyspace=*.jsonl&depth=2")
+	if failed {
+		t.Fatalf("census.sql++ failed: %s", stderr)
+	}
+	if len(rows) == 0 {
+		t.Fatal("census.sql++ produced no rows")
+	}
+	sort.Strings(rows)
+	for _, r := range rows {
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(r), &m); err != nil {
+			t.Fatalf("bad row %q: %v", r, err)
+		}
+		if strings.Contains(r, `"_meta`) {
+			t.Errorf("_meta leaked into the census: %s", r)
+		}
+		if strings.Contains(r, "first_id") {
+			t.Errorf("first_id must be opt-in (default off): %s", r)
+		}
+	}
+
+	withID, stderr, failed := runCensus(t, "builtin:census.sql++?keyspace=*.jsonl&depth=2&first-id=1")
+	if failed {
+		t.Fatalf("census.sql++ first-id=1 failed: %s", stderr)
+	}
+	anyID := false
+	for _, r := range withID {
+		anyID = anyID || strings.Contains(r, "first_id")
+	}
+	if !anyID {
+		t.Error("first-id=1: expected first_id in some rows")
+	}
+
+	// The retired native census: loud migration, not "unknown builtin".
+	_, stderr, failed = runCensus(t, "builtin:census?keyspace=*.jsonl")
+	if !failed {
+		t.Fatal("builtin:census should fail (retired)")
+	}
+	if !strings.Contains(stderr, "retired") || !strings.Contains(stderr, "census.sql++") {
+		t.Errorf("retired builtin:census error should carry the migration, got: %s", stderr)
 	}
 }
 

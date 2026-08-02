@@ -41,25 +41,31 @@ func TestParseQueriesRef(t *testing.T) {
 	}
 
 	// builtin: latest (no @version) resolves to the concrete newest.
-	r, err := parseQueriesRef("builtin:census")
-	if err != nil || r.kind != refBuiltin || r.name != "census" || r.version != "1" {
-		t.Fatalf("builtin:census => %+v err=%v; want census@1", r, err)
+	r, err := parseQueriesRef("builtin:census.sql++")
+	if err != nil || r.kind != refBuiltin || r.name != "census.sql++" || r.version == "" {
+		t.Fatalf("builtin:census.sql++ => %+v err=%v; want a resolved version", r, err)
 	}
 
-	// builtin: with @version + ?params.
-	r, err = parseQueriesRef("builtin:census@1?keyspace=logs&depth=2")
+	// builtin: with ?params.
+	r, err = parseQueriesRef("builtin:census.sql++?keyspace=logs&depth=2")
 	if err != nil {
 		t.Fatalf("parameterized builtin: %v", err)
 	}
-	if r.version != "1" || r.params["keyspace"] != "logs" || r.params["depth"] != "2" {
-		t.Fatalf("params/version wrong: %+v", r)
+	if r.params["keyspace"] != "logs" || r.params["depth"] != "2" {
+		t.Fatalf("params wrong: %+v", r)
+	}
+
+	// The RETIRED native census: a loud migration error, not "unknown builtin".
+	if _, err := parseQueriesRef("builtin:census"); err == nil ||
+		!strings.Contains(err.Error(), "retired") || !strings.Contains(err.Error(), "census.sql++") {
+		t.Errorf("builtin:census should error with the migration, got %v", err)
 	}
 
 	// Loud errors: unknown builtin, unsupported version, empty name.
 	if _, err := parseQueriesRef("builtin:nope"); err == nil {
 		t.Error("unknown builtin should error")
 	}
-	if _, err := parseQueriesRef("builtin:census@9"); err == nil {
+	if _, err := parseQueriesRef("builtin:census.sql++@v9"); err == nil {
 		t.Error("unsupported version should error")
 	}
 	if _, err := parseQueriesRef("builtin:"); err == nil {
@@ -67,36 +73,25 @@ func TestParseQueriesRef(t *testing.T) {
 	}
 }
 
-// TestRunBuiltinCensus: `.multi run --queries builtin:census?keyspace=...` routes to
-// the census engine (census dissolved into the queries algebra) and produces the same
-// NDJSON census rows as the census verb. Also checks the unknown-builtin error.
-func TestRunBuiltinCensus(t *testing.T) {
+// TestRunBuiltinCensusRetired: `.multi run --queries builtin:census?...` fails loud
+// with the migration (the native census is the test-only oracle now), and an unknown
+// builtin still errors naming the known ones.
+func TestRunBuiltinCensusRetired(t *testing.T) {
 	root := t.TempDir()
 	ks := filepath.Join(root, "default", "sessions")
 	if err := os.MkdirAll(ks, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(ks, "s.jsonl"),
-		[]byte(`{"type":"a","model":"opus"}`+"\n"+`{"type":"b"}`+"\n"), 0o644); err != nil {
+		[]byte(`{"type":"a","model":"opus"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
 	c := &cli{prog: "n1k1", mode: "jsonlines", out: &out, stderr: &errb, dir: root}
 	c.cmdMulti("run --queries builtin:census?keyspace=sessions")
-	if c.failed {
-		t.Fatalf("run builtin:census failed: %s", errb.String())
-	}
-	if !strings.Contains(out.String(), `"path":"model"`) || !strings.Contains(out.String(), `"path":"type"`) {
-		t.Fatalf("census rows missing; out=%s", out.String())
-	}
-
-	// A keyspace param is required.
-	out.Reset()
-	errb.Reset()
-	c.failed = false
-	c.cmdMulti("run --queries builtin:census")
-	if !c.failed || !strings.Contains(errb.String(), "keyspace") {
-		t.Fatalf("builtin:census without keyspace should error; failed=%v stderr=%q", c.failed, errb.String())
+	if !c.failed || !strings.Contains(errb.String(), "retired") ||
+		!strings.Contains(errb.String(), "census.sql++") {
+		t.Fatalf("builtin:census should fail with the migration; stderr=%q", errb.String())
 	}
 
 	// An unknown builtin errors, naming the known ones.
