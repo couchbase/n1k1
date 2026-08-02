@@ -2180,13 +2180,31 @@ func (c *Conv) VisitMerge(o *plan.Merge) (interface{}, error)           { return
 // VisitAlias wraps each child row under the alias -- e.g. FROM (SELECT ...) AS x
 // makes the subquery's rows become {"x": <row>}, so downstream `x.field`
 // resolves. The planner emits Alias directly above a FROM-clause subquery's ops.
+//
+// When the child row is all plain .["name"] field labels (the usual derived-table
+// projection), the wrap object is assembled natively via engine.ExprSelf -- the
+// same spec the SELECT * star uses -- instead of the boxed exprTree Self (one
+// value.Value box + WriteJSON per row). Besides the garbage, the boxed marshal
+// emits keys SORTED (value sortedNames), so a downstream x.<field> path-get had
+// to scan past every alphabetically-earlier sibling -- including big computed
+// arrays -- on every access; ExprSelf emits keys in label (projection) order,
+// so small scalars projected first stay cheap to reach. Other child shapes
+// (SELECT RAW's ".", a ".*" star, multi-element paths) keep the boxed fallback.
 func (c *Conv) VisitAlias(o *plan.Alias) (interface{}, error) {
+	var param []interface{}
+	if SelfProjectNative && c.TopOp != nil {
+		if p, ok := selfNativeSpec(c.TopOp.Labels, nil); ok {
+			param = p
+		}
+	}
+	if param == nil {
+		param = []interface{}{"exprTree", expression.NewSelf()}
+	}
+
 	return c.TopPush(o, &base.Op{
 		Kind:   "project",
 		Labels: base.Labels{"." + LabelSuffix(o.Alias())},
-		Params: []interface{}{
-			[]interface{}{"exprTree", expression.NewSelf()},
-		},
+		Params: []interface{}{param},
 	})
 }
 

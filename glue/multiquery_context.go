@@ -671,6 +671,13 @@ func isStarPassthrough(op *base.Op) bool {
 	if len(op.Labels) == 1 && op.Labels[0] == ".*" {
 		return true
 	}
+	if p, ok := op.Params[0].([]interface{}); ok && len(p) > 0 {
+		if kind, ok := p[0].(string); ok && kind == "self" {
+			// The native alias wrap (VisitAlias -> selfNativeSpec): by
+			// construction its keys ARE the child's field labels, verbatim.
+			return true
+		}
+	}
 	e, ok := projTermExpr(op.Params[0])
 	if !ok {
 		return false
