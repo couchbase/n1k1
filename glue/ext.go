@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/couchbase/n1k1/base"
@@ -155,6 +156,7 @@ func RegisterExtensionFile(path string) (string, error) {
 			return "", err
 		}
 		extLoaded[name] = ExtensionInfo{Name: name, Kind: "javascript-stream", Source: path}
+		noteBuiltinShadow(name, path)
 		return name, nil
 	}
 
@@ -170,6 +172,7 @@ func RegisterExtensionFile(path string) (string, error) {
 			return "", err
 		}
 		extLoaded[name] = ExtensionInfo{Name: name, Kind: "javascript-aggregate", Source: path}
+		noteBuiltinShadow(name, path)
 		return name, nil
 	}
 
@@ -201,6 +204,7 @@ func RegisterExtensionFile(path string) (string, error) {
 		return "", err
 	}
 	extLoaded[name] = ExtensionInfo{Name: name, Kind: loader.kind, Source: path}
+	noteBuiltinShadow(name, path)
 	return name, nil
 }
 
@@ -314,4 +318,121 @@ func UnloadExtension(name string) error {
 	forgetExtExamples(info.Kind, name)
 	delete(extLoaded, name)
 	return nil
+}
+
+// --- built-in shadowing visibility (ISSUE-23) ---
+//
+// Bundled (embedded, auto-registered) extensions and user -ext loads share one
+// name registry, and shadowing a bundled name IS the documented fork workflow
+// (copy builtin_census_agg.js out, edit, -ext it). The hazard is silence: same
+// name, same declared version, different answers, and the bundled entry used to
+// vanish from `.extensions list` entirely. So the override stays allowed and
+// becomes VISIBLE: registration records which names the built-ins provide,
+// notes every later non-built-in registration of such a name, and the CLI
+// surfaces both (a load-time stderr line + list annotations on both rows).
+
+// extBuiltinProvider records, per function name, the built-in module bundle
+// that provides it (populated only for "(built-in)" module registrations).
+var extBuiltinProvider = map[string]string{}
+
+// extShadowNotices accumulates human-readable shadow events since the last
+// drain (ExtShadowNotices); the CLI prints them to stderr after each load.
+var extShadowNotices []string
+
+// noteBuiltinShadow records that a non-built-in registration of name shadows a
+// bundled built-in, with a version-aware wording: a fork declaring an OLDER
+// version than the bundle is probably stale (a fix shipped that the fork
+// predates); a newer one is probably deliberate.
+func noteBuiltinShadow(name, newSource string) {
+	bundle, ok := extBuiltinProvider[strings.ToLower(name)]
+	if !ok || newSource == "(built-in)" {
+		return
+	}
+	bunVer := ""
+	if src, ok := ModuleSource(bundle); ok {
+		bunVer = JSFrontMatter(src)["version"]
+	}
+	newVer := ""
+	if b, err := os.ReadFile(newSource); err == nil {
+		newVer = JSFrontMatter(string(b))["version"]
+	}
+	msg := fmt.Sprintf("extension %q (%s) shadows the bundled built-in %s", name, newSource, bundle)
+	if bunVer != "" {
+		msg += "@" + bunVer
+	}
+	switch cmp := versionCompare(newVer, bunVer); {
+	case newVer == "" || bunVer == "":
+		// nothing comparable; leave the bare notice.
+	case cmp < 0:
+		msg += fmt.Sprintf(" -- yours declares %s, OLDER than the bundled %s: likely a stale fork missing bundled fixes", newVer, bunVer)
+	case cmp > 0:
+		msg += fmt.Sprintf(" (yours declares %s, newer -- assuming a deliberate fork)", newVer)
+	default:
+		msg += fmt.Sprintf(" -- SAME declared version %s but possibly different behavior; bump your fork's // version: when you change it", newVer)
+	}
+	extShadowNotices = append(extShadowNotices, msg)
+}
+
+// ExtShadowNotices drains the shadow events recorded since the last call.
+func ExtShadowNotices() []string {
+	s := extShadowNotices
+	extShadowNotices = nil
+	return s
+}
+
+// ShadowedBuiltins returns bundle -> ExtensionInfo of the CURRENT (shadowing)
+// provider, for every built-in-provided name whose active registration is not
+// the built-in anymore -- so `.extensions list` can keep the shadowed bundle
+// visible and annotate the shadowing row.
+func ShadowedBuiltins() map[string]ExtensionInfo {
+	out := map[string]ExtensionInfo{}
+	for name, bundle := range extBuiltinProvider {
+		if info, ok := extLoaded[name]; ok && info.Source != "(built-in)" {
+			out[bundle] = info
+		}
+	}
+	return out
+}
+
+// versionCompare compares two "v1.2.3"-style artifact versions numerically per
+// dot-segment ("v" prefix optional). 0 when equal or either is unparseable.
+func versionCompare(a, b string) int {
+	pa, oka := versionParse(a)
+	pb, okb := versionParse(b)
+	if !oka || !okb {
+		return 0
+	}
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		va, vb := 0, 0
+		if i < len(pa) {
+			va = pa[i]
+		}
+		if i < len(pb) {
+			vb = pb[i]
+		}
+		if va != vb {
+			if va < vb {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
+}
+
+func versionParse(v string) ([]int, bool) {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if v == "" {
+		return nil, false
+	}
+	parts := strings.Split(v, ".")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, true
 }

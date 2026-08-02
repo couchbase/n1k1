@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -60,7 +61,7 @@ func splitPaths(s string) []string {
 // (glue.RegisterExtensionDir); a file is registered directly
 // (glue.RegisterExtensionFile), its kind auto-detected from the extension.
 // Returns the registered function names (in the order encountered).
-func loadExtensions(paths []string) ([]string, error) {
+func loadExtensions(paths []string, warn io.Writer) ([]string, error) {
 	var names []string
 	for _, p := range paths {
 		fi, err := os.Stat(p)
@@ -80,6 +81,15 @@ func loadExtensions(paths []string) ([]string, error) {
 			return names, err
 		}
 		names = append(names, name)
+	}
+	// A load that overrides a bundled built-in name is ALLOWED (shadowing is the
+	// documented fork workflow) but must be VISIBLE (ISSUE-23): one stderr line per
+	// override, version-aware, at the load site -- so a user who never runs
+	// `.extensions list` still sees it.
+	if warn != nil {
+		for _, msg := range glue.ExtShadowNotices() {
+			fmt.Fprintf(warn, "⚠ %s\n", msg)
+		}
 	}
 	return names, nil
 }
@@ -127,6 +137,11 @@ type extEntry struct {
 	// n1k1's) is the blessed key; every other key (labels, annotations, whatever a
 	// team invents) is captured too so it stays filterable/analyzable, never dropped.
 	meta map[string]string
+
+	// note flags a shadow relation (ISSUE-23): on a user extension, which bundled
+	// built-in it overrides; on a bundled built-in, what shadows it. The listing must
+	// answer both "what would run" AND "what else was available".
+	note string
 }
 
 // version is the artifact's declared `// version:` front-matter, "" if undeclared.
@@ -157,6 +172,11 @@ func (c *cli) gatherExtensions() []extEntry {
 	}
 	mods := map[string]*modAgg{}
 	var modOrder []string
+	shadowed := glue.ShadowedBuiltins() // bundle -> the extension shadowing it (ISSUE-23)
+	shadowsOf := map[string]string{}    // shadowing fn name -> shadowed bundle
+	for bundle, info := range shadowed {
+		shadowsOf[info.Name] = bundle
+	}
 	for _, e := range glue.ListExtensions() {
 		if b := glue.JSModuleOf(e.Name); b != "" {
 			m := mods[b]
@@ -169,8 +189,35 @@ func (c *cli) gatherExtensions() []extEntry {
 			m.fns = append(m.fns, e.Name)
 			continue
 		}
-		out = append(out, extEntry{name: e.Name, kind: e.Kind, origin: e.Source,
-			code: readCode(e.Source), nExamples: len(glue.ExtExamplesFor(e.Kind, e.Name))})
+		ent := extEntry{name: e.Name, kind: e.Kind, origin: e.Source,
+			code: readCode(e.Source), nExamples: len(glue.ExtExamplesFor(e.Kind, e.Name))}
+		if e.Kind == "javascript-aggregate" || e.Kind == "javascript-stream" {
+			ent.fns = []string{e.Name} // same fns: line as a module row (packaging != capability)
+		}
+		if b := shadowsOf[e.Name]; b != "" {
+			ver := ""
+			if src, ok := glue.ModuleSource(b); ok {
+				if v := glue.JSFrontMatter(src)["version"]; v != "" {
+					ver = "@" + v
+				}
+			}
+			ent.note = "shadows built-in " + b + ver
+		}
+		out = append(out, ent)
+	}
+	// Keep every SHADOWED built-in bundle visible (it vanished from the module walk
+	// above because its functions' registrations now point at the user extension).
+	for bundle, info := range shadowed {
+		if mods[bundle] != nil {
+			continue
+		}
+		code := ""
+		if src, ok := glue.ModuleSource(bundle); ok {
+			code = src
+		}
+		out = append(out, extEntry{name: bundle, kind: "javascript-module",
+			origin: "(built-in)", code: code, fns: glue.JSModuleFunctions(bundle),
+			note: "shadowed by " + info.Source})
 	}
 	for _, b := range modOrder {
 		m := mods[b]
@@ -226,8 +273,12 @@ func (c *cli) extList() {
 		if ver == "" {
 			ver = "-" // undeclared artifact version (add `// version: v1.0` front-matter)
 		}
-		fmt.Fprintf(c.stderr, "  %-22s %-22s %-6s %s%s\n", e.name, e.kind, ver, e.origin, ex)
-		if len(e.fns) > 0 { // a module: list the functions it defines
+		note := ""
+		if e.note != "" {
+			note = "  (" + e.note + ")"
+		}
+		fmt.Fprintf(c.stderr, "  %-22s %-22s %-6s %s%s%s\n", e.name, e.kind, ver, e.origin, ex, note)
+		if len(e.fns) > 0 { // the callable function names (module or single-fn alike)
 			fmt.Fprintln(c.stderr, c.style.Dim("      fns: "+strings.Join(e.fns, ", ")))
 		}
 	}
@@ -413,7 +464,7 @@ func (c *cli) extLoad(args []string) {
 		fmt.Fprintln(c.stderr, "usage: .extensions load <dir-or-file>[,<dir-or-file>...]")
 		return
 	}
-	names, err := loadExtensions(paths)
+	names, err := loadExtensions(paths, c.stderr)
 	if len(names) > 0 {
 		fmt.Fprintf(c.stderr, "loaded: %s\n", strings.Join(names, ", "))
 	}

@@ -660,15 +660,16 @@ func QueriesID(name string, dets []MultiQueryEntry) string {
 // a new scheme here, with the old normalizer kept below, so an n1k1 upgrade can
 // never manufacture drift: comparisons accept a stored id that matches under ANY
 // known scheme (QueriesIDMatches), and advance re-stamps to the current scheme.
-const QueriesHashScheme = 2
+const QueriesHashScheme = 3
 
 // queriesHashNormalizers maps each known scheme to its statement normalizer.
 // NEVER edit an entry in place -- a normalization improvement is a NEW scheme
 // (append here, bump QueriesHashScheme), or every committed cursor sidecar and
 // provenance ledger re-baselines and `advance` refuses with a false query-drift.
 var queriesHashNormalizers = map[int]func(string) string{
-	1: strings.TrimSpace, // pre-a64dcd7b: ends-only trim (interior blank lines counted)
-	2: normalizeQuerySQL, // ISSUE-05 #4: drop blank lines + trailing per-line whitespace
+	1: strings.TrimSpace,         // pre-a64dcd7b: ends-only trim (interior blank lines counted)
+	2: normalizeQuerySQL,         // ISSUE-05 #4: drop blank lines + trailing per-line whitespace
+	3: normalizeQuerySQLSemantic, // ISSUE-24: strip comments + collapse whitespace (hash the statement, not the file)
 }
 
 func QueriesIDUnderScheme(name string, dets []MultiQueryEntry, scheme int) string {
@@ -722,6 +723,88 @@ func normalizeQuerySQL(s string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// normalizeQuerySQLSemantic canonicalizes a statement for identity hashing
+// (QueriesID scheme 3, ISSUE-24): `--` line comments and `/* */` block comments are
+// STRIPPED and every whitespace run collapses to one space -- so rewording a prose
+// comment above the SELECT, or reformatting `FROM t  x` to `FROM t x`, cannot change
+// spec_hash and false-alarm a cursor into query-drift. The drift signal must mean
+// "the cursor's numbers were accumulated under different SEMANTICS"; an alarm that
+// fires on prose is an alarm people learn to clear without reading (their words),
+// and `--allow-drift` practiced on comment edits is `--allow-drift` reached for on
+// the day the predicate really changed. The scan is quote-aware: `--` or `/*` inside
+// a "..."/'...' string or a `...` identifier is CONTENT, not a comment (\-escapes
+// honored in strings; doubled quotes honored as the N1QL escape), so a literal
+// containing "--" still counts toward the hash. Frozen: a change here is a NEW
+// scheme (see queriesHashNormalizers).
+func normalizeQuerySQLSemantic(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i, n := 0, len(s)
+	space := false // a pending collapsed space
+	emit := func(c byte) {
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteByte(c)
+	}
+	for i < n {
+		c := s[i]
+		if c == '-' && i+1 < n && s[i+1] == '-' { // line comment -> ends at newline
+			for i < n && s[i] != '\n' {
+				i++
+			}
+			space = true
+			continue
+		}
+		if c == '/' && i+1 < n && s[i+1] == '*' { // block comment (non-nesting)
+			i += 2
+			for i+1 < n && !(s[i] == '*' && s[i+1] == '/') {
+				i++
+			}
+			if i+1 < n {
+				i += 2 // past the closing */
+			} else {
+				i = n // unterminated: swallow to EOF
+			}
+			space = true
+			continue
+		}
+		if c == '"' || c == '\'' || c == '`' { // string / quoted identifier: verbatim
+			q := c
+			emit(c)
+			i++
+			for i < n {
+				ch := s[i]
+				emit(ch)
+				i++
+				if ch == '\\' && q != '`' && i < n { // \-escape (strings only)
+					emit(s[i])
+					i++
+					continue
+				}
+				if ch == q {
+					if i < n && s[i] == q { // doubled-quote escape ("" '' ``)
+						emit(s[i])
+						i++
+						continue
+					}
+					break
+				}
+			}
+			continue
+		}
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			space = true
+			i++
+			continue
+		}
+		emit(c)
+		i++
+	}
+	return b.String()
 }
 
 // -------------------------------------------------------------- diff / snapshot

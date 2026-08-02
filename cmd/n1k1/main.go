@@ -276,7 +276,7 @@ func main() {
 	// plugin-matched file is auto-exposed as a keyspace (glue/flat.go), so the plugins
 	// must be registered first.
 	if len(extPaths) > 0 {
-		if _, lerr := loadExtensions(extPaths); lerr != nil {
+		if _, lerr := loadExtensions(extPaths, os.Stderr); lerr != nil {
 			fmt.Fprintf(os.Stderr, "%s: -ext: %v\n", prog, lerr)
 			os.Exit(1)
 		}

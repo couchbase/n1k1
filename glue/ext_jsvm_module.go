@@ -313,6 +313,11 @@ func registerJSModule(bundle, source, sourcePath string) (names []string, err er
 		extOurs[r.name] = true
 		jsFuncProgramKey[r.name] = key
 		extLoaded[r.name] = ExtensionInfo{Name: r.name, Kind: r.extKind, Source: sourcePath}
+		if sourcePath == "(built-in)" {
+			extBuiltinProvider[r.name] = bundle // this name's bundled home (ISSUE-23)
+		} else {
+			noteBuiltinShadow(r.name, sourcePath)
+		}
 		names = append(names, r.name)
 	}
 	jsModuleFuncs[bundle] = names

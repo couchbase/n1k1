@@ -296,6 +296,62 @@ func TestExtJSAggregateResidentGroupBy(t *testing.T) {
 	}
 }
 
+// TestExtBuiltinShadowVisibility (ISSUE-23): loading an extension whose name a
+// bundled built-in already provides is ALLOWED (shadowing is the documented fork
+// workflow) but VISIBLE -- a version-aware load-time notice, and `.extensions list`
+// annotating BOTH rows (the fork "shadows built-in ...", the built-in kept in the
+// listing as "shadowed by ..." instead of vanishing).
+func TestExtBuiltinShadowVisibility(t *testing.T) {
+	// The embedded builtins register at CLI startup, not in this test binary --
+	// seed the bundled census_agg module first (the (built-in) provider record).
+	bsrc, err := os.ReadFile("../extensions/functions/builtin_census_agg.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := glue.RegisterBuiltinModule("builtin_census_agg", string(bsrc)); err != nil {
+		t.Fatalf("register bundled census_agg: %v", err)
+	}
+	glue.ExtShadowNotices() // drain anything earlier tests left
+
+	dir := t.TempDir()
+	fork := filepath.Join(dir, "census_agg.agg.js")
+	if err := os.WriteFile(fork, []byte(`// version: v0.9
+function census_agg_init()       { return {}; }
+function census_agg_update(s, v) { return s; }
+function census_agg_final(s)     { return 42; }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := glue.RegisterExtensionFile(fork); err != nil {
+		t.Fatalf("register fork: %v", err)
+	}
+	notices := glue.ExtShadowNotices()
+	joined := strings.Join(notices, "\n")
+	if !strings.Contains(joined, "shadows the bundled built-in builtin_census_agg") ||
+		!strings.Contains(joined, "OLDER than the bundled") {
+		t.Fatalf("want a version-aware shadow notice, got %q", joined)
+	}
+	if again := glue.ExtShadowNotices(); len(again) != 0 {
+		t.Fatalf("notices should drain, got %v", again)
+	}
+
+	sb := glue.ShadowedBuiltins()
+	info, ok := sb["builtin_census_agg"]
+	if !ok || info.Name != "census_agg" || info.Source != fork {
+		t.Fatalf("ShadowedBuiltins = %v, want builtin_census_agg shadowed by the fork", sb)
+	}
+
+	// Restore the bundled census_agg for the rest of the suite (re-register the
+	// embedded module; last registration wins).
+	if err := glue.RegisterBuiltinModule("builtin_census_agg", string(bsrc)); err != nil {
+		t.Fatalf("restore bundled census_agg: %v", err)
+	}
+	if len(glue.ShadowedBuiltins()) != 0 {
+		t.Fatal("restoring the built-in should clear the shadow")
+	}
+	glue.ExtShadowNotices() // drain any restore-side notices
+}
+
 // TestExtAggregatesSparklineHistogram exercises the native, zero-garbage
 // extension aggregates over a deterministic FROM-array source (so accumulation
 // order is fixed).

@@ -370,6 +370,67 @@ func TestQueriesIDSchemes(t *testing.T) {
 	}
 }
 
+// TestQueriesIDSchemeCommentInvariance is the ISSUE-24 guard: under scheme 3,
+// spec_hash hashes the STATEMENT, not the file. Rewording a prose comment (above
+// the SQL or between clauses), switching comment styles, or reformatting
+// whitespace must NOT move the id -- documenting a query cannot false-alarm a
+// cursor into query-drift -- while a real semantic edit still must. And an id
+// stamped by a scheme-2 binary (where comments DID count) still matches via
+// QueriesIDMatches, so upgrading n1k1 cannot manufacture drift either.
+func TestQueriesIDSchemeCommentInvariance(t *testing.T) {
+	base := []MultiQueryEntry{{Label: "CC-CENSUS",
+		Stmt: "-- counts cells per type\n-- built for the native census\nSELECT t.a, COUNT(*) c\n-- fold note\nFROM sessions t\nGROUP BY t.a"}}
+	id := QueriesID("q", base)
+
+	same := func(desc, stmt string) {
+		t.Helper()
+		d := []MultiQueryEntry{{Label: "CC-CENSUS", Stmt: stmt}}
+		if QueriesID("q", d) != id {
+			t.Errorf("%s: id moved (want comment/whitespace invariance)", desc)
+		}
+	}
+	same("comment reworded above the SQL",
+		"-- counts cells per type\n-- built for the then-native census\nSELECT t.a, COUNT(*) c\n-- fold note\nFROM sessions t\nGROUP BY t.a")
+	same("comment between clauses reworded",
+		"-- counts cells per type\n-- built for the native census\nSELECT t.a, COUNT(*) c\n-- reworded fold note\nFROM sessions t\nGROUP BY t.a")
+	same("comments dropped entirely + block comment added",
+		"/* header */ SELECT t.a, COUNT(*) c FROM sessions t GROUP BY t.a")
+	same("whitespace reformat",
+		"SELECT   t.a,\n\tCOUNT(*)   c\nFROM sessions\t\tt\nGROUP BY t.a")
+
+	// A real semantic edit is still drift.
+	edited := []MultiQueryEntry{{Label: "CC-CENSUS",
+		Stmt: "SELECT t.a, COUNT(*) c FROM sessions t WHERE t.a > 1 GROUP BY t.a"}}
+	if QueriesID("q", edited) == id {
+		t.Error("semantic edit must move the id")
+	}
+
+	// `--` and `/*` INSIDE strings / backtick identifiers are content, not comments;
+	// whitespace inside strings is content too.
+	lit := []MultiQueryEntry{{Label: "L", Stmt: `SELECT "a--b", 'c /* d', ` + "`e--f`" + ` FROM t`}}
+	litSpaced := []MultiQueryEntry{{Label: "L", Stmt: `SELECT "a--b",   'c /* d',   ` + "`e--f`" + `   FROM t`}}
+	litEdited := []MultiQueryEntry{{Label: "L", Stmt: `SELECT "a--X", 'c /* d', ` + "`e--f`" + ` FROM t`}}
+	litSpacedInside := []MultiQueryEntry{{Label: "L", Stmt: `SELECT "a --b", 'c /* d', ` + "`e--f`" + ` FROM t`}}
+	if QueriesID("l", lit) != QueriesID("l", litSpaced) {
+		t.Error("whitespace outside strings must not move the id")
+	}
+	if QueriesID("l", lit) == QueriesID("l", litEdited) {
+		t.Error("editing a string containing -- must move the id (not stripped as a comment)")
+	}
+	if QueriesID("l", lit) == QueriesID("l", litSpacedInside) {
+		t.Error("whitespace INSIDE a string is content and must move the id")
+	}
+
+	// Cross-scheme: an id stamped under scheme 2 (comments counted) still matches.
+	old := QueriesIDUnderScheme("q", base, 2)
+	if old == id {
+		t.Fatal("scheme 2 and 3 should differ on a commented stmt")
+	}
+	if s := QueriesIDMatches(old, "q", base); s == 0 || s == QueriesHashScheme {
+		t.Fatalf("scheme-2 id: matched=%d, want an OLD scheme (1 or 2 -- they agree on this stmt)", s)
+	}
+}
+
 // TestFixturePrettyEquivalence is the ISSUE-05 regression guard: a pretty-printed
 // (multi-line) fixture and its single-line equivalent must produce BYTE-IDENTICAL
 // labelResults through RunFixture (the pretty row used to yield zero rows because it
