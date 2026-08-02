@@ -44,7 +44,8 @@ tiny fork setters — `expression.RegisterFunction` (patch-05) and `algebra.Regi
   O(state) per row, so a LIST-accumulating aggregate is O(n²) over the group — measured
   ~0.9ms and ~17K allocs for one Update against 1000 held rows
   (`BenchmarkJSAggListState`). Collecting thousands of rows is fine; for hot inner loops
-  use a native `base.Agg` (sparkline/histogram) instead.
+  use a native `base.Agg` (sparkline/histogram) instead. **The designed fix is
+  JSVM-resident state — see "JS aggregate state v2" below (design pass done, not built).**
 - [ ] Full cbq UDF bridge unwired — `VisitExecuteFunction` returns `NA()`; no `CREATE
   FUNCTION` DDL / metadata catalog.
 - [ ] More native `base.Agg` aggregates; streaming CTEs (single-use pipe + multi-use
@@ -133,6 +134,88 @@ Both reuse the same shim, so `NAME(expr)` works in GROUP BY. Compiler mode: they
 through `base.AggCatalog[name]` (the runtime lookup group-op codegen already emits), so they
 compile by construction — but a compiled JS UDF needs its `Register*` to have run in the
 executing process (the baked `exprStr` must re-resolve the name).
+
+### JS aggregate state v2 — JSVM-resident state (design pass done, NOT built)
+
+The v1 trade-off above (state as JSON bytes through the group map, O(state) per Update) is
+the wrong default for the advanced tier: an aggregate holding a `Map` of thousands of cells
+pays a full state decode+encode **per input row**. v2's answer: **state never leaves the
+JSVM.** Whatever `init()`/`update()` return is retained as a live `goja.Value` on the
+actor's pinned runtime; the `base.Agg` state in the (spillable) group map becomes an
+**8-byte handle** into a side table on the actor's context. Per-row cost drops to one
+boundary call with the operand — state is O(1) at the border regardless of its size.
+Fixed-width state is also the friendliest shape for the group map (never grows in place).
+
+**Why pinning is the architecture (and already exists).** goja values CANNOT travel between
+runtimes — a `goja.Value` references its runtime's internals (prototypes, interning), goja
+is not goroutine-safe, and there is no serialization of live objects. So resident state must
+pin to one runtime for the aggregation's lifetime — and n1k1's execution model already
+provides exactly that: the runtime is **per query, per actor** (`GlueContext.jsRT` +
+`ChainExtend`'s per-actor clone, single-threaded, no locks). The side table lives and dies
+with the runtime (query end frees everything; `final` frees its handle eagerly), so the
+leak window is bounded by the query. Any state that must CROSS a runtime (another actor, a
+spill file, a client) crosses as bytes — that single fact drives the whole boundary design
+below.
+
+**The contract.** Required callbacks (v1-compatible — existing `*.agg.js` run unchanged,
+just faster; mutate-in-place and return-new-state styles both work, the returned value
+re-targets the handle):
+
+- `init() → state` — any JS value; stays in the JSVM.
+- `update(state, v) → state` — per input row; `state` is the LIVE object (no decode).
+- `final(state) → result` — ⚠ **MUST be pure and repeatable.** This is the one new rule,
+  and it buys the inflight story below: `final` may be called many times mid-flight (as the
+  snapshot) before the terminal call. Result must be JSON-able (it crosses to the client).
+
+Optional callbacks, all boundary-only (never per-row):
+
+- `snapshot(state) → view` — a CHEAPER progressive view than `final` (counts-only, top-K
+  cells) for the inflight channel; defaults to `final`.
+- `serialize(state) → string` / `deserialize(string) → state` — boundary transport;
+  default `JSON.stringify`/`JSON.parse`. ⚠ **Silent-loss trap:** `JSON.stringify(new Map())`
+  is `"{}"` — precisely the developers this tier targets (who reach for `Map`/`Set`/
+  `TypedArray`/`BigInt`) get silently-empty state at a boundary unless they provide the
+  pair. Not cheaply detectable; documented contract, and `.extensions test` golden examples
+  should include a serialize round-trip case.
+- `merge(state, other) → state` — fold a `deserialize`d partial in. Absent ⇒ the aggregate
+  is single-actor-only (today's group op is single-actor anyway, so nothing is lost yet).
+
+**The three boundaries where bytes (not handles) travel:**
+
+1. **Spill.** v1 policy: the 8-byte handle spills; the JS object stays resident — so the
+   group map spilling **no longer relieves memory** for JS-resident aggregates (documented,
+   acceptable for the advanced tier). Real evict-to-disk (serialize on evict, deserialize +
+   re-handle on reload) is the later step `serialize` reserves the door for.
+2. **Cross-actor merge** — parallel UNION branches now, group-partial/group-merge later
+   (the partial-state serialization contract is the SAME one that feature needs: version it
+   per aggregate — `state_version` in front-matter — not per query).
+3. **Inflight snapshots** — rides the EXISTING live running-aggregates machinery
+   (DESIGN-stats.md: `RunningAggsRefresh` at YieldStats checkpoints, ~10 Hz throttle,
+   bounded sample of the in-flight group map). A JS aggregate is `runningCapable` by
+   construction since `final` is pure; `snapshot` substitutes when the full result is too
+   big for 10 Hz. This is the "work-in-progress results" feature: an AI client watches the
+   aggregate-so-far and can cancel / course-correct (`Session.Interrupt`) without waiting
+   for the full pass.
+
+**The whole-record pattern (collapsing UNNEST + GROUP BY in the aggregate).** An advanced
+JS aggregate does not need engine fusion to avoid the fan-out: `SELECT js_census(r) FROM
+events r` — no UNNEST, no GROUP BY — walks each record IN JS and keeps its own
+`Map<(type,path,valtype), cell>`, exactly the native `builtin:census`'s one-pass in-flight
+shape. Boundary crossings drop from once-per-element to once-per-record (17.5× on the
+census corpus). Honest perf expectation: the ~1 µs/row boundary is noise; goja's
+`JSON.parse` of each record plus the interpreted walk dominate (goja ≈ 10–50× native Go for
+compute), so this lands near the SQL++ census lane, NOT near native Go. The sell is
+**power per unit of forkability** — histogram buckets, example-value sampling, custom type
+lattices, top-K per cell — in a git-cloneable `.js` file with no Go toolchain, at
+acceptable speed. Same philosophy rung as `extractStream`'s raw `emitBuffer`: opt-in
+complexity buying control.
+
+**Unchanged / open.** Compiled lane unchanged (dispatch stays `base.AggCatalog[name]`;
+register-LAST rule applies). Error channel still missing (v1 TODO stands). Operand shape:
+default = parsed value (host does the parse — `rt.ToValue` lazy-wrap, per the v1 lesson
+that runtime-side `JSON.parse` was 2.5× slower); a raw-string opt-in for byte-level authors
+is plausible later. Window/Slide lane: JS aggregates stay excluded from window frames in
+v2 (no Slide protocol). DISTINCT: engine dedups upstream on value bytes — composes free.
 
 ## Table-valued / streaming sources in FROM
 
