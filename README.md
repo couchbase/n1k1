@@ -1,31 +1,34 @@
 # n1k1 — SQL++ for local files and more
 
-Query the files & data you already have — JSON, JSONL, CSV, YAML,
-TOML, Parquet, Iceberg, gzip, even PDFs and Office documents — with
-SQL++, from a single self-contained binary. No server to run, no
-import step, no schema to declare.
+Query your local files & data — JSON, JSONL, CSV, YAML, TOML, Parquet,
+Iceberg, gzip, even PDFs and Office documents — with SQL++, from a
+single self-contained binary. No server to run, no import step, no
+schemas to declare.
 
-Think `sqlite3` / `duckdb` with a query language built for **nested JSON** and a
-scan layer that treats a directory tree of mixed file formats as queryable tables.
+It's like `sqlite3` / `duckdb` with a query language (SQL++, also
+known as N1QL) built for **nested JSON** and a scan layer that treats
+a directory tree of mixed file formats as queryable tables
+(keyspaces).
 
 [![CI](https://github.com/couchbase/n1k1/actions/workflows/ci.yml/badge.svg)](https://github.com/couchbase/n1k1/actions/workflows/ci.yml)
 
 ## Try it
 
-**In your browser, with nothing installed:** the engine also compiles to WebAssembly, so
-**[the SQL++ playground](https://couchbase.github.io/n1k1/play/)** runs
-client-side — load a sample dataset or drop in your own files, and query them.
+**In your browser:** [the SQL++
+playground](https://couchbase.github.io/n1k1/play/) runs client-side —
+load a sample dataset or drop in your own files, and query
+them. Powered by WASM.
 
 Locally:
 
 ```sh
-make cli     # builds ./n1k1 (pure Go, CGO-free; make install-cli to install)
+make cli # builds ./n1k1 (pure Go, CGO-free; make install-cli to install)
 ```
 
 Point it at a directory and query the files inside it:
 
 ```
-$ ./n1k1 -c "SELECT id, customer, total FROM orders WHERE total > 200 ORDER BY total DESC" examples/shop
+$ ./n1k1 -mode box -c "SELECT id, customer, total FROM orders WHERE total > 200 ORDER BY total DESC" examples/shop
 ┌──────┬──────────┬────────┐
 │   id │ customer │  total │
 ├──────┼──────────┼────────┤
@@ -38,7 +41,7 @@ $ ./n1k1 -c "SELECT id, customer, total FROM orders WHERE total > 200 ORDER BY t
 3 row(s) · 3 column(s)
 ```
 
-Or at one file, where the keyspace is just the filename:
+Or with a single file, the keyspace is just the filename:
 
 ```
 $ ./n1k1 -c "SELECT action, COUNT(*) AS n FROM events GROUP BY action ORDER BY n DESC" events.jsonl
@@ -46,7 +49,7 @@ $ ./n1k1 -c "SELECT action, COUNT(*) AS n FROM events GROUP BY action ORDER BY n
 {"action":"purchase","n":2}
 ```
 
-Aggregate straight out of a CSV, or a directory of Parquet parts — same query language:
+Aggregate data from CSV's, or from directories of Parquet files:
 
 ```sh
 ./n1k1 -c "SELECT currency, ROUND(SUM(amount), 2) AS total FROM txns GROUP BY currency" examples/finance
@@ -54,19 +57,19 @@ Aggregate straight out of a CSV, or a directory of Parquet parts — same query 
 ```
 
 Run with no directory at all to use it as an expression sandbox (`./n1k1 -c "SELECT 1+1"`),
-pipe statements in on stdin, or run a `.sql++` script with `-f <filename.sql++>`.
+or pipe SQL++ statements in on stdin, or run a `.sql++` script with `./n1k1 -f <filename.sql++>`.
 
-Output is a box table at a terminal and JSON Lines when piped, so it
-composes with `jq`, `grep` and friends; `-mode` overrides the output
+Output will be a box table at a terminal and JSON Lines when piped, so it
+composes with `jq`, `grep` and friends; The `-mode` flag controls the output
 format.
 
-With no `-c`/`-f` you get a REPL with history, `.tables`, `.schema`,
-`.timer`, `.explain`, and more — `.help` lists them.
+Interactive REPL with history -- use commands like `.tables`, `.schema`,
+`.timer`, `.explain`, and more — `.help` lists available commands.
 
 ## SQL++
 
 SQL++ is SQL generalized over JSON, so nested data is a first-class citizen instead of
-something you reach into with specialized JSON syntax and functions:
+having specialized JSON syntax and functions:
 
 ```
 $ ./n1k1 -c 'SELECT o.id, t AS tag FROM [{"id":1,"tags":["red","blue"]}] AS o UNNEST o.tags AS t'
@@ -74,16 +77,16 @@ $ ./n1k1 -c 'SELECT o.id, t AS tag FROM [{"id":1,"tags":["red","blue"]}] AS o UN
 {"id":1,"tag":"blue"}
 ```
 
-`UNNEST` explodes nested arrays into rows, `MISSING` is distinct from `NULL`, and
+In SQL++, `UNNEST` explodes nested arrays into rows, `MISSING` is distinct from `NULL`, and
 objects/arrays have a rich function library (`OBJECT_PAIRS`, `ARRAY_AGG`, `WITHIN` for
-recursive descent, array and object comprehensions, …).
+recursive descent, for array and object comprehensions, …).
 
 **[The SQL++ recipes doc](https://couchbase.github.io/n1k1/)**
-provides a recipe book of common JSON slice-and-dice tasks, with SQL++
-examples shown side by side with equivalents in SQL (Postgres,
+provides an online recipe book of common JSON slice-and-dice tasks, with SQL++
+examples shown side by side compared to SQL (Postgres,
 DuckDB), JavaScript, Python, MongoDB, and jq.
 
-## What it reads
+## Data formats
 
 | | |
 |---|---|
@@ -100,38 +103,39 @@ prints a sampled shape, and `-formats` restricts what gets scanned.
 
 ## Beyond ad-hoc queries
 
-- **Joins, window functions, set operations.** Nested-loop and hash joins (inner/outer,
+- **JOIN's window functions, set operations.** Nested-loop and hash joins (inner/outer,
   `ON KEYS`), `UNNEST`/`NEST`, `GROUP BY`/`HAVING`, a full window-function suite (ranking,
   navigation, `ROWS`/`RANGE`/`GROUPS` frames), `UNION`/`INTERSECT`/`EXCEPT`, subqueries.
-- **Bigger than memory.** Hash tables and sort heaps spill to temporary files, so joins,
-  `DISTINCT`, `GROUP BY`, `ORDER BY`, and large window partitions are not RAM-bound.
-- **Multi-query.** `.multi` runs a whole directory of tagged `*.sql++` queries over
-  one shared, optimized scan instead of re-reading the data per query — useful for running
-  a suite of detectors across a large bundle. See `.help multi`.
 - **Programmable.** JavaScript UDFs and aggregates, `*.extract.js` recipes that frame
   arbitrary text/log formats into records, and `*.macro.js` macros that expand `@name(...)`
   into SQL++ — all loaded with `-ext`. Scalar, aggregate and streaming table-valued-functions
   supported.
+- **Shared scans.** The `.multi` runs a whole directory of multiple, tagged `*.sql++` queries over
+  one shared, optimized scan instead of re-reading the data per query — useful for running
+  a suite of queries across a large dataset. Common subexpression elimination (CSE) and
+  other optimizations are automatically applied. See `.help multi`.
 - **Vector / semantic search.** Embedding generation plus `VECTOR_DISTANCE` for similarity
   queries. See `.help vectors`.
 - **Staged pipelines.** `CREATE TEMP KEYSPACE … AS SELECT …` materializes intermediate
-  results (in memory, spilling to disk when large) for your later queries to read.
-- **Secondary indexes.** Secondary/FTS indexes declared in an on-disk catalog and built
-  lazily on first use — `.index suggest` proposes candidates from a doc sample (`.index`).
+  results (in memory to start, spilling to disk when large) for your later queries to read.
+- **Bigger than memory.** Hash tables and sort heaps spill as needed to temporary files, so joins,
+  `DISTINCT`, `GROUP BY`, `ORDER BY`, and large window partitions are not RAM-bound.
+- **Secondary indexes.** Secondary indexes and full-text search (FTS) indexes can be built
+  lazily on first use — `.index suggest` proposes candidates from a sampling of data.
 - **Query compilation.** Besides interpreting plans, n1k1 can generate Go source for a query.
   See `-prepare`, `.prepare`.
 - **Runs in a browser.** `GOOS=js/wasm` builds the SQL++ engine into the
   [playground](https://couchbase.github.io/n1k1/play/); see `web/`.
 
-## Scope
+## Not yet
 
-Read-oriented, and deliberately not a database server: **no `UPDATE`/`DELETE` and
+n1k1 is not a database server (at least not yet): **no `UPDATE`/`DELETE` and
 no transactions**, and writing is limited to materializing results (`CREATE TEMP KEYSPACE`,
 or `INSERT INTO` a `.jsonl` / parquet file).
 
 ## Build & test
 
-Favors pure Go (1.25+; `CGO_ENABLED=0`) and cross-compiles to Linux, macOS, and
+The n1k1 project favors pure Go (1.25+; `CGO_ENABLED=0`) and cross-compiles to Linux, macOS, and
 Windows on amd64 and arm64.
 
 ```sh
@@ -144,12 +148,6 @@ make bench        # engine throughput + allocations
 make recipes      # regenerate docs/recipes.{md,html} from docs/recipes.yaml
 ```
 
-If a build ever fails while loading the module graph — `go.mod` pins a few placeholder
-enterprise modules that resolve only inside Couchbase — run `make bootstrap` once: it stubs
-them locally, creates `test/tmp/`, and regenerates `intermed/`. Do **not** run `go mod
-tidy`: `couchbase/query` is reached only through the `n1ql`-tagged `glue/` package, so tidy
-would prune it.
-
 Github Actions: see [`.github/README.md`](.github/README.md).
 
 ## Docs
@@ -158,11 +156,11 @@ Github Actions: see [`.github/README.md`](.github/README.md).
   SQL, JavaScript, Python, MongoDB, and jq ([source](docs/recipes.yaml))
 - [`examples/README.md`](examples/README.md) — the sample data trees used above, with a
   runnable query for each on-disk layout
-- [`docs/design/`](docs/design/) — internals: [`DESIGN.md`](docs/design/DESIGN.md) (the
+- [`docs/design/`](docs/design/) — [`DESIGN.md`](docs/design/DESIGN.md) (the
   compiler and performance approach), [`DESIGN-cli.md`](docs/design/DESIGN-cli.md),
   [`DESIGN-data.md`](docs/design/DESIGN-data.md) (how files become keyspaces), and more
-- [`TODO.md`](TODO.md) — what is planned, and what is known to be missing
 - `./n1k1 -h`, and `.help` in the REPL — the authoritative command reference
+- [`TODO.md`](TODO.md) — what is planned, and what is known to be missing
 
 ## License
 
