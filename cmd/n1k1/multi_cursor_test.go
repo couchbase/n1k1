@@ -465,8 +465,14 @@ func TestMultiCursorHashSchemeUpgrade(t *testing.T) {
 	out.Reset()
 	c.failed = false
 	c.cmdMulti("cursor advance CC-S --quiet --cursor-store " + store)
-	if av := env(); av["status"] == "error" || c.failed {
+	av := env()
+	if av["status"] == "error" || c.failed {
 		t.Fatalf("old-scheme sidecar refused advance: %s", out.String())
+	}
+	// ISSUE-25 adjacent note: the re-stamping advance's envelope must echo the
+	// NEWLY-committed queries id, not lag one behind the state file.
+	if av["queries"] != curID {
+		t.Fatalf("advance envelope echoes a stale queries id: got %v, want %s", av["queries"], curID)
 	}
 
 	// The advance re-stamped the sidecar to the CURRENT scheme.

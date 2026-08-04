@@ -1191,6 +1191,7 @@ func (c *cli) cursorPeekAdvance(arg string, advance bool) {
 		return
 	}
 
+	env.Pack = st.Queries             // the COMMITTED id -- a re-stamping advance must echo the new value, not lag by one
 	env.To = encodeWater(newWater)
 	env.CommittedID = committedID(st) // now reflects the NEWLY-committed position
 	env.Advanced = moved
@@ -1343,6 +1344,7 @@ func (c *cli) cursorDiffPeekAdvance(a cursorArgs, st *glue.CursorState, store *g
 		return
 	}
 
+	env.Pack = st.Queries             // the COMMITTED id (see the append path)
 	env.To = fmt.Sprintf("snap:%d", newVer)
 	env.CommittedID = committedID(st) // now reflects the newly-committed snapshot
 	env.Advanced = changed
@@ -1477,7 +1479,16 @@ func (c *cli) cursorCheck(arg string) {
 		Baseline string `json:"baseline"`
 		Current  string `json:"current,omitempty"`
 		Drifted  bool   `json:"drifted"`
-		Error    string `json:"error,omitempty"`
+		// The transitional-window disambiguator (ISSUE-done-24's rough edge): a
+		// baseline stamped under an OLD hash scheme is compared under EVERY known
+		// scheme, while `current` displays the current scheme's hash -- so a comment
+		// edit against an un-restamped baseline can print two IDENTICAL hashes with
+		// drifted=true. When the verdict and the displayed pair could disagree,
+		// CurrentUnderBaselineScheme shows the hash the comparison actually used
+		// (advance re-stamps to the current scheme, and this self-heals).
+		BaselineScheme             int    `json:"baseline_hash_scheme,omitempty"`
+		CurrentUnderBaselineScheme string `json:"current_under_baseline_scheme,omitempty"`
+		Error                      string `json:"error,omitempty"`
 	}
 	out := make([]checkRow, 0, len(names))
 	anyDrift := false
@@ -1499,6 +1510,10 @@ func (c *cli) cursorCheck(arg string) {
 				// under an older normalization scheme is NOT drift (see QueriesIDMatches).
 				row.Current = glue.QueriesID(st.Name, dets)
 				row.Drifted = glue.QueriesIDMatches(row.Baseline, st.Name, dets) == 0
+				if st.HashScheme != 0 && st.HashScheme != glue.QueriesHashScheme {
+					row.BaselineScheme = st.HashScheme
+					row.CurrentUnderBaselineScheme = glue.QueriesIDUnderScheme(st.Name, dets, st.HashScheme)
+				}
 			}
 		}
 		if row.Drifted {

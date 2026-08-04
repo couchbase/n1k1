@@ -217,7 +217,15 @@ func (s *Session) InsertRun(ins *algebra.Insert) (res *Result, err error) {
 	}
 
 	// Otherwise report the mutation like a small result the CLI can render (or stream).
-	summary, _ := json.Marshal(map[string]interface{}{"inserted": w.rows(), "keyspace": ks, "mode": mode})
+	// "path" is the RESOLVED absolute location the file actually landed at (ISSUE-25
+	// ask 3): the keyspace echoes the target as given, which is not the field that
+	// lets a human find the output.
+	abs := path
+	if a, aerr := filepath.Abs(path); aerr == nil {
+		abs = a
+	}
+	summary, _ := json.Marshal(map[string]interface{}{
+		"inserted": w.rows(), "keyspace": ks, "mode": mode, "path": abs})
 	if s.OnRow != nil {
 		s.OnRow(summary)
 		return &Result{Count: w.rows()}, nil
@@ -237,6 +245,18 @@ func (s *Session) insertTargetPath(ref *algebra.KeyspaceRef) (path, ks string, e
 	root := strings.TrimPrefix(url, "file://")
 	if root == url {
 		return "", "", fmt.Errorf("INSERT: target is not a file datastore (%q)", url)
+	}
+	// A multi-source session (name=path positionals / -sources / object-store) sits on
+	// the INERT base datastore -- an empty process temp dir that exists only to satisfy
+	// the planner and is never enumerated by any query. Writing there would "succeed"
+	// into an invisible file that vanishes with the process: silent data loss behind a
+	// truthful row count (ISSUE-25 -- a 25-minute embedding job saved nowhere). Fail
+	// loud instead: a command that cannot do the thing must not report having done it.
+	if inertBaseDir != "" && root == inertBaseDir {
+		return "", "", fmt.Errorf("INSERT INTO %q: no writable datastore root -- "+
+			"multi-source name=path positionals (and -sources/object-store sessions) define "+
+			"keyspaces but no bundle to write into; open a DIRECTORY datastore instead "+
+			"(the target lands at <dir>/<namespace>/...)", ref.Keyspace())
 	}
 	ns := ref.Namespace()
 	if ns == "" {

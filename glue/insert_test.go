@@ -408,3 +408,56 @@ func TestInsertValueConstruct(t *testing.T) {
 		}
 	}
 }
+
+// TestInsertMultiSourceFailsLoud (ISSUE-25): a multi-source session (name=path
+// positionals / -sources) sits on the INERT base datastore -- an invisible process
+// temp dir. INSERT there used to "succeed" (truthful row count, mode:"new") while
+// the file landed nowhere a query or a human would ever look: silent data loss.
+// It must instead fail loud, with no inserted count, and the working directory
+// form's envelope must carry the RESOLVED absolute path (ask 3).
+func TestInsertMultiSourceFailsLoud(t *testing.T) {
+	dir := insertTestDir(t)
+
+	// Multi-source session over the logs file: INSERT must refuse.
+	sess, err := OpenSessionSources(
+		[]Source{{Name: "logs", Path: filepath.Join(dir, "default", "logs", "l.jsonl")}}, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	_, err = sess.Run(`INSERT INTO out (KEY UUID(), VALUE self) SELECT l.id FROM logs l`)
+	if err == nil || !strings.Contains(err.Error(), "no writable datastore root") {
+		t.Fatalf("multi-source INSERT: want the no-writable-root refusal, got %v", err)
+	}
+
+	// Directory session: succeeds, and the envelope reports the resolved abs path.
+	dsess, err := OpenSession(dir, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dsess.Close()
+	res, err := dsess.Run(`INSERT INTO pathtest (KEY UUID(), VALUE self) SELECT l.id FROM logs l`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rows) != 1 {
+		t.Fatalf("want 1 summary row, got %d", len(res.Rows))
+	}
+	var env struct {
+		Inserted int    `json:"inserted"`
+		Path     string `json:"path"`
+	}
+	if err := json.Unmarshal(res.Rows[0], &env); err != nil {
+		t.Fatal(err)
+	}
+	// (EvalSymlinks: macOS T-dirs live under /var -> /private/var.)
+	wantDir, _ := filepath.EvalSymlinks(filepath.Join(dir, "default"))
+	gotDir, _ := filepath.EvalSymlinks(filepath.Dir(env.Path))
+	if env.Inserted != 4 || !filepath.IsAbs(env.Path) || gotDir != wantDir ||
+		filepath.Base(env.Path) != "pathtest" {
+		t.Fatalf("envelope = %s: want inserted=4 and an absolute path at %s/pathtest", res.Rows[0], wantDir)
+	}
+	if _, err := os.Stat(env.Path); err != nil {
+		t.Fatalf("the reported path must exist: %v", err)
+	}
+}

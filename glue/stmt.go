@@ -334,6 +334,7 @@ func FileStoreBound(path string, b Binding) (*Store, error) {
 var (
 	inertBaseOnce sync.Once
 	inertBaseDS   datastore.Datastore
+	inertBaseDir  string // the temp dir behind inertBaseDS -- so writers can refuse it (ISSUE-25)
 	inertBaseErr  error
 )
 
@@ -344,6 +345,7 @@ func inertBaseDatastore() (datastore.Datastore, error) {
 			inertBaseErr = err
 			return
 		}
+		inertBaseDir = dir
 		inertBaseDS, inertBaseErr = file.NewDatastore(dir)
 	})
 	return inertBaseDS, inertBaseErr
