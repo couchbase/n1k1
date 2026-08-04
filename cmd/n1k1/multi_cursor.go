@@ -1484,11 +1484,12 @@ func (c *cli) cursorCheck(arg string) {
 		// scheme, while `current` displays the current scheme's hash -- so a comment
 		// edit against an un-restamped baseline can print two IDENTICAL hashes with
 		// drifted=true. When the verdict and the displayed pair could disagree,
-		// CurrentUnderBaselineScheme shows the hash the comparison actually used
-		// (advance re-stamps to the current scheme, and this self-heals).
-		BaselineScheme             int    `json:"baseline_hash_scheme,omitempty"`
-		CurrentUnderBaselineScheme string `json:"current_under_baseline_scheme,omitempty"`
-		Error                      string `json:"error,omitempty"`
+		// BaselineSchemeCurrent shows the CURRENT queries' hash under the baseline's
+		// own scheme -- the value the comparison actually used (advance re-stamps to
+		// the current scheme, and this self-heals).
+		BaselineScheme        int    `json:"baseline_scheme,omitempty"`
+		BaselineSchemeCurrent string `json:"baseline_scheme_current,omitempty"`
+		Error                 string `json:"error,omitempty"`
 	}
 	out := make([]checkRow, 0, len(names))
 	anyDrift := false
@@ -1512,7 +1513,7 @@ func (c *cli) cursorCheck(arg string) {
 				row.Drifted = glue.QueriesIDMatches(row.Baseline, st.Name, dets) == 0
 				if st.HashScheme != 0 && st.HashScheme != glue.QueriesHashScheme {
 					row.BaselineScheme = st.HashScheme
-					row.CurrentUnderBaselineScheme = glue.QueriesIDUnderScheme(st.Name, dets, st.HashScheme)
+					row.BaselineSchemeCurrent = glue.QueriesIDUnderScheme(st.Name, dets, st.HashScheme)
 				}
 			}
 		}
