@@ -350,12 +350,12 @@ SELECT * FROM `./data/**/*.json`   <span class="c">-- glob support to scan direc
     <h2>Example: a 3-way nested-loop self-join</h2>
     <ul>
       <li>Consider a 3-way nested-loop self-join that expands to 262K rows:<br>
+	  <code>SELECT COUNT(*) FROM orders o1, orders o2, orders o3;</code><br>
           <span class="num">~931&nbsp;MB</span> allocated with only
-          <span class="num">~3&nbsp;MB</span> live —<br>garbage and GC churn,
-          ~71% in the boxed fetch path.</li>
-      <li>Three n1k1 optimizations<br>- native byte fetch<br>- bounded per-request doc
-          cache<br>- scan key-listing cache:<br>total allocations: from
-          <span class="num">~2.0&nbsp;GB → ~152&nbsp;MB</span><br>
+          <span class="num">~3&nbsp;MB</span> live —<br>Potentially high garbage and GC churn,
+          ~71% in cbq's boxed fetch path.</li>
+      <li>n1k1's main optimization: []byte slicing and reusing instead of memory allocs (boxed objects):<br>
+	  total allocations: from <span class="num">~2.0&nbsp;GB → ~152&nbsp;MB</span><br>
           GC's: from <span class="num">420 → 31</span>.</li>
     </ul>
   </div>
@@ -379,20 +379,23 @@ SELECT * FROM `./data/**/*.json`   <span class="c">-- glob support to scan direc
        data-rel-x="-800" data-rel-y="-250" data-rel-z="150">
     <p class="kicker">engine</p>
     <h2>The []byte lane</h2>
-<pre><code>type Val []byte     <span class="c">// every value, in every operator</span>
-vals[5]             <span class="c">// hot fields promoted to positional registers as an array lookup</span>
+    <pre><code>type Val []byte     <span class="c">// Every value, in every operator, represented as []byte.</span>
+
+var vals []Val      <span class="c">// Several vals can represent a row or tuple, and</span>
+data := vals[5]     <span class="c">// hot fields accessed via fast, positional array lookups.</span>
+
 buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</span></code></pre>
     <ul>
       <li>No <code>interface{}</code></li>
       <li>No <code>map[string]interface{}</code></li>
-      <li>jsonparser returns slices <em>into</em> a JSON document's existing []byte.</li>
+      <li>jsonparser returns slices <em>into</em> a JSON document's existing []byte - no new allocations.</li>
       <li><strong>Push-based</strong> — hand-off between ops and expressions is a function call
-          (fusable/inlinable),<br>not a go channel or an iterator's Next():</li>
+          (fusable/inlinable),<br>not a go channel or an iterator's Next() pull:</li>
     </ul>
-<pre class="diagram"><code>scan ─▶ filter ─▶ project ─▶ yield(vals)   <span class="c">-- plain function callbacks, optionally fused &amp; inlined</span>
+<pre class="diagram"><code>scan ─▶ filter ─▶ project ─▶ yield(vals)   <span class="c">-- plain function calls, optionally fused &amp; inlined</span>
   │        │         │
   └────────┴─────────┴────▶ yieldErr(err)  <span class="c">-- one error lane;</span>
-                                           <span class="c">-- no per-row checking of "if err != nil" anywhere</span></code></pre>
+                                           <span class="c">-- no repeated checking of "if err != nil"</span></code></pre>
     <ul>
       <li>Results: allocs/op are <strong>flat no matter # of records processed</strong><br>—
           identical whether 1K rows vs 1M rows processed.</li>
@@ -405,36 +408,36 @@ buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</sp
     <p class="kicker">engine</p>
     <h2>Dual-lane expressions</h2>
     <div class="stats">
-      <div class="stat"><span class="v">31 ns · 0 B alloc's</span>
+      <div class="stat"><span class="v" style="color: green;">31 ns · 0 B alloc's</span>
         <span class="l">native a + b (per eval)</span></div>
-      <div class="stat"><span class="v">190 ns · 384 B alloc's</span>
+      <div class="stat"><span class="v" style="color: red;">190 ns · 384 B alloc's</span>
         <span class="l">same expr, boxed by cbq's engine as a fallback</span></div>
     </div>
     <ul>
-      <li>Expressions convert to a native byte-lane form when every operand
-          is supported;<br><strong>one unsupported operand anywhere falls the
-          whole expression back</strong> to cbq's boxed
-          <code>Evaluate()</code>.</li>
-      <li>cbq's fallback Evaluate() is always available —<br>it is <strong>the correctness
-          oracle</strong>: every native op is differential-tested
+      <li>Expression evaluation is via the fast, native byte-lane form - when every operand:
+          is supported;<br><strong>one unsupported operand in a sub-expression takes the
+          whole expression</strong> to cbq's boxed
+          <code>Evaluate()</code> instead.</li>
+      <li>cbq's fallback <code>Evaluate()</code> is always available —<br>it is <strong>the correctness
+          oracle</strong>: every native op is tested to be
           byte-identical against cbq's answers.</li>
-      <li>Porting is mechanical: cbq's ~357 scalar expression types collapse<br>
-          into four propagation classes (each a reused harness) over ~6
-          value-layer primitives.</li>
+      <li>Porting: cbq's ~357 scalar expressions collapse
+          into four classes.</li>
     </ul>
   </div>
 
   <div id="engine-spill" class="step" data-rel-to="hub-engine"
        data-rel-x="-800" data-rel-y="900" data-rel-z="150">
     <p class="kicker">engine</p>
-    <h2>Operators share one spill substrate</h2>
+    <h2>When data &gt; RAM ==&gt; shared spill layer</h2>
     <ul>
-      <li><code><a href="https://github.com/couchbase/rhmap">github.com/couchbase/rhmap</a></code>: robinhood maps - a recyclable
-          <code>map[[]byte][]byte</code><br>that spills to mmap'd temp files —
-          serving hash join, DISTINCT, GROUP BY, INTERSECT, EXCEPT, etc.</li>
-      <li>Set ops reuse the hash join's probe map (left values, left counts,
-          probe counts) —<br>INTERSECT/EXCEPT DISTINCT need no extra DISTINCT
-          operator.</li>
+      <li><code><a href="https://github.com/couchbase/rhmap">github.com/couchbase/rhmap</a></code>: - a recyclable
+          <code>map[[]byte][]byte</code><br> and heap library that spills to mmap'd temp files in chunks.</li>
+      <li>Normal go maps don't support []byte type as keys.</li>
+      <li>Used to implement hash JOIN's, DISTINCT, GROUP BY, INTERSECT, EXCEPT, etc.</li>
+      <li>Set ops reuse the hash JOIN's probe map (left values, left counts,
+          probe counts) -<br>
+          including INTERSECT/EXCEPT DISTINCT support.</li>
       <li>ORDER BY / LIMIT is a max-heap popped in reverse —<br>no final sort;
           the heap spills too.</li>
       <li>Sessions reuse spill state across queries.</li>
@@ -444,7 +447,7 @@ buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</sp
   <div id="engine-numbers" class="step" data-rel-to="hub-engine"
        data-rel-x="800" data-rel-y="900" data-rel-z="150">
     <p class="kicker">engine · same parser, same planner, two executors</p>
-    <h2>Boxed vs []byte, measured</h2>
+    <h2>Performance: boxed vs []byte</h2>
     <div class="stats">
       <div class="stat"><span class="v">6–9×</span>
         <span class="l">faster on compute-bound work</span></div>
@@ -454,8 +457,8 @@ buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</sp
         <span class="l">on I/O-bound work (2–6× less memory)</span></div>
     </div>
     <ul>
-      <li>Identical queries and files, and cbq's own
-          parser+planner used by both —<br>the variable: an executor that uses the boxed
+      <li>With identical queries and files, and cbq's
+          parser+planner used for both —<br>the variable: an executor that uses the boxed
           (<code>value.AnnotatedValue</code> vs an executor that uses <code>[]byte</code>);<br>
           the n1k1 ideal: n1k1's EXPLAIN PLAN should report zero boxed ops.</li>
       <li>Example: UNNEST 20K-element arrays + GROUP BY:<br>
@@ -467,21 +470,23 @@ buf = buf[:0]       <span class="c">// recycle and reslice; don't reallocate</sp
   <div id="engine-col" class="step leaf" data-rel-to="hub-engine"
        data-rel-x="0" data-rel-y="1650" data-rel-z="300" data-scale="0.4">
     <p class="kicker">engine · hybrid</p>
-    <h2>hybrid: row &amp; columnar - they're the same lane</h2>
-<pre class="diagram"><code>row batch:  Vals = [ "alice", 42, {"x":1} ]            <span class="c">← one row, 3 cols</span>
-col batch:  Vals = [ ["alice","bob"], [42,43], […] ]   <span class="c">← many rows</span></code></pre>
+    <h2>Hybrid: row &amp; columnar data</h2>
+<pre class="diagram"><code>type Val []byte
+type Vals []Val
+
+Vals = [ '"alice"', '42', '{"x":1}' ]                     <span class="c">← one row, 3 fields;</span>
+Vals = [ ['"alice"', '"bob"'], ['42', '43'] ]             <span class="c">← many rows, columnar;</span>
+Vals = [ ['"alice"', '"bob"'], <em>[uint64(42), uint64(43)]</em> ] <span class="c">← many rows, even more columnar;</span></code></pre>
     <ul>
-      <li><code>Val = []byte</code> is axis-agnostic: transpose the axis and
-          the container, push plumbing, and recycling all still apply.
-          <br>Fixed-width columnar vs row-JSON:
+      <li><code>Val = []byte</code> is axis-agnostic - transpose the axis and
+          n1k1's main codepaths still work fine with no changes.</li>
+      <li>Fixed-width columnar vs row-JSON performance:
           <span class="num">40–730×</span> on arm64, <em>no SIMD</em> —
-          <br>the win is not-parsing + touching one stripe.</li>
+          <br>winning by not parsing and due to columnar's data layout.</li>
       <li>An Arrow buffer is a borrowed <code>Val</code>
-          (zero-copy on the []byte);<br>the selection vector is layout-compatible with
-          Arrow's validity bitmap,<br>so predicate ∧ validity is a byte-wise
-          AND and one masked reducer serves both.</li>
-      <li>Vectorization is a post-plan rewrite by n1k1 of the <code>group</code> op
-          —<br>EXPLAIN runs the same pass, so the displayed plan never lies.</li>
+          (zero-copy on the []byte);<br>An Arrow validity bitmap is a borrowed <code>Val</code>.</li>
+      <li>Vectorization is a post-plan rewrite by n1k1 of the <code>GROUP BY</code> op<br>
+	  to invoke vectorized aggregate functions (vectorized-COUNT/SUM/MIN/MAX/etc).</li>
     </ul>
   </div>
 
@@ -503,31 +508,36 @@ col batch:  Vals = [ ["alice","bob"], [42,43], […] ]   <span class="c">← man
   <div id="comp-lz" class="step" data-rel-to="hub-compiler"
        data-rel-x="-1400" data-rel-y="350" data-rel-z="150">
     <p class="kicker">compiler</p>
-    <h2>The <code>lz</code> (or "lazy") discipline</h2>
-<pre><code>lzVal = lzA(lzVals, lzYieldErr)  <span class="c">// "lz" = late-bound: needs actual rows</span>
-n := len(fields)                 <span class="c">// early-bound: known at plan time</span></code></pre>
+    <h2>The <code>lz</code> (or "lazy") approach</h2>
+<pre><code>lzResult = lzCompute(lzVals)  <span class="c">// "lz" hungarian notation = late-bound: needs actual runtime data</span>
+n := len(fields)              <span class="c">// early-bound: data is known at plan time / compilation time</span></code></pre>
     <ul>
       <li><code>engine/*.go</code> is a plan-tree interpreter written in a
-          disciplined subset of Go:<br>a naming convention (<code>lz</code>)
-          plus comment directives mark which code is late-bound.</li>
-      <li><code>intermed_build</code> is a <strong>line-oriented
-          translator</strong>:<br>each lazy line of code becomes a
-          printf of itself;<br>early-bound lines execute at codegen time.</li>
+          disciplined "lz" subset of Go.</li>
+      <li><code>intermed_build</code> is a simple <strong>lz code
+          translator</strong>:<br>each lazy line of code is emitted as a printf: e.g.,
+          <code>fmt.Printf("lzResult = lzCompute(lzVals)")</code>;<br>early-bound lines of code are emitted as-is:
+          e.g., <code>n := len(fields)</code>
+      </li>
     </ul>
-<pre class="diagram"><code>            engine/*.go            <span class="c">-- ONE source</span>
+<pre class="diagram"><code>           n1k1/**/*.go <span class="c">-- 'lz' source code for n1k1's SQL++ interpreter</span>
              │       │
-      go build       intermed_build  <span class="c">("lz" lines → printf's)</span>
+      go build       A) intermed_build (transform's n1k1's 'lz' code)
              │       │
              ▼       ▼
- mode 1: ExecOp      mode 2: the emitted, fused Go code for one specific SQL++ plan
- in n1k1 binary      │
- interprets any      ▼
- plan immediately    go compiler ───▶ executable binary for one specific SQL++ plan
+`n1k1` program       B) intermed/generated_by_intermed_build.go (source code for a SQL++ compiler)
+     which can       ▼
+ interpret and       C) go run (main-shim.go + #B) on input Q: "SELECT * FROM ..." (a specific SQL++ query)
+   execute any       ▼
+incoming SQL++       D) Q.go == emitted, fused Go code for one that specific SQL++ query Q
+                     ▼
+                     E) main-shim-2.go + Q.go ───▶ go compiler
+                                                   ▼
+                                                   F) `program` for one that specific SQL++ query Q
 </code></pre>
     <ul>
-      <li>Lineage: Futamura projections / LMS (Rompf &amp; Odersky),<br>
-          LegoBase (Klonatos &amp; Koch, VLDB'14) —<br>with operator fusion and
-          variable lifting for buffer reuse.</li>
+      <li>References: Futamura projections / LMS (Rompf &amp; Odersky),
+          LegoBase (Klonatos, VLDB'14) — operator fusion, etc</li>
     </ul>
   </div>
 
