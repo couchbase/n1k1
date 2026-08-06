@@ -550,14 +550,16 @@ incoming SQL++       D) Q.go == emitted, fused Go code for one that specific SQL
           plan —<br>readable, importing only n1k1's <code>engine/</code> +
           <code>base/</code>:<br><strong>the whole query minus its data-access</strong>, cbq-free and cgo-free.</li>
       <li>Go has no <code>eval</code> or dynamic loading,<br>so a freshly compiled query is
-          a separate binary —<br>and n1k1's push model maps
-          onto this split;<br>the same bytes are emitted for emit-only,
-          thin-child, fat-child, and wasm linkages:</li>
+          a separate binary —<br>and n1k1's push model fits into this approach;
+          <br>the same bytes are emitted for
+          thin-child, fat-child, and wasm pathways:</li>
     </ul>
-<pre class="diagram"><code>child  = the compiled query.go binary ── drives the whole plan;
- ▲ ▼     the DatastorePipe provides: Scan / Fetch / IndexScan / Meta;
-parent = n1k1, which has cbq + datasource access, and
-               which streams data for the leaves of the plan to the child via DatastorePipes</code></pre>
+<pre class="diagram"><code>parent = the n1k1 program, which has cbq + datasource access, and
+ ▲ ▼     which streams data for the leaves of the plan to the child via DatastorePipes
+child  = the compiled query.go program ── drives the query execution;
+         the DatastorePipes provide: Scan / Fetch / IndexScan / Meta;
+
+</code></pre>
   </div>
 
   <div id="comp-honest" class="step" data-rel-to="hub-compiler"
