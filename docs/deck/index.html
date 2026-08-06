@@ -109,13 +109,13 @@
   <div id="why-what" class="step" data-rel-to="hub-why"
        data-rel-x="-1400" data-rel-y="350" data-rel-z="150">
     <p class="kicker">what &amp; why</p>
-    <h2>One binary, pointed at local or remote<br>paths &amp; directories</h2>
+    <h2>One binary, pointed at local or remote<br>data files &amp; directories</h2>
 <pre><code>$ n1k1 -c "SELECT id, customer, total FROM orders
            WHERE total &gt; 200 ORDER BY total DESC" examples/shop</code></pre>
     <ul>
       <li>Inspirations: <code>sqlite3</code> / <code>duckdb</code>,<br>but the query
-          language (SQL++) is built for <strong>nested JSON</strong><br>and n1k1's engine
-          handles directory trees of mixed data file formats.</li>
+          language (<strong>SQL++</strong>) is designed for <strong>nested JSON</strong></li>
+      <li>n1k1 handles directory trees of mixed data file formats.</li>
       <li>File formats are discovered <em>per file</em> — no
           <code>CREATE TABLE</code>:</li>
     </ul>
@@ -135,17 +135,16 @@
           no transactions.<br>Writing is materialization only
           (<code>CREATE TEMP KEYSPACE</code>, <code>INSERT INTO</code> a
           <code>.jsonl</code>/Parquet file).</li>
-      <li>Pure Go, <code>CGO_ENABLED=0</code>, cross-compiles to
-          Linux/macOS/Windows on amd64 + arm64 —<br>and to
+      <li>Pure Go, <code>CGO_ENABLED=0</code>,<br>cross-compiles to
+          linux / macOS / windows on amd64 + arm64 —<br>and to
           <code>GOOS=js/wasm</code>.</li>
-      <li>Goroutine-per-connection sessions —
-          n1k1 is a CLI and a library, not a daemon yet.</li>
-      <li>Binary anatomy: full build <span class="num">~102&nbsp;MB</span>;
-          <br><code>-tags trim</code> (drop lakehouse + cloud SDKs)
-          <span class="num">~41&nbsp;MB</span>. <br>The
-          <span class="num">~40&nbsp;MB</span> floor is the SQL++ core:
-          parser + <span class="num">279</span> builtin functions +
-          planner + Go runtime.</li>
+      <li>Goroutine-per-session —
+          n1k1 is a CLI and a reusable library; no network server daemon yet.</li>
+      <li>Binary details:<br>Full build: <span class="num">~102&nbsp;MB</span>;
+          <br>Built with <code>-tags trim</code> (drop lakehouse + remote cloud support):
+          <span class="num">~41&nbsp;MB</span>;<br>
+          Just the SQL++ core:
+          parser + planner + builtin functions + Go runtime: <span class="num">~40&nbsp;MB</span>.</li>
     </ul>
   </div>
 
@@ -159,16 +158,16 @@ SQL++ ─▶│ parser ─▶ planner ─▶ plan tree ┼───▶│ conv.g
         │                                │    │ engine.ExecOp on []byte ─┼───▶ rows
         └────────────────────────────────┘    └──────────────────────────┘</code></pre>
     <ul>
-      <li>n1k1 takes the cbq's reference implementation's <strong>plan tree, not its
+      <li>n1k1 reuses the reference implementation from cbq (Couchbase Query) and its <strong>plan tree, not its
           executor</strong></li>
-      <li><strong>Use cbq AS-IS</strong> - no SQL++ syntax changes (yet);
-	  only minor patches needed to get cbq to build as as library.</li>
-      <li>Brand new <code>datastore/virtual</code> provides n1k1's keyspaces.</li>
-      <li>100% golang secondary indexes (not GSI); pure bleve for FTS (not CBFT).</li>
-      <li>New capability = <strong>plan-shape recognition + new execution
+      <li>The mantra: reuse <strong>cbq AS-IS</strong> as much as possible -<br>no SQL++ syntax changes (yet);<br>
+	  details: minor patches needed to get cbq to build as as library.</li>
+      <li>Brand new <code>datastore</code> implementation provides n1k1's keyspaces.</li>
+      <li>100% golang secondary indexes (not GSI);</li>
+      <li>Direct <code>blevesearch/bleve</code> used for full-text (FTS) features (not CBFT).</li>
+      <li>New capabilities are via <strong>plan-shape recognition</strong> and <strong>new execution
           ops</strong></li>
-      <li>Avoid new SQL++ syntax (no changes to cbq's grammar);<br>@macro provides new syntax (ASOF joins,
-          merge-scan, grep&nbsp;-C, query fusion, time-travel queries…).</li>
+      <li>Although n1k1 avoids new SQL++ syntax (no changes to cbq's grammar),<br>n1k1's @macro feature enables new syntax.</li>
     </ul>
   </div>
 
@@ -184,7 +183,7 @@ SQL++ ─▶│ parser ─▶ planner ─▶ plan tree ┼───▶│ conv.g
     <div class="bignum">2</div>
     <p class="kicker">2 · the language</p>
     <h1>SQL, generalized over JSON</h1>
-    <p class="dim">nested data as a first-class citizen</p>
+    <p class="dim">SQL++ == SQL with nested data as a first-class citizen</p>
   </div>
 
   <div id="sqlpp-lang" class="step" data-rel-to="hub-sqlpp"
@@ -250,8 +249,8 @@ SQL++ ─▶│ parser ─▶ planner ─▶ plan tree ┼───▶│ conv.g
        data-x="3100" data-y="0" data-z="0" data-scale="5">
     <div class="bignum">3</div>
     <p class="kicker">3 · the data layer</p>
-    <h1>Files become keyspaces</h1>
-    <p class="dim">convention over DDL · pushdown as a hint</p>
+    <h1>Data sources: files become keyspaces</h1>
+    <p class="dim">file naming and format conventions; not DDL</p>
   </div>
 
   <div id="data-discovery" class="step" data-rel-to="hub-data"
@@ -264,16 +263,14 @@ examples/shop/           discovered keyspaces:
 ├─ events.jsonl            events  <span class="c">(multi-record file)</span>
 └─ txns.csv.gz             txns    <span class="c">(format sniffed per file)</span>
 
-FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one identifier:</span>
-                                 <span class="c">-- the fork-free table-function dodge</span></code></pre>
+SELECT * FROM `./data/**/*.json`   <span class="c">-- glob support to scan directory trees</span></code></pre>
     <ul>
-      <li>Flat dirs, <code>&lt;namespace&gt;/&lt;keyspace&gt;/</code> trees, globs,
+      <li>Flat directories, <code>&lt;namespace&gt;/&lt;keyspace&gt;/</code> trees, globs,
           multiple roots (<code>docs=~/Documents/**</code>) —<br>heterogeneous
-          sources federate through a chain of datastore wrappers; no new
-          scan code per source kind.</li>
-      <li>Doc ids carry line '#' for humans and physical byte offset '@' address:
-          <code>events.jsonl#57@4210</code> —<br>so <code>USE KEYS</code> is an
-          O(1) seek, not a file scan.</li>
+          datasources can be federated through a chain of datastore wrappers.</li>
+      <li>Doc ids carry line '#' for humans and physical byte offset '@' address;
+          example: <code>events.jsonl#57@4210</code> —<br>so <code>USE KEYS</code> is an
+          O(1) seek to a byte offset, not a file scan.</li>
       <li><code>.schema</code> command samples a keyspace and emits
           copy-pasteable example SQL++queries —<br>for user friendliness</li>
     </ul>
@@ -283,19 +280,19 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
        data-rel-x="800" data-rel-y="-250" data-rel-z="150">
     <p class="kicker">data layer</p>
     <h2>Parquet &amp; Iceberg support</h2>
-<pre><code>FROM `events@2026-01-01T00:00:00Z`  <span class="c">-- time travel queries</span></code></pre>
+<pre><code>FROM `events@2026-01-01T00:00:00Z`  <span class="c">-- time travel Parquet queries</span></code></pre>
     <ul>
-      <li><strong>Pushdown for performance</strong>: predicates travel as a
-          negation-normal-form tree in a sidecar interface;<br>
-          <code>filter</code> op is always kept for correctness.</li>
+      <li><strong>Pushdown for performance</strong>:<br>predicates pushed to Parquet as
+          negation-normal-form if possible;<br>
+          and, the plan's <code>filter</code> op is always kept for correctness.</li>
       <li>Metadata-only answers: <code>COUNT</code>/<code>MIN</code>/<code>MAX</code>
-          from Parquet footers and Iceberg manifests —<br>
-          <span class="num">zero</span> data pages read;
+          are served from Parquet footers and Iceberg manifests —<br>
+          so, <span class="num">zero</span> data pages read;<br>
           <code>COUNT(*)</code> over a <span class="num">227&nbsp;MB</span>
-          public-S3 Parquet answers in <span class="num">~1&nbsp;s</span>.</li>
-      <li>iceberg-go library resolves pruning, merge-on-read deletes, and
-          field-ID schema evolution — n1k1 just drives the scan.</li>
-      <li>Remote objects retrieved via ranged GETs;<br?projection pushdown reads
+          publically hosted (AWS S3) Parquet dataset answers in <span class="num">~1&nbsp;s</span>.</li>
+      <li><code>iceberg-go</code> library resolves pruning, merge-on-read deletes, and
+          field-ID schema evolution —<br>n1k1 just drives the scan.</li>
+      <li>Remote objects retrieved via ranged GETs;<br>projection pushdown reads
           <span class="num">~0.2%</span> of the bytes on wide tables.</li>
     </ul>
   </div>
@@ -306,16 +303,16 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
     <h2>VARIANT data types</h2>
     <ul>
       <li>VARIANT from Parquet = JSON's value model + typed scalars (date,
-          timestamp, exact decimal, uuid…),<br>and SQL++ on VARIANT's <em>behave as the JSON
-          projection</em> - no engine changes.</li>
+          timestamp, exact decimal, uuid…),<br>and SQL++ on VARIANT's <em>behave the same as JSON
+          projection</em>.</li>
       <li>VARIANT handled in n1k1 as yet another []byte with a 'V' prefix byte;<br>encoding:
           <code>V&lt;len&gt;&lt;VARIANT-metadata&gt;&lt;VARIANT-value&gt;</code> —<br>
-          <code>V</code> (0x56) is outside JSON's value-start alphabet, so
-          one byte disambiguates.</li>
+          <code>V</code> (0x56) is outside JSON's value-start alphabet,<br>so
+          one byte disambiguates VARIANT versus JSON bytes.</li>
       <li>Zero-alloc projector: <span class="num">263&nbsp;ns / 0 allocs</span>
           vs arrow-go's <code>MarshalJSON</code> at
-          <span class="num">11,858&nbsp;ns / 131 allocs</span> —
-          <span class="num">~45×</span>;<br>MarshalJSON remains the test oracle.</li>
+          <span class="num">11,858&nbsp;ns / 131 allocs</span> —<br>
+          <span class="num">~45×</span>; where MarshalJSON remains the correctness oracle.</li>
       <li>Correctness example: GROUP/DISTINCT must hash the
           <strong>canonical JSON projection</strong> of the VARIANT,<br>never raw
           <code>V</code> prefixed bytes, since equal values can differ in encoding.</li>
@@ -332,17 +329,17 @@ FROM `./data/**/*.json`          <span class="c">-- backticks make a glob one id
    ├─ meta.json                       <span class="c">  (machine-managed state: never</span>
    └─ data.bolt | bleve/              <span class="c">   written back to the catalog)</span></code></pre>
     <ul>
-      <li>A changed index definition hashes to a <strong>new dir</strong> —<br>
-          which means an index rebuild, never in-place corruption;<br>indexes build with atomic
+      <li>A changed index definition means a new <code>&lt;hash&gt;</code>, so that's a <strong>new dir</strong> —<br>
+          which leads to an index rebuild, never in-place mutations;<br>indexes build with atomic
           rename, orphans are lazily GC'd.</li>
-      <li>BBolt for seconary indexes: order-preserving key encoding means
-          <strong>bbolt byte order == N1QL collation order</strong>,<br>so
+      <li>BBolt for secondary indexes:<br>order-preserving key encoding means
+          <strong>bbolt byte order == SQL++ collation order</strong>,<br>so
           <code>Cursor.Seek</code> prunes real range scans — and the
-          ever-present filter catches range boundary imprecision.</li>
-      <li>Covering scans reconstruct the projected doc from index-key bytes,<br>so
+          ever-present filter op catches range boundary imprecision.</li>
+      <li><strong>Covering scans</strong> reconstruct the projected doc values from index-key bytes,<br>so
           no fetch needed.</li>
       <li>FTS is bleve <em>in-process</em> — following cbq planner's
-          <code>FTSIndex</code> operator, minus cbft/cbgt/n1fty/cbauth.<br>
+          <code>FTSIndex</code> operator; so, cbft/cbgt/n1fty/cbauth are all avoided.<br>
           Index selection stays cbq's planner: n1k1 advertise the available indexes.</li>
     </ul>
   </div>
