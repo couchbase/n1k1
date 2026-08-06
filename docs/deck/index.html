@@ -509,31 +509,34 @@ Vals = [ ['"alice"', '"bob"'], <em>[uint64(42), uint64(43)]</em> ] <span class="
        data-rel-x="-1400" data-rel-y="350" data-rel-z="150">
     <p class="kicker">compiler</p>
     <h2>The <code>lz</code> (or "lazy") approach</h2>
-<pre><code>lzResult = lzCompute(lzVals)  <span class="c">// "lz" hungarian notation = late-bound: needs actual runtime data</span>
-n := len(fields)              <span class="c">// early-bound: data is known at plan time / compilation time</span></code></pre>
     <ul>
       <li><code>engine/*.go</code> is a plan-tree interpreter written in a
           disciplined "lz" subset of Go.</li>
-      <li><code>intermed_build</code> is a simple <strong>lz code
-          translator</strong>:<br>each lazy line of code is emitted as a printf: e.g.,
-          <code>fmt.Printf("lzResult = lzCompute(lzVals)")</code>;<br>early-bound lines of code are emitted as-is:
-          e.g., <code>n := len(fields)</code>
       </li>
     </ul>
-<pre class="diagram"><code>           n1k1/**/*.go <span class="c">-- 'lz' source code for n1k1's SQL++ interpreter</span>
-             │       │
-      go build       A) intermed_build (transform's n1k1's 'lz' code)
-             │       │
-             ▼       ▼
-`n1k1` program       B) intermed/generated_by_intermed_build.go (source code for a SQL++ compiler)
-     which can       ▼
- interpret and       C) go run (main-shim.go + #B) on input Q: "SELECT * FROM ..." (a specific SQL++ query)
-   execute any       ▼
-incoming SQL++       D) Q.go == emitted, fused Go code for one that specific SQL++ query Q
-                     ▼
-                     E) main-shim-2.go + Q.go ───▶ go compiler
-                                                   ▼
-                                                   F) `program` for one that specific SQL++ query Q
+<pre><code>n := len(fields)              <span class="c">// early-bound: data is known at plan / compilation time</span>
+lzResult = lzCompute(lzVals)  <span class="c">// "lz" hungarian notation = late-bound: needs actual runtime data</span></code></pre>
+    <ul>
+      <li><code>intermed_build</code> is a simple <strong>lz code
+          translator</strong>:<br>
+          early-bound lines of code are emitted as-is: e.g., <code>n := len(fields)</code><br>
+          each lazy line of code is emitted as a printf: e.g., <code>fmt.Printf("lzResult = lzCompute(lzVals)")</code>
+      </li>
+    </ul>
+<pre class="diagram"><code>          n1k1/**/*.go <span class="c">-- 'lz' source code for n1k1's SQL++ interpreter</span>
+             │    │
+      go build    A) intermed_build (transforms n1k1's 'lz' source code)
+             │    │
+             ▼    ▼
+`n1k1` program    B) intermed/generated_by_intermed_build.go <span class="c">-- source code for a SQL++ compiler</span>
+     which can    ▼
+ interpret and    C) `go build main-shim.go #B.go`; run on QUERY="SELECT * FROM ..." <span class="c">-- a specific SQL++</span>
+   execute any    ▼
+incoming SQL++    D) QUERY.go generated <span class="c">-- fused, optimized Go code for that specific SQL++ QUERY</span>
+  against data    ▼
+                  E) main-shim-2.go + QUERY.go ───▶ go compiler
+                                                    ▼
+                                                    F) reusable `program` for that specific SQL++ QUERY
 </code></pre>
     <ul>
       <li>References: Futamura projections / LMS (Rompf &amp; Odersky),
@@ -546,18 +549,19 @@ incoming SQL++       D) Q.go == emitted, fused Go code for one that specific SQL
     <p class="kicker">compiler</p>
     <h2>What gets emitted</h2>
     <ul>
-      <li><code>.prepare &lt;SQL++ query&gt;</code> emits the fused Go for the
-          plan —<br>readable, importing only n1k1's <code>engine/</code> +
-          <code>base/</code>:<br><strong>the whole query minus its data-access</strong>, cbq-free and cgo-free.</li>
-      <li>Go has no <code>eval</code> or dynamic loading,<br>so a freshly compiled query is
-          a separate binary —<br>and n1k1's push model fits into this approach;
+      <li><code>.prepare &lt;SQL++ QUERY&gt;</code> generates the fused Go source code for the QUERY —<br>
+	  imports only n1k1's <code>engine/</code> +
+          <code>base/</code>:<br><strong>the whole query minus data-access</strong>, cbq-free and cgo-free.</li>
+      <li>Go has no <code>eval</code> or dynamic loading,<br>so a freshly generated & compiled QUERY.go becomes
+          a separate executable.
           <br>the same bytes are emitted for
           thin-child, fat-child, and wasm pathways:</li>
     </ul>
 <pre class="diagram"><code>parent = the n1k1 program, which has cbq + datasource access, and
- ▲ ▼     which streams data for the leaves of the plan to the child via DatastorePipes
-child  = the compiled query.go program ── drives the query execution;
-         the DatastorePipes provide: Scan / Fetch / IndexScan / Meta;
+ ▲ │     which streams data for the leaves of any QUERY plan to the child process via DatastorePipes
+ │ ▼  
+child  = the compiled QUERY.go program ── drives the query execution;
+         the DatastorePipes provide data for: Fetch / Scan / IndexScan / Meta;
 
 </code></pre>
   </div>
@@ -572,15 +576,14 @@ child  = the compiled query.go program ── drives the query execution;
       <div class="stat"><span class="v">~0.1 s</span>
         <span class="l">warm compile cost</span></div>
       <div class="stat"><span class="v">~10M rows</span>
-        <span class="l">one-shot break-even if there's no reuse</span></div>
+        <span class="l">one-shot break-even (no reuse)</span></div>
     </div>
     <ul>
-      <li>Why is the speedup so low?<br>Because the interpreter's already 'not too shabby'<br>with
-          n1k1's native []byte lane processing.</li>
+      <li>Why is the speedup so low?<br>Because n1k1's interpreter is 'not too shabby'<br>with
+          n1k1's native []byte lane processing, optimizations, etc.</li>
       <li>PREPARE-once / EXECUTE-many amortizes to
-          <span class="num">~10K rows</span> at K=1000 executions —<br>which
-          points at where compilation actually pays…</li>
-      <li>…the <strong>huge-K regime</strong>: the next section...</li>
+          <span class="num">~10K rows</span> at K=1000 executions at the breakeven point.</li>
+      <li>So, let's explore the <strong>huge-K (many reused queries)</strong> scenarios...</li>
     </ul>
   </div>
 
