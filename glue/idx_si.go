@@ -131,6 +131,7 @@ type IndexInfo struct {
 	Kind      string // "gsi" | "fts"
 	Keys      []string
 	Where     string
+	Since     string // non-empty = TIME-SCOPED: only containers modified since then are indexed
 	Mapping   string // fts: the raw bleve index-mapping JSON, when the def carries one
 	Built     bool   // false if the artifact couldn't be opened/built (see Err)
 	Entries   int    // indexed doc/entry count, when Built
@@ -319,7 +320,7 @@ func SecondaryIndexInfos(ds datastore.Datastore) []IndexInfo {
 	for _, def := range sds.cat.Indexes {
 		info := IndexInfo{
 			Name: def.Name, Namespace: def.Namespace, Keyspace: def.Keyspace,
-			Kind: def.Kind, Keys: def.Keys, Where: def.Where,
+			Kind: def.Kind, Keys: def.Keys, Where: def.Where, Since: def.Since,
 			Mapping: string(def.Mapping),
 		}
 		ks, err := sds.wrappedKeyspace(def.Namespace, def.Keyspace)
@@ -826,7 +827,7 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 	// index, not globally, so other indexes keep building in parallel.
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
-	sig, err := sourceSignature(srcDir)
+	sig, err := sourceSignature(srcDir, def.sinceT)
 	if err != nil {
 		return nil, err
 	}
@@ -874,8 +875,7 @@ func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, 
 	// only context method a simple field/scalar expression might touch).
 	ctx := NewGlueContext(time.Now())
 
-	opts := ScanWalkOptions
-	opts.PathPrefix = ""
+	opts := indexWalkOptions(def)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		return fmt.Errorf("secondary-index build, walk %q: %w", srcDir, err)
@@ -1006,8 +1006,7 @@ func catchUpIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string
 	}
 
 	ctx := NewGlueContext(time.Now())
-	opts := ScanWalkOptions
-	opts.PathPrefix = ""
+	opts := indexWalkOptions(def)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		return false, fmt.Errorf("secondary-index catch-up, walk %q: %w", srcDir, err)

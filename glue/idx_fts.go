@@ -147,6 +147,10 @@ type ftsIndex struct {
 
 var _ datastore.FTSIndex = (*ftsIndex)(nil)
 
+// indexDefn mirrors secondaryIndex's accessor so wasm-neutral code (e.g. the FTS
+// scan's time-scope disclosure) can reach the def via an interface assertion.
+func (fi *ftsIndex) indexDefn() *indexDef { return fi.def }
+
 func (fi *ftsIndex) KeyspaceId() string               { return fi.ks.Id() }
 func (fi *ftsIndex) Id() string                       { return fi.def.Name }
 func (fi *ftsIndex) Name() string                     { return fi.def.Name }
@@ -660,7 +664,7 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 			slot.err = e
 			return
 		}
-		sig, e := sourceSignature(srcDir)
+		sig, e := sourceSignature(srcDir, def.sinceT)
 		if e != nil {
 			slot.err = e
 			return
@@ -679,14 +683,14 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 	// Per-call freshness recheck (serialized per index).
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
-	sig, err := sourceSignature(srcDir)
+	sig, err := sourceSignature(srcDir, def.sinceT)
 	if err != nil {
 		return nil, err
 	}
 	if force || readFTSSig(instDir) != sig {
 		caughtUp := false
 		if !force {
-			ok, e := catchUpBleve(slot.fi.idx, instDir, srcDir, sig, onDoc)
+			ok, e := catchUpBleve(slot.fi.idx, def, instDir, srcDir, sig, onDoc)
 			if e != nil {
 				return nil, e
 			}
@@ -717,7 +721,7 @@ func openOrBuildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 			if readFTSSig(instDir) == sig {
 				return idx, nil
 			}
-			if ok, e2 := catchUpBleve(idx, instDir, srcDir, sig, onDoc); e2 == nil && ok {
+			if ok, e2 := catchUpBleve(idx, def, instDir, srcDir, sig, onDoc); e2 == nil && ok {
 				indexBuildsCatchUp.Add(1)
 				return idx, nil
 			}
@@ -743,8 +747,7 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 		return nil, fmt.Errorf("fts build, bleve.New %q: %w", bleveDir, err)
 	}
 
-	opts := ScanWalkOptions
-	opts.PathPrefix = ""
+	opts := indexWalkOptions(def)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		idx.Close()
@@ -819,14 +822,13 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 // or a per-doc-file keyspace whose record ids carry no position), or any
 // SourceAnomalies violation (rotated/truncated/rewritten container -- adds-only
 // can't retract those postings).
-func catchUpBleve(idx bleve.Index, instDir, srcDir, sig string, onDoc func(int)) (bool, error) {
+func catchUpBleve(idx bleve.Index, def *indexDef, instDir, srcDir, sig string, onDoc func(int)) (bool, error) {
 	water, waterFP, err := getBleveWater(idx)
 	if err != nil || len(water) == 0 {
 		return false, err
 	}
 
-	opts := ScanWalkOptions
-	opts.PathPrefix = ""
+	opts := indexWalkOptions(def)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		return false, fmt.Errorf("fts catch-up, walk %q: %w", srcDir, err)

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/glue"
@@ -1129,5 +1130,122 @@ func TestFTSIncremental(t *testing.T) {
 	full3, _ := glue.IndexBuildCounts()
 	if full3 == full2 {
 		t.Fatalf("rotation must force a full rebuild (full %d->%d)", full2, full3)
+	}
+}
+
+// TestSecondaryIndexTimeScoped: the DESIGN-indexing.md "time-scoped index" first
+// rung. A def with "since" indexes ONLY containers modified at/after it (whole
+// containers), catch-up adopts a NEW recent container without a full rebuild, the
+// scope never silently narrows an answer (every query the index serves carries a
+// disclosure warning), and data outside the scope stays reachable by a plain scan.
+func TestSecondaryIndexTimeScoped(t *testing.T) {
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeF := func(name string, lines ...string) {
+		if err := os.WriteFile(filepath.Join(ksDir, name),
+			[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeF("old.jsonl",
+		`{"id":"old1","sev":"ERROR"}`,
+		`{"id":"old2","sev":"INFO"}`)
+	writeF("new.jsonl",
+		`{"id":"new1","sev":"ERROR"}`,
+		`{"id":"new2","sev":"WARN"}`)
+	past := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(ksDir, "old.jsonl"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".n1k1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".n1k1", "catalog.json"), []byte(`{
+		"indexes": [
+			{"name": "bysev", "keyspace": "logs", "keys": ["sev"],
+			 "since": "2026-01-01T00:00:00Z"}
+		]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// run opens a FRESH session (so index freshness is re-checked, as a new CLI
+	// invocation would) and returns the ids matched + the warnings.
+	run := func(q string) (ids []string, warnings []string) {
+		t.Helper()
+		sess, err := glue.OpenSession(root, "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("run %q: %v", q, err)
+		}
+		for _, r := range res.Rows {
+			var m map[string]string
+			if json.Unmarshal(r, &m) == nil && m["id"] != "" {
+				ids = append(ids, m["id"])
+			}
+		}
+		sort.Strings(ids)
+		for _, w := range res.Warnings {
+			warnings = append(warnings, w.Error())
+		}
+		return ids, warnings
+	}
+	const q = `SELECT l.id AS id FROM logs l WHERE l.sev = "ERROR"`
+
+	fullBase, cuBase := glue.IndexBuildCounts()
+
+	// Scoped build: only the recent container's records are indexed, the answer
+	// reflects the scope, and the query DISCLOSES it.
+	ids, warns := run(q)
+	if strings.Join(ids, ",") != "new1" {
+		t.Fatalf("scoped index answer = %v, want [new1] (old container out of scope)", ids)
+	}
+	scoped := false
+	for _, w := range warns {
+		scoped = scoped || strings.Contains(w, "time-scoped")
+	}
+	if !scoped {
+		t.Fatalf("a scoped-index query must disclose the scope; warnings = %v", warns)
+	}
+	full1, _ := glue.IndexBuildCounts()
+	if full1 == fullBase {
+		t.Fatal("initial open should full-build the scoped index")
+	}
+
+	// Out-of-scope data stays reachable by a plain (non-indexed) scan.
+	all, _ := run(`SELECT l.id AS id FROM logs l WHERE l.id != ""`)
+	if len(all) != 4 {
+		t.Fatalf("plain scan must see ALL records (old + new), got %v", all)
+	}
+
+	// A NEW recent container joins at catch-up (no full rebuild).
+	writeF("newer.jsonl", `{"id":"new3","sev":"ERROR"}`)
+	ids, _ = run(q)
+	if strings.Join(ids, ",") != "new1,new3" {
+		t.Fatalf("after new container: want [new1 new3], got %v", ids)
+	}
+	full2, cu2 := glue.IndexBuildCounts()
+	if full2 != full1 {
+		t.Fatalf("new recent container must catch up, not full-rebuild (full %d->%d)", full1, full2)
+	}
+	if cu2 == cuBase {
+		t.Fatal("expected a catch-up build to be counted")
+	}
+
+	// Churn on an OUT-OF-SCOPE container cannot stale the index: no build at all.
+	older := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(ksDir, "old.jsonl"), older, older); err != nil {
+		t.Fatal(err)
+	}
+	run(q)
+	if f, c := glue.IndexBuildCounts(); f != full2 || c != cu2 {
+		t.Fatalf("out-of-scope churn must not build (full %d->%d, catchup %d->%d)", full2, f, cu2, c)
 	}
 }

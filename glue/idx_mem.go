@@ -389,7 +389,7 @@ func memIndexOpen(ks *memKeyspace, def *indexDef) (*memIndex, error) {
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
 
-	sig, err := sourceSignature(srcDir)
+	sig, err := sourceSignature(srcDir, def.sinceT)
 	if err != nil {
 		return nil, err
 	}
@@ -564,7 +564,7 @@ func memCachePlan(dataRoot string) []map[string]string {
 		if ns == "" {
 			ns = "default"
 		}
-		sig, err := sourceSignature(filepath.Join(dataRoot, ns, def.Keyspace))
+		sig, err := sourceSignature(filepath.Join(dataRoot, ns, def.Keyspace), def.sinceT)
 		if err != nil {
 			continue
 		}
@@ -582,8 +582,7 @@ func memCachePlan(dataRoot string) []map[string]string {
 func memEntriesBuild(srcDir string, def *indexDef) ([][]byte, error) {
 	ctx := NewGlueContext(time.Now())
 
-	opts := ScanWalkOptions
-	opts.PathPrefix = ""
+	opts := indexWalkOptions(def)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		return nil, err

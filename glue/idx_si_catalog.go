@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/parser/n1ql"
@@ -154,9 +155,22 @@ type indexDef struct {
 	Where     string          `json:"where,omitempty"`   // gsi: optional partial-index condition
 	Mapping   json.RawMessage `json:"mapping,omitempty"` // fts: raw bleve index-mapping JSON (overrides Keys)
 
+	// Since, when set (RFC3339), makes this a TIME-SCOPED index: only containers
+	// (files) modified at/after Since are indexed -- whole containers, never
+	// mid-file, so record ids and watermarks need nothing new. The scope is
+	// monotone (a container's mtime only moves forward, so containers ENTER scope
+	// and never leave -- no retraction), catch-up composes unchanged, and NEW
+	// recent containers join at the next catch-up. The impatient-user first rung
+	// of DESIGN-indexing.md "Newest-first / partial index builds": latest data
+	// queryable without indexing deep history. ⚠ A scoped index is PARTIAL by
+	// declaration -- every query it serves discloses the scope (Warnings), never
+	// silently answering as complete.
+	Since string `json:"since,omitempty"`
+
 	// Parsed forms (filled by parse(); gsi only).
 	rangeKey  expression.Expressions
 	condition expression.Expression
+	sinceT    time.Time // parsed Since ("" => zero => unscoped)
 
 	// Derived from Mapping by parse() (fts custom-mapping only; filled via the
 	// ftsMappingAnalyze hook so this WASM-included file needs no bleve import).
@@ -221,6 +235,14 @@ func loadCatalog(dataRoot string) (*catalog, error) {
 func (d *indexDef) parse() error {
 	if d.Name == "" || d.Keyspace == "" {
 		return fmt.Errorf("index def needs name and keyspace")
+	}
+	if d.Since != "" {
+		t, terr := time.Parse(time.RFC3339, d.Since)
+		if terr != nil {
+			return fmt.Errorf("index %q: since %q is not RFC3339 (e.g. 2026-08-01T00:00:00Z): %w",
+				d.Name, d.Since, terr)
+		}
+		d.sinceT = t
 	}
 	if len(d.Mapping) > 0 && !d.isFTS() {
 		return fmt.Errorf("%q index cannot carry a bleve \"mapping\" (fts only)", d.Kind)
@@ -327,6 +349,10 @@ func (d *indexDef) defHash() string {
 	}
 	h.Write([]byte("|where|"))
 	h.Write([]byte(d.Where))
+	if d.Since != "" { // legacy defs hash identically (no flag-day rebuild)
+		h.Write([]byte("|since|"))
+		h.Write([]byte(d.Since))
+	}
 	// A changed fts mapping must yield a new dir (rebuild). Compact first so
 	// insignificant whitespace/formatting doesn't churn the hash.
 	if len(d.Mapping) > 0 {
@@ -352,6 +378,7 @@ type catalogIndexJSON struct {
 	Keys      []string        `json:"keys,omitempty"`
 	Where     string          `json:"where,omitempty"`
 	Mapping   json.RawMessage `json:"mapping,omitempty"`
+	Since     string          `json:"since,omitempty"` // RFC3339: time-scoped index (see indexDef.Since)
 }
 
 // CatalogAddIndexes validates the index definitions in fragmentJSON (either a
@@ -385,7 +412,7 @@ func CatalogAddIndexes(dataRoot string, fragmentJSON []byte) ([]string, error) {
 			kind = "gsi"
 		}
 		d := &indexDef{Name: a.Name, Namespace: a.Namespace, Keyspace: a.Keyspace,
-			Kind: kind, Keys: a.Keys, Where: a.Where, Mapping: a.Mapping}
+			Kind: kind, Keys: a.Keys, Where: a.Where, Mapping: a.Mapping, Since: a.Since}
 		if err := d.parse(); err != nil {
 			return nil, fmt.Errorf("index %q: %w", a.Name, err)
 		}

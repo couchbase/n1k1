@@ -18,8 +18,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/couchbase/query/datastore"
+
+	"github.com/couchbase/n1k1/records"
 )
 
 // index is an n1k1-built secondary index the engine can scan directly (via
@@ -51,8 +54,11 @@ type index interface {
 // count and the newest mtime (nanoseconds) over the whole tree. This is the
 // simple "assume static data, validate by timestamp" model -- adding, removing,
 // or touching any file changes the signature and forces an index rebuild. Shared
-// by the bbolt (idx_si.go) and in-memory (idx_mem.go) backends.
-func sourceSignature(dir string) (string, error) {
+// by the bbolt (idx_si.go) and in-memory (idx_mem.go) backends. since, when
+// non-zero, restricts the signature to containers modified at/after it (a
+// TIME-SCOPED index -- indexDef.Since): out-of-scope file churn then cannot
+// stale the index, matching what its walks would (not) see.
+func sourceSignature(dir string, since time.Time) (string, error) {
 	var count int64
 	var newest int64
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -70,6 +76,9 @@ func sourceSignature(dir string) (string, error) {
 		if err != nil {
 			return err
 		}
+		if !since.IsZero() && info.ModTime().Before(since) {
+			return nil // out of the index's time scope: invisible to it
+		}
 		count++
 		if mt := info.ModTime().UnixNano(); mt > newest {
 			newest = mt
@@ -83,4 +92,35 @@ func sourceSignature(dir string) (string, error) {
 	binary.BigEndian.PutUint64(b[0:8], uint64(count))
 	binary.BigEndian.PutUint64(b[8:16], uint64(newest))
 	return fmt.Sprintf("%x", b), nil
+}
+
+// warnScopedIndex discloses a TIME-SCOPED index (indexDef.Since) serving a query:
+// a scoped index is partial BY DECLARATION, and the contract (DESIGN-indexing.md
+// "Newest-first / partial index builds") is that it must never answer as if
+// complete -- so every request it serves carries one warning naming the scope.
+// Deduped per request (WarnOncef), so joins/rescans don't repeat it.
+func warnScopedIndex(context *GlueContext, def *indexDef) {
+	if context == nil || def == nil || def.Since == "" {
+		return
+	}
+	context.WarnOncef("index-scope:"+def.Name,
+		"index %q is time-scoped (since=%s): results reflect ONLY containers modified since then"+
+			" (drop the index or re-create without since= for full coverage)",
+		def.Name, def.Since)
+}
+
+// indexWalkOptions returns the record-walk options an index build/catch-up scans
+// with: the standard scan options, no path prefix, and -- for a time-scoped def --
+// a FileFilter admitting only containers modified at/after def.Since (whole
+// containers; the walk sees the corpus as if older files did not exist).
+func indexWalkOptions(def *indexDef) records.WalkOptions {
+	opts := ScanWalkOptions
+	opts.PathPrefix = ""
+	if !def.sinceT.IsZero() {
+		since := def.sinceT
+		opts.FileFilter = func(_ string, info os.FileInfo) bool {
+			return !info.ModTime().Before(since)
+		}
+	}
+	return opts
 }

@@ -289,6 +289,18 @@ corpora rarely need deep history indexed. Paged backwards backfill (`.index back
 walking the floor down, resumable via the same watermark discipline, hybrid serving arriving
 with it) is the optional second rung, not the entry price.
 
+**Rung 1 SHIPPED — the time-scoped index (gsi + fts).** An index def carries
+`"since": "<RFC3339>"` (`.index create <name> on <ks> (<expr>) since=<ts|72h|7d>`; a
+duration resolves to an ABSOLUTE cutoff at create — the scope never slides). Both build
+and catch-up walk only containers with mtime ≥ since (`records.WalkOptions.FileFilter`;
+`sourceSignature` is scoped the same way, so out-of-scope churn can't stale the index),
+the scope is monotone (containers only ENTER — mtime moves forward — so no retraction,
+and a new recent container joins at the next catch-up), and `defHash` covers `since`
+(re-scoping = a new artifact). The disclosure contract is enforced at the scan ops
+(`warnScopedIndex` → `WarnOncef`, deduped per request): every query a scoped index
+serves carries one warning naming the scope — never silently partial. Out-of-scope data
+stays reachable by any non-indexed scan. Guard: `TestSecondaryIndexTimeScoped`.
+
 - **Whole-keyspace `COUNT(*)` done** — `VisitCountScan` de-optimizes to a records scan (like a
   primary scan); the `count(*)` group-aggregate rides the surrounding plan ops. `keyspace.Count()`
   (`len(ReadDir)`, `file.go:467`) and `Size()` (`:475`) exist. (O(1) count from a `doc_count`

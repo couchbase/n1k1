@@ -1231,6 +1231,13 @@ type WalkOptions struct {
 	// _meta.path (e.g. "<namespace>/<keyspace>") so it's dir-relative.
 	Meta       MetaMode
 	PathPrefix string
+
+	// FileFilter, when non-nil, further gates each format-eligible file: return
+	// false to exclude the whole container from the walk. The caller sees a corpus
+	// as if the excluded files did not exist (a time-scoped index build admits only
+	// containers modified since T -- DESIGN-indexing.md "Newest-first / partial").
+	// nil admits every eligible file.
+	FileFilter func(path string, info os.FileInfo) bool
 }
 
 // AllModes returns the flexible default: recurse, all supported formats, gzip on.
@@ -1454,7 +1461,8 @@ func WalkFiles(dir string, opts WalkOptions) ([]string, error) {
 			}
 			return nil
 		}
-		if opts.eligible(path) {
+		if opts.eligible(path) &&
+			(opts.FileFilter == nil || opts.FileFilter(path, info)) {
 			files = append(files, path)
 		}
 		return nil

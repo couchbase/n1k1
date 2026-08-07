@@ -54,6 +54,10 @@ type GlueContext struct {
 	now  time.Time
 	errs []errors.Error
 
+	// warnedKeys dedupes WarnOncef per request (guarded by errsMu, root-only
+	// like errs so actor clones share the once-ness).
+	warnedKeys map[string]bool
+
 	// Results collects rows when GlueContext is used as a result sink
 	// (e.g. by ServiceRequestEx). The test path instead drives n1k1.ExecOp
 	// directly with its own yield callbacks and ignores this.
@@ -336,6 +340,25 @@ func (c *GlueContext) Warning(e errors.Error) { c.appendErr(e) }
 // any other and surfaced to the client at end of request.
 func (c *GlueContext) Warnf(format string, args ...interface{}) {
 	c.Warning(errors.NewWarning(fmt.Sprintf(format, args...)))
+}
+
+// WarnOncef is Warnf deduplicated by key for the whole request (across UNION ALL
+// actor clones and nested-loop rescans): the first caller of a key records the
+// warning, later ones are no-ops. For per-request advisories a hot op would
+// otherwise repeat -- e.g. a time-scoped index disclosing its scope once, not
+// once per rescan.
+func (c *GlueContext) WarnOncef(key, format string, args ...interface{}) {
+	s := c.getRoot()
+	s.errsMu.Lock()
+	if s.warnedKeys == nil {
+		s.warnedKeys = map[string]bool{}
+	}
+	seen := s.warnedKeys[key]
+	s.warnedKeys[key] = true
+	s.errsMu.Unlock()
+	if !seen {
+		c.Warnf(format, args...)
+	}
 }
 
 func (c *GlueContext) appendErr(e errors.Error) {

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/couchbase/n1k1/glue"
 )
@@ -64,7 +65,7 @@ func (c *cli) cmdIndex(arg string) {
 // cmdIndexCreate implements `.index create`: add index definition(s) to
 // .n1k1/catalog.json and build them. Two input forms:
 //
-//	.index create <name> on <keyspace> (<expr>[, <expr>]) [where <expr>]
+//	.index create <name> on <keyspace> (<expr>[, <expr>]) [since=<ts|dur>] [where <expr>]
 //	.index create {"indexes":[ ... ]}      (or a single {...}; e.g. `.index suggest` output)
 //
 // It writes the human catalog (explicit user intent), re-opens the session so the
@@ -72,7 +73,7 @@ func (c *cli) cmdIndex(arg string) {
 func (c *cli) cmdIndexCreate(arg string) {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
-		fmt.Fprintln(c.stderr, "usage: .index create <name> on <keyspace> (<expr>[, <expr>]) [where <expr>]")
+		fmt.Fprintln(c.stderr, "usage: .index create <name> on <keyspace> (<expr>[, <expr>]) [since=<ts|dur>] [where <expr>]")
 		fmt.Fprintln(c.stderr, "   or: .index create {\"indexes\":[ ... ]}   (e.g. paste .index suggest output)")
 		return
 	}
@@ -161,10 +162,26 @@ func parseCreateDSL(s string) ([]byte, error) {
 	}
 
 	where := ""
-	if tail := strings.TrimSpace(s[closeIdx+1:]); tail != "" {
+	since := ""
+	tail := strings.TrimSpace(s[closeIdx+1:])
+	// Optional `since=<RFC3339|duration>` FIRST after ')' (a key=value token, so it
+	// can never be confused with a field named "since" inside the where expr): a
+	// TIME-SCOPED index over containers modified since then (glue indexDef.Since).
+	// A duration ("72h", "7d") resolves to an ABSOLUTE timestamp now -- the scope
+	// is declared once at create, it never slides.
+	if strings.HasPrefix(strings.ToLower(tail), "since=") {
+		tok, rest := splitFirst(tail)
+		v, err := resolveSince(tok[len("since="):])
+		if err != nil {
+			return nil, err
+		}
+		since = v
+		tail = strings.TrimSpace(rest)
+	}
+	if tail != "" {
 		w, rest := splitFirst(tail)
 		if !strings.EqualFold(w, "where") || strings.TrimSpace(rest) == "" {
-			return nil, fmt.Errorf("trailing text after ')' must be: where <expr>")
+			return nil, fmt.Errorf("trailing text after ')' must be: [since=<ts|dur>] where <expr>")
 		}
 		where = strings.TrimSpace(rest)
 	}
@@ -175,11 +192,39 @@ func parseCreateDSL(s string) ([]byte, error) {
 		Keyspace  string   `json:"keyspace"`
 		Keys      []string `json:"keys"`
 		Where     string   `json:"where,omitempty"`
-	}{name, namespace, keyspace, keys, where}
+		Since     string   `json:"since,omitempty"`
+	}{name, namespace, keyspace, keys, where, since}
 	b, err := json.Marshal(struct {
 		Indexes []interface{} `json:"indexes"`
 	}{[]interface{}{def}})
 	return b, err
+}
+
+// resolveSince normalizes a `since=` value to the RFC3339 timestamp the catalog
+// stores: an RFC3339 time (or bare date) passes through; a duration ("72h", "7d")
+// resolves against now to an ABSOLUTE cutoff -- the declared scope must not slide
+// on every open (containers may only ENTER scope, never leave it).
+func resolveSince(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", fmt.Errorf("since= needs a value (RFC3339 timestamp, date, or duration like 72h / 7d)")
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC().Format(time.RFC3339), nil
+	}
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		return t.UTC().Format(time.RFC3339), nil
+	}
+	dv := v
+	if strings.HasSuffix(dv, "d") { // days convenience: Go durations stop at hours
+		if n, err := strconv.Atoi(strings.TrimSuffix(dv, "d")); err == nil {
+			dv = strconv.Itoa(n*24) + "h"
+		}
+	}
+	if d, err := time.ParseDuration(dv); err == nil && d > 0 {
+		return time.Now().UTC().Add(-d).Format(time.RFC3339), nil
+	}
+	return "", fmt.Errorf("since=%q: want an RFC3339 timestamp (2026-08-01T00:00:00Z), a date (2026-08-01), or a duration (72h, 7d)", v)
 }
 
 // splitNamespaceColon splits a possibly namespace-qualified keyspace token on the
@@ -439,7 +484,7 @@ func (c *cli) cmdIndexHelp() {
   .index rebuild [<name>]  force-rebuild (all, or one), ignoring freshness
   .index suggest [<ks>]    advise candidate indexes from a doc sample (emits catalog JSON)
   .index create ...        add index def(s) to catalog.json and build them:
-                             .index create <name> on <ks> (<expr>[, <expr>]) [where <expr>]
+                             .index create <name> on <ks> (<expr>[, <expr>]) [since=<ts|72h|7d>] [where <expr>]
                              .index create {"indexes":[ ... ]}   (e.g. paste suggest output)
   .index help              this help
 
@@ -569,11 +614,16 @@ func (c *cli) cmdIndexList() {
 		} else if ix.Kind == "fts" && keys == "" {
 			keys = "(all fields)"
 		}
+		since := interface{}(nil)
+		if ix.Since != "" {
+			since = ix.Since
+		}
 		rows = append(rows, orderedJSONRow(
 			[2]interface{}{"index", ix.Namespace + ":" + ix.Keyspace + "." + ix.Name},
 			[2]interface{}{"kind", ix.Kind},
 			[2]interface{}{"keys", keys},
 			[2]interface{}{"where", where},
+			[2]interface{}{"since", since},
 			[2]interface{}{"entries", entries},
 			[2]interface{}{"size", size},
 			[2]interface{}{"status", status},
@@ -607,6 +657,10 @@ func (c *cli) cmdIndexShow(name string) {
 		}
 		if ix.Where != "" {
 			pairs = append(pairs, [2]string{"where", ix.Where})
+		}
+		if ix.Since != "" {
+			pairs = append(pairs, [2]string{"since",
+				ix.Since + "  (time-scoped: only containers modified since then)"})
 		}
 		if ix.Mapping != "" {
 			pairs = append(pairs, [2]string{"mapping", ix.Mapping})
