@@ -232,9 +232,62 @@ advance. Design notes:
   implementation + atomic-commit story with the census. Start with the index owning its own
   watermarks; unify only if it proves cheaper.
 
-Tracked in TODO.md.
+Tracked in TODO.md. **UPDATE: the incremental path SHIPPED** for both SI (`glue/idx_si.go`
+`catchUpIndex` — water+fp in the index's own bolt meta, tail-only fold, one-tx commit,
+anomalies → full rebuild) and FTS (`glue/idx_fts.go` `catchUpBleve` on STOCK bleve —
+`Batch.SetInternal` carries the water in the delta batch). What follows is the next rung.
 
-## COUNT(*) / count-scan pushdown
+## Newest-first / partial index builds (design sketch, NOT built)
+
+**The ask:** an impatient user starting a fresh index build wants the LATEST data queryable
+soonest — so build "backwards": index the newest page first and step back in time, while
+appends keep arriving. Prior art says both halves are respectable: CouchDB's `stale=ok`
+serves a partially built view as an explicit per-query contract; ClickHouse `MATERIALIZE
+INDEX/PROJECTION` serves the union of indexed parts + brute-force over unindexed parts
+(always correct, monotonically faster); Lucene/ES/bleve are order-indifferent and the ops
+practice around reindexing is exactly "live tail first, backfill history behind"; Loki
+permanently serves scanned-unindexed-recent ∪ indexed-old. Postgres/Couchbase-GSI are the
+opposite pole (index invalid until complete) — the conservative fallback.
+
+**What already composes:** "more data shows up during the build" is SOLVED — that is the
+shipped catch-up path, which extends the TOP of the indexed region. Backwards building adds
+the symmetric bottom: a **floor watermark**, making index state a per-container WINDOW
+`[floor, water]` (floor lives beside water in the same bolt meta / bleve SetInternal).
+Catch-up moves `water` up (unchanged code); backfill pages move `floor` down; `floor == 0`
+everywhere ⇒ today's complete index, drop the floor state. Same mergeable-fold discipline as
+everything else, which is WHY it composes.
+
+**The crux — a partial index must NEVER answer as if complete.** bleve is naturally safe-ish
+(missing docs = missing hits; idf/scoring drifts while partial — the accepted ES-reindex
+trade). But a partial SI consumed by the planner as authoritative silently DROPS every match
+below the floor — a confident wrong subset, ISSUE-25's shape wearing an index costume. Only
+two serving contracts are acceptable:
+
+1. **Hybrid (ClickHouse-style, preferred):** index answers `[floor, water]`, the existing
+   no-index scan path answers `[0, floor)`, union. Always correct; cost of the scan half
+   shrinks as backfill proceeds. Planner change = "use both, split at floor".
+2. **Disclosed window:** index-only serving with `index_coverage` (floor/water, fraction)
+   stamped in the envelope, and refuse/warn when the query's range exceeds the window. For
+   the actual impatience case — time-descending queries over the recent window — a
+   newest-first partial index is EXACTLY complete for the range asked.
+
+The silent third option (partial-as-complete) is the only bad variant; ruled out.
+
+**Implementation wrinkles (why this is a design pass, not an afternoon):**
+- *Cross-container newest-first ordering* needs time knowledge (sorted-source metadata /
+  mtime); WITHIN a jsonl container, backwards byte-offset pages are cheap (seek, scan to the
+  next newline).
+- *Record ids embed line numbers* (`path#line@offset`) — unknowable when starting mid-file
+  without counting from the top. Solvable (lazy line count on first full-file touch, or
+  offset-anchored ids for backfilled entries), but it touches the id contract.
+
+**Sequencing — the cheap first rung captures most of the value:** a **TIME-SCOPED index** —
+"index everything newer than T, catch up forward, never backfill" (T aligned to container
+boundaries: whole recent files ⇒ no mid-file wrinkles at all). Declared window + the
+disclosure contract; the newest data is queryable almost immediately, and agent-exhaust
+corpora rarely need deep history indexed. Paged backwards backfill (`.index backfill`
+walking the floor down, resumable via the same watermark discipline, hybrid serving arriving
+with it) is the optional second rung, not the entry price.
 
 - **Whole-keyspace `COUNT(*)` done** — `VisitCountScan` de-optimizes to a records scan (like a
   primary scan); the `count(*)` group-aggregate rides the surrounding plan ops. `keyspace.Count()`
