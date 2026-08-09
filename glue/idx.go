@@ -49,6 +49,22 @@ type index interface {
 	// span and owns the close.
 	scanSpan(span *datastore.Span, limit int64, seen map[string]bool,
 		projectKeys bool, conn *datastore.IndexConnection)
+
+	// scanBelowFloor is the HYBRID-SERVE half of a time-scoped index
+	// (DESIGN-indexing.md rung 2): emit the entries the spans would have matched
+	// among containers BELOW the index's current floor, by evaluating the SAME
+	// key/condition expressions per record and filtering with the SAME encoded
+	// span bounds -- so index and scan halves cannot disagree on semantics, and
+	// the union answers the query COMPLETELY (no disclosure needed). Shares the
+	// caller's seen map + sender; must not close the sender. A backend without
+	// hybrid support (the in-memory one) implements it as a no-op and keeps the
+	// disclosure warning instead (see hybridServes).
+	scanBelowFloor(spans []*datastore.Span, limit int64, seen map[string]bool,
+		projectKeys bool, conn *datastore.IndexConnection)
+
+	// hybridServes reports whether scanBelowFloor really serves the below-floor
+	// remainder (so a scoped scan is COMPLETE and needs no disclosure warning).
+	hybridServes() bool
 }
 
 // sourceSignature summarizes a keyspace directory for change detection: file
@@ -118,6 +134,9 @@ func warnScopedIndex(context *GlueContext, ix interface{}) {
 	def, floor := si.indexDefn(), si.scopeFloor()
 	if def == nil || def.Since == "" || floor.IsZero() {
 		return // never scoped, or backfilled to complete: full coverage, no warning
+	}
+	if h, ok := ix.(interface{ hybridServes() bool }); ok && h.hybridServes() {
+		return // hybrid serve: index ∪ scan-below-floor answers COMPLETELY
 	}
 	context.WarnOncef("index-scope:"+def.Name,
 		"index %q is time-scoped (indexed back to %s): results reflect ONLY containers modified since then"+

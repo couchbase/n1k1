@@ -39,6 +39,7 @@ package glue
 // the rung-1 disclosure contract, with the warning naming the CURRENT floor.
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -49,6 +50,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 
 	"github.com/couchbase/query/datastore"
+	"github.com/couchbase/query/errors"
 
 	"github.com/couchbase/n1k1/records"
 )
@@ -399,4 +401,152 @@ func backfillFTS(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*In
 	}
 	fi.floorNanos.Store(floorNanos(newFloor))
 	return res, nil
+}
+
+// ---------------------------------------------------------------- hybrid serve
+
+// IndexHybridServe enables the rung-2 hybrid: a time-scoped gsi index answers a
+// scan COMPLETELY as index entries ∪ an on-the-fly evaluation of below-floor
+// containers (env N1K1_INDEX_NOHYBRID disables, restoring the rung-1 disclosure
+// contract -- useful for A/B and for making the scan cost of a barely-backfilled
+// index explicit).
+var IndexHybridServe = true
+
+func init() {
+	if os.Getenv("N1K1_INDEX_NOHYBRID") != "" {
+		IndexHybridServe = false
+	}
+}
+
+// hybridServes: gsi scans really union in the below-floor remainder (unless the
+// kill switch is set), so no disclosure warning is needed (see warnScopedIndex).
+func (si *secondaryIndex) hybridServes() bool { return IndexHybridServe }
+
+// scanBelowFloor emits the spans' matches among containers BELOW the index's
+// floor, per the index interface contract: each record is evaluated with the
+// SAME key/condition expressions the build uses (indexEntryForDoc) into the SAME
+// order-preserving encoding, then filtered with the SAME encoded span bounds --
+// the scan half cannot drift from the index half. Cost is a records scan of the
+// unindexed remainder, shrinking as backfill proceeds (and zero at complete).
+// NOTE a nested-loop rescan re-walks the remainder per outer row -- correct, and
+// the same cost shape as any unindexed inner keyspace.
+func (si *secondaryIndex) scanBelowFloor(spans []*datastore.Span, limit int64,
+	seen map[string]bool, projectKeys bool, conn *datastore.IndexConnection) {
+	floor := si.scopeFloor()
+	if floor.IsZero() || !IndexHybridServe || len(spans) == 0 {
+		return
+	}
+	if limit <= 0 {
+		limit = int64(1) << 62
+	}
+
+	// Precompute each span's encoded bounds once (scanSpan does the same per call).
+	type encSpan struct {
+		span      *datastore.Span
+		low, high []byte
+	}
+	encs := make([]encSpan, 0, len(spans))
+	for _, sp := range spans {
+		if sp == nil {
+			continue
+		}
+		encs = append(encs, encSpan{span: sp, low: encodeSeq(sp.Range.Low), high: encodeSeq(sp.Range.High)})
+	}
+	if len(encs) == 0 {
+		return
+	}
+
+	ns := si.ks.Namespace().Name()
+	srcDir := filepath.Join(si.ks.sds.root, ns, si.ks.Name())
+	opts := ScanWalkOptions
+	opts.PathPrefix = ""
+	opts.FileFilter = func(_ string, info os.FileInfo) bool {
+		return info.ModTime().Before(floor) // ONLY the unindexed remainder
+	}
+	src, err := records.Walk(srcDir, opts)
+	if err != nil {
+		conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
+		return
+	}
+	defer src.Close()
+
+	ctx := NewGlueContext(time.Now())
+	n := len(si.def.rangeKey)
+	var keyBuf []byte
+	var rec records.Record
+	var sent int64
+	for sent < limit {
+		ok, err := src.Next(&rec)
+		if err != nil {
+			conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
+			return
+		}
+		if !ok {
+			break
+		}
+		entry, ok, err := indexEntryForDoc(ctx, si.def, &rec, &keyBuf)
+		if err != nil {
+			conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
+			return
+		}
+		if !ok {
+			continue // WHERE false / MISSING leading key: not an index row
+		}
+		compEnds, docID, ok := splitKey(entry, n)
+		if !ok {
+			continue
+		}
+		in := false
+		for _, e := range encs {
+			if entryWithinSpan(entry, compEnds, e.span, e.low, e.high) {
+				in = true
+				break
+			}
+		}
+		if !in {
+			continue
+		}
+		if seen != nil {
+			if seen[string(docID)] {
+				continue
+			}
+			seen[string(docID)] = true
+		}
+		out := &datastore.IndexEntry{PrimaryKey: string(docID)}
+		if projectKeys {
+			out.EntryKey = decodeKeyComponents(entry, compEnds)
+		}
+		if !conn.Sender().SendEntry(out) {
+			return
+		}
+		sent++
+	}
+}
+
+// entryWithinSpan applies a span's bounds to one encoded index entry -- the EXACT
+// prefix comparisons scanSpan runs against the b+tree walk, factored so the
+// hybrid scan filters below-floor records with identical semantics.
+func entryWithinSpan(k []byte, compEnds []int, span *datastore.Span, lowEnc, highEnc []byte) bool {
+	incl := span.Range.Inclusion
+	if len(span.Range.Low) > 0 {
+		if len(compEnds) < len(span.Range.Low) {
+			return false
+		}
+		p := k[:compEnds[len(span.Range.Low)-1]]
+		c := bytes.Compare(p, lowEnc)
+		if c < 0 || (c == 0 && incl&datastore.LOW == 0) {
+			return false
+		}
+	}
+	if len(span.Range.High) > 0 {
+		if len(compEnds) < len(span.Range.High) {
+			return false
+		}
+		p := k[:compEnds[len(span.Range.High)-1]]
+		c := bytes.Compare(p, highEnc)
+		if c > 0 || (c == 0 && incl&datastore.HIGH == 0) {
+			return false
+		}
+	}
+	return true
 }

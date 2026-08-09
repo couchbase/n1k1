@@ -673,7 +673,9 @@ func (si *secondaryIndex) Scan(requestId string, span *datastore.Span, distinct 
 	limit int64, cons datastore.ScanConsistency, vector timestamp.Vector,
 	conn *datastore.IndexConnection) {
 	defer conn.Sender().Close()
-	si.scanSpan(span, limit, nil, false, conn)
+	seen := map[string]bool{} // shared with the hybrid half (no double-emits)
+	si.scanSpan(span, limit, seen, false, conn)
+	si.scanBelowFloor([]*datastore.Span{span}, limit, seen, false, conn)
 }
 
 // scanSpan walks the bbolt B+tree in N1QL collation order (guaranteed by the

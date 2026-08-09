@@ -1139,6 +1139,12 @@ func TestFTSIncremental(t *testing.T) {
 // scope never silently narrows an answer (every query the index serves carries a
 // disclosure warning), and data outside the scope stays reachable by a plain scan.
 func TestSecondaryIndexTimeScoped(t *testing.T) {
+	// This guards the rung-1 DISCLOSED-WINDOW contract (scoped answers + warning),
+	// which hybrid serving (on by default, rung 2) deliberately supersedes -- pin
+	// it off; TestSecondaryIndexHybridServe covers the hybrid semantics.
+	defer func(prev bool) { glue.IndexHybridServe = prev }(glue.IndexHybridServe)
+	glue.IndexHybridServe = false
+
 	root := t.TempDir()
 	ksDir := filepath.Join(root, "default", "logs")
 	if err := os.MkdirAll(ksDir, 0o755); err != nil {
@@ -1255,6 +1261,12 @@ func TestSecondaryIndexTimeScoped(t *testing.T) {
 // lowered floor; the disclosure warning tracks the CURRENT floor and STOPS at
 // complete; appends to a backfilled container catch up incrementally afterwards.
 func TestSecondaryIndexBackfill(t *testing.T) {
+	// Floor mechanics are asserted through the rung-1 disclosed-window lens
+	// (scoped answers + warning progression) -- pin hybrid off;
+	// TestSecondaryIndexHybridServe covers backfill WITH hybrid.
+	defer func(prev bool) { glue.IndexHybridServe = prev }(glue.IndexHybridServe)
+	glue.IndexHybridServe = false
+
 	root := t.TempDir()
 	ksDir := filepath.Join(root, "default", "logs")
 	if err := os.MkdirAll(ksDir, 0o755); err != nil {
@@ -1377,5 +1389,109 @@ func TestSecondaryIndexBackfill(t *testing.T) {
 	}
 	if cu2 == cuBase {
 		t.Fatal("append should count as an incremental catch-up")
+	}
+}
+
+// TestSecondaryIndexHybridServe: rung 2's completion — a time-scoped gsi index
+// answers a scan COMPLETELY (index entries ∪ an on-the-fly evaluation of
+// below-floor containers, filtered by the SAME key encoding and span bounds), so
+// the disclosure warning stays silent. The kill switch restores the rung-1
+// disclosed-window contract. Backfill composes: the scanned remainder shrinks,
+// and answers stay identical throughout.
+func TestSecondaryIndexHybridServe(t *testing.T) {
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeF := func(name string, lines ...string) {
+		if err := os.WriteFile(filepath.Join(ksDir, name),
+			[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeF("ancient.jsonl", `{"id":"anc1","sev":"ERROR"}`, `{"id":"anc2","sev":"WARN"}`)
+	writeF("old.jsonl", `{"id":"old1","sev":"ERROR"}`, `{"id":"old2","sev":"INFO"}`)
+	writeF("new.jsonl", `{"id":"new1","sev":"ERROR"}`)
+	chT := func(name string, t0 time.Time) {
+		if err := os.Chtimes(filepath.Join(ksDir, name), t0, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chT("ancient.jsonl", time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	chT("old.jsonl", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err := os.MkdirAll(filepath.Join(root, ".n1k1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".n1k1", "catalog.json"), []byte(`{
+		"indexes": [
+			{"name": "bysev", "keyspace": "logs", "keys": ["sev"],
+			 "since": "2026-01-01T00:00:00Z"}
+		]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(q string) (rows []string, warned bool) {
+		t.Helper()
+		sess, err := glue.OpenSession(root, "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("run %q: %v", q, err)
+		}
+		for _, r := range res.Rows {
+			rows = append(rows, string(r))
+		}
+		sort.Strings(rows)
+		for _, w := range res.Warnings {
+			warned = warned || strings.Contains(w.Error(), "time-scoped")
+		}
+		return rows, warned
+	}
+	const q = `SELECT RAW l.id FROM logs l WHERE l.sev = "ERROR"`
+	const covering = `SELECT l.sev AS s FROM logs l WHERE l.sev = "ERROR"`
+	wantAll := `"anc1","new1","old1"`
+
+	// Hybrid (default): COMPLETE answer, NO warning -- straight after the scoped build.
+	rows, warned := run(q)
+	if strings.Join(rows, ",") != wantAll || warned {
+		t.Fatalf("hybrid: rows=%v warned=%v, want [%s] false", rows, warned, wantAll)
+	}
+	// The covering path unions identically (EntryKey reconstructed from the same encoding).
+	cov, warned := run(covering)
+	if len(cov) != 3 || warned {
+		t.Fatalf("hybrid covering: rows=%v warned=%v, want 3 rows, no warning", cov, warned)
+	}
+
+	// Kill switch: the rung-1 disclosed-window contract comes back.
+	glue.IndexHybridServe = false
+	rows, warned = run(q)
+	glue.IndexHybridServe = true
+	if strings.Join(rows, ",") != `"new1"` || !warned {
+		t.Fatalf("no-hybrid: rows=%v warned=%v, want [\"new1\"] true", rows, warned)
+	}
+
+	// Backfill one page (old.jsonl): the scanned remainder shrinks; answers identical.
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := glue.BackfillIndex(sess.Store.Datastore, "bysev", 1, nil); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	sess.Close()
+	rows, warned = run(q)
+	if strings.Join(rows, ",") != wantAll || warned {
+		t.Fatalf("hybrid mid-backfill: rows=%v warned=%v, want [%s] false", rows, warned, wantAll)
+	}
+
+	// A multi-span predicate (IN) unions + dedups across index and scan halves.
+	rows, warned = run(`SELECT RAW l.id FROM logs l WHERE l.sev IN ["ERROR", "WARN"]`)
+	if strings.Join(rows, ",") != `"anc1","anc2","new1","old1"` || warned {
+		t.Fatalf("hybrid multi-span: rows=%v warned=%v", rows, warned)
 	}
 }

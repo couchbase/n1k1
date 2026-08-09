@@ -300,9 +300,28 @@ container catch up incrementally) + the lowered floor + the re-scoped signature
 together — interrupt + resume safe. At complete the stored floor is 0: the index covers
 the whole keyspace and the disclosure warning STOPS (it names the CURRENT floor while
 backfill is in progress). `.index list/show` show the floor. Guard:
-`TestSecondaryIndexBackfill`. **Still open from rung 2: hybrid serving**
-(index ∪ scan-below-floor) — until then a partially-backfilled index keeps the
-disclosure contract.
+`TestSecondaryIndexBackfill`.
+
+**Rung 2 COMPLETE — hybrid serving (gsi).** A time-scoped gsi scan now answers
+COMPLETELY: index entries ∪ an on-the-fly evaluation of below-floor containers
+(`secondaryIndex.scanBelowFloor`), where each below-floor record runs the SAME
+key/condition expressions (`indexEntryForDoc`) into the SAME order-preserving encoding
+and is filtered by the SAME encoded span bounds (`entryWithinSpan`, factored from
+`scanSpan`) — the two halves cannot disagree on semantics. Shares the scan's dedup map
+and limit; rides both the plain and covering paths (EntryKey reconstructs from the
+identical encoding) and the single-span `Scan` interface method. Because results are
+complete, `warnScopedIndex` stays SILENT for hybrid-served gsi (the ClickHouse
+materialize-projection shape: always correct, monotonically faster as backfill lowers
+the floor; the scanned remainder is zero at complete). Kill switch
+`N1K1_INDEX_NOHYBRID` / `glue.IndexHybridServe=false` restores the rung-1
+disclosed-window contract. NOT hybrid: **fts** (text matching needs the index — a
+scoped fts keeps the disclosure warning) and the **in-memory backend** (`-index=mem`:
+`scanBelowFloor` is a no-op, `hybridServes()=false`, so its scoped indexes disclose —
+which also closed a rung-1 gap where the mem backend lacked the `scopedIndex` methods
+entirely and would have served scoped answers silently). Guard:
+`TestSecondaryIndexHybridServe` (complete answers + no warning straight after the
+scoped build, covering path, kill switch, mid-backfill identity, multi-span IN dedup
+across the two halves).
 
 **Rung 1 SHIPPED — the time-scoped index (gsi + fts).** An index def carries
 `"since": "<RFC3339>"` (`.index create <name> on <ks> (<expr>) since=<ts|72h|7d>`; a

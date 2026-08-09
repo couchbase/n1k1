@@ -248,7 +248,20 @@ type memIndex struct {
 
 var _ index = (*memIndex)(nil)
 
-func (mi *memIndex) indexDefn() *indexDef             { return mi.def }
+func (mi *memIndex) indexDefn() *indexDef { return mi.def }
+
+// scopeFloor: the in-memory backend never backfills, so a scoped def's boundary
+// is always its declared Since -- which also means scans DISCLOSE (see
+// warnScopedIndex; hybridServes is false, so the warning stays on).
+func (mi *memIndex) scopeFloor() time.Time { return mi.def.sinceT }
+
+// scanBelowFloor: no hybrid support on the in-memory backend (no-op) -- a scoped
+// mem index keeps the rung-1 disclosure contract instead.
+func (mi *memIndex) scanBelowFloor([]*datastore.Span, int64, map[string]bool,
+	bool, *datastore.IndexConnection) {
+}
+
+func (mi *memIndex) hybridServes() bool { return false }
 func (mi *memIndex) KeyspaceId() string               { return mi.ks.Id() }
 func (mi *memIndex) Id() string                       { return mi.def.Name }
 func (mi *memIndex) Name() string                     { return mi.def.Name }
