@@ -57,9 +57,71 @@ func (c *cli) cmdIndex(arg string) {
 		c.cmdIndexSuggest(rest)
 	case "create":
 		c.cmdIndexCreate(rest)
+	case "backfill":
+		c.cmdIndexBackfill(rest)
 	default:
 		fmt.Fprintf(c.stderr, "unknown subcommand %q; try .index help\n", sub)
 	}
+}
+
+// cmdIndexBackfill implements `.index backfill <name> [--pages N]`: lower a
+// time-scoped index's floor by N containers (default: all remaining, i.e. run to
+// COMPLETE), newest-first, each invocation committing atomically so an
+// interrupted backfill resumes where it stopped. At complete, the scoped-index
+// disclosure warning stops -- the index covers the whole keyspace.
+func (c *cli) cmdIndexBackfill(arg string) {
+	fields := strings.Fields(strings.TrimSpace(arg))
+	name, pages := "", 0
+	for i := 0; i < len(fields); i++ {
+		switch {
+		case fields[i] == "--pages" && i+1 < len(fields):
+			n, err := strconv.Atoi(fields[i+1])
+			if err != nil || n < 1 {
+				fmt.Fprintf(c.stderr, "%s: .index backfill: --pages wants a positive count, got %q\n",
+					c.prog, fields[i+1])
+				c.failed = true
+				return
+			}
+			pages = n
+			i++
+		case strings.HasPrefix(fields[i], "--"):
+			fmt.Fprintf(c.stderr, "%s: .index backfill: unknown flag %q (usage: .index backfill <name> [--pages N])\n",
+				c.prog, fields[i])
+			c.failed = true
+			return
+		case name == "":
+			name = unquoteIdent(fields[i])
+		default:
+			fmt.Fprintf(c.stderr, "%s: .index backfill: one index name only (got %q and %q)\n",
+				c.prog, name, fields[i])
+			c.failed = true
+			return
+		}
+	}
+	if name == "" {
+		fmt.Fprintln(c.stderr, "usage: .index backfill <name> [--pages N]   (N containers per run; default: all remaining)")
+		return
+	}
+	if c.sess == nil || c.sess.Store == nil {
+		fmt.Fprintln(c.stderr, "no datastore open")
+		return
+	}
+
+	res, err := glue.BackfillIndex(c.sess.Store.Datastore, name, pages, nil)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "%s: .index backfill: %v\n", c.prog, err)
+		c.failed = true
+		return
+	}
+	if res.Complete {
+		fmt.Fprintf(c.stderr, "%sbackfilled %d container(s), %d record(s): index %q is now COMPLETE "+
+			"(covers the whole keyspace; the time-scope warning stops)\n",
+			c.icon("✓ "), res.Containers, res.Docs, res.Name)
+		return
+	}
+	fmt.Fprintf(c.stderr, "%sbackfilled %d container(s), %d record(s): floor now %s, %d container(s) remaining "+
+		"(run .index backfill %s again to continue)\n",
+		c.icon("✓ "), res.Containers, res.Docs, res.Floor, res.Remaining, res.Name)
 }
 
 // cmdIndexCreate implements `.index create`: add index definition(s) to
@@ -486,6 +548,13 @@ func (c *cli) cmdIndexHelp() {
   .index create ...        add index def(s) to catalog.json and build them:
                              .index create <name> on <ks> (<expr>[, <expr>]) [since=<ts|72h|7d>] [where <expr>]
                              .index create {"indexes":[ ... ]}   (e.g. paste suggest output)
+                           since= makes the index TIME-SCOPED: only containers modified
+                           since then are indexed (latest data queryable immediately);
+                           every query it serves discloses the scope in a warning
+  .index backfill <name> [--pages N]   walk a time-scoped index's floor DOWN, newest
+                           containers first (N per run; default all remaining). Each run
+                           commits atomically (interrupt + resume safe); at COMPLETE the
+                           index covers the whole keyspace and the warning stops
   .index help              this help
 
 Index definitions live in <dataRoot>/.n1k1/catalog.json:
@@ -614,9 +683,12 @@ func (c *cli) cmdIndexList() {
 		} else if ix.Kind == "fts" && keys == "" {
 			keys = "(all fields)"
 		}
-		since := interface{}(nil)
+		since, floor := interface{}(nil), interface{}(nil)
 		if ix.Since != "" {
 			since = ix.Since
+		}
+		if ix.Floor != "" && ix.Floor != ix.Since { // backfill moved it (or "complete")
+			floor = ix.Floor
 		}
 		rows = append(rows, orderedJSONRow(
 			[2]interface{}{"index", ix.Namespace + ":" + ix.Keyspace + "." + ix.Name},
@@ -624,6 +696,7 @@ func (c *cli) cmdIndexList() {
 			[2]interface{}{"keys", keys},
 			[2]interface{}{"where", where},
 			[2]interface{}{"since", since},
+			[2]interface{}{"floor", floor},
 			[2]interface{}{"entries", entries},
 			[2]interface{}{"size", size},
 			[2]interface{}{"status", status},
@@ -661,6 +734,13 @@ func (c *cli) cmdIndexShow(name string) {
 		if ix.Since != "" {
 			pairs = append(pairs, [2]string{"since",
 				ix.Since + "  (time-scoped: only containers modified since then)"})
+			if ix.Floor == "complete" {
+				pairs = append(pairs, [2]string{"floor",
+					"complete  (backfilled: covers the whole keyspace)"})
+			} else if ix.Floor != "" && ix.Floor != ix.Since {
+				pairs = append(pairs, [2]string{"floor",
+					ix.Floor + "  (backfill in progress: .index backfill " + ix.Name + " to continue)"})
+			}
 		}
 		if ix.Mapping != "" {
 			pairs = append(pairs, [2]string{"mapping", ix.Mapping})

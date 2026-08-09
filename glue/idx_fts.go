@@ -40,6 +40,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	bleve "github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/mapping"
@@ -143,6 +145,11 @@ type ftsIndex struct {
 	def      *indexDef
 	idx      bleve.Index
 	bleveDir string // the on-disk bleve index directory (for size/path reporting)
+
+	// floorNanos is the CURRENT effective scope boundary (UnixNano; 0 = complete /
+	// unscoped), refreshed at every open and lowered by BackfillIndex. Atomic:
+	// searches read it (disclosure) while a concurrent backfill lowers it.
+	floorNanos atomic.Int64
 }
 
 var _ datastore.FTSIndex = (*ftsIndex)(nil)
@@ -150,6 +157,15 @@ var _ datastore.FTSIndex = (*ftsIndex)(nil)
 // indexDefn mirrors secondaryIndex's accessor so wasm-neutral code (e.g. the FTS
 // scan's time-scope disclosure) can reach the def via an interface assertion.
 func (fi *ftsIndex) indexDefn() *indexDef { return fi.def }
+
+// scopeFloor reports the effective scope boundary for scan-time disclosure
+// (zero = the index covers everything; see scopedIndex).
+func (fi *ftsIndex) scopeFloor() time.Time {
+	if n := fi.floorNanos.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
+}
 
 func (fi *ftsIndex) KeyspaceId() string               { return fi.ks.Id() }
 func (fi *ftsIndex) Id() string                       { return fi.def.Name }
@@ -664,17 +680,19 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 			slot.err = e
 			return
 		}
-		sig, e := sourceSignature(srcDir, def.sinceT)
+		floor := readFTSFloor(instDir, def) // effective scope: stored floor, else def.Since
+		sig, e := sourceSignature(srcDir, floor)
 		if e != nil {
 			slot.err = e
 			return
 		}
-		idx, e := openOrBuildBleve(bleveDir, instDir, ks, def, srcDir, sig, onDoc)
+		idx, e := openOrBuildBleve(bleveDir, instDir, ks, def, srcDir, sig, floor, onDoc)
 		if e != nil {
 			slot.err = e
 			return
 		}
 		slot.fi = &ftsIndex{ks: ks, def: def, idx: idx, bleveDir: bleveDir}
+		slot.fi.floorNanos.Store(floorNanos(floor))
 	})
 	if slot.err != nil {
 		return nil, slot.err
@@ -683,14 +701,15 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 	// Per-call freshness recheck (serialized per index).
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
-	sig, err := sourceSignature(srcDir, def.sinceT)
+	floor := readFTSFloor(instDir, def) // effective scope: stored floor, else def.Since
+	sig, err := sourceSignature(srcDir, floor)
 	if err != nil {
 		return nil, err
 	}
 	if force || readFTSSig(instDir) != sig {
 		caughtUp := false
 		if !force {
-			ok, e := catchUpBleve(slot.fi.idx, def, instDir, srcDir, sig, onDoc)
+			ok, e := catchUpBleve(slot.fi.idx, def, instDir, srcDir, sig, floor, onDoc)
 			if e != nil {
 				return nil, e
 			}
@@ -700,7 +719,7 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 			indexBuildsCatchUp.Add(1)
 		} else {
 			slot.fi.idx.Close()
-			idx, e := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, onDoc)
+			idx, e := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, floor, onDoc)
 			if e != nil {
 				return nil, e
 			}
@@ -708,6 +727,7 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 			indexBuildsFull.Add(1)
 		}
 	}
+	slot.fi.floorNanos.Store(floorNanos(floor))
 	slot.fi.ks = ks
 	return slot.fi, nil
 }
@@ -715,13 +735,13 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 // openOrBuildBleve opens the bleve dir if it exists (catching up incrementally when
 // stale), else builds it.
 func openOrBuildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
-	srcDir, sig string, onDoc func(int)) (bleve.Index, error) {
+	srcDir, sig string, floor time.Time, onDoc func(int)) (bleve.Index, error) {
 	if _, err := os.Stat(bleveDir); err == nil {
 		if idx, e := bleve.Open(bleveDir); e == nil {
 			if readFTSSig(instDir) == sig {
 				return idx, nil
 			}
-			if ok, e2 := catchUpBleve(idx, def, instDir, srcDir, sig, onDoc); e2 == nil && ok {
+			if ok, e2 := catchUpBleve(idx, def, instDir, srcDir, sig, floor, onDoc); e2 == nil && ok {
 				indexBuildsCatchUp.Add(1)
 				return idx, nil
 			}
@@ -729,7 +749,7 @@ func openOrBuildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 		}
 		// Fall through to rebuild on a corrupt/unopenable/uncatchable dir.
 	}
-	idx, err := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, onDoc)
+	idx, err := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, floor, onDoc)
 	if err == nil {
 		indexBuildsFull.Add(1)
 	}
@@ -738,7 +758,7 @@ func openOrBuildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 
 // buildBleve (re)creates the bleve index from a full keyspace scan.
 func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
-	srcDir, sig string, onDoc func(int)) (bleve.Index, error) {
+	srcDir, sig string, floor time.Time, onDoc func(int)) (bleve.Index, error) {
 	if err := os.RemoveAll(bleveDir); err != nil {
 		return nil, err
 	}
@@ -747,7 +767,7 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 		return nil, fmt.Errorf("fts build, bleve.New %q: %w", bleveDir, err)
 	}
 
-	opts := indexWalkOptions(def)
+	opts := indexWalkOptions(floor)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		idx.Close()
@@ -822,13 +842,13 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 // or a per-doc-file keyspace whose record ids carry no position), or any
 // SourceAnomalies violation (rotated/truncated/rewritten container -- adds-only
 // can't retract those postings).
-func catchUpBleve(idx bleve.Index, def *indexDef, instDir, srcDir, sig string, onDoc func(int)) (bool, error) {
+func catchUpBleve(idx bleve.Index, def *indexDef, instDir, srcDir, sig string, floor time.Time, onDoc func(int)) (bool, error) {
 	water, waterFP, err := getBleveWater(idx)
 	if err != nil || len(water) == 0 {
 		return false, err
 	}
 
-	opts := indexWalkOptions(def)
+	opts := indexWalkOptions(floor)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		return false, fmt.Errorf("fts catch-up, walk %q: %w", srcDir, err)
@@ -930,9 +950,32 @@ func writeFTSSig(instDir, sig string) error {
 	return os.WriteFile(filepath.Join(instDir, ftsSigFile), []byte(sig), 0o644)
 }
 
+// ftsFloorFile is instDir's stored-floor file (see floorFormat; "0" = complete).
+// A FILE rather than bleve internal KV so the effective floor is readable BEFORE
+// the index is opened (the open path needs it for the source signature). Written
+// AFTER a backfill page's batch commits: a crash between leaves the floor one
+// page high, and re-indexing that page is idempotent (bleve Index() upserts).
+const ftsFloorFile = "floor"
+
+// readFTSFloor reads the fts index's effective scope boundary: the stored floor
+// when a backfill has run, else the def's declared Since.
+func readFTSFloor(instDir string, def *indexDef) time.Time {
+	if b, err := os.ReadFile(filepath.Join(instDir, ftsFloorFile)); err == nil {
+		if t, ok := floorParse(b); ok {
+			return t
+		}
+	}
+	return def.sinceT
+}
+
+func writeFTSFloor(instDir string, floor time.Time) error {
+	return os.WriteFile(filepath.Join(instDir, ftsFloorFile), []byte(floorFormat(floor)), 0o644)
+}
+
 // fillFTSInfo populates an IndexInfo for a built fts index (for .index list/show).
 func (fi *ftsIndex) fillInfo(info *IndexInfo) {
 	info.Built = true
+	info.Floor = floorInfo(fi.def, fi.scopeFloor())
 	if n, err := fi.idx.DocCount(); err == nil {
 		info.Entries = int(n)
 	}

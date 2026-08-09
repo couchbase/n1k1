@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/couchbase/query/datastore"
@@ -94,33 +95,70 @@ func sourceSignature(dir string, since time.Time) (string, error) {
 	return fmt.Sprintf("%x", b), nil
 }
 
+// scopedIndex is what the scan-time disclosure needs from an index: its def and
+// its CURRENT effective floor (the backfill-lowered scope boundary; zero = the
+// index covers everything, so no disclosure). Implemented by secondaryIndex and
+// ftsIndex; asserted as an interface so wasm-neutral scan code names no !wasm type.
+type scopedIndex interface {
+	indexDefn() *indexDef
+	scopeFloor() time.Time
+}
+
 // warnScopedIndex discloses a TIME-SCOPED index (indexDef.Since) serving a query:
 // a scoped index is partial BY DECLARATION, and the contract (DESIGN-indexing.md
 // "Newest-first / partial index builds") is that it must never answer as if
-// complete -- so every request it serves carries one warning naming the scope.
-// Deduped per request (WarnOncef), so joins/rescans don't repeat it.
-func warnScopedIndex(context *GlueContext, def *indexDef) {
-	if context == nil || def == nil || def.Since == "" {
+// complete -- so every request it serves carries one warning naming the CURRENT
+// floor (backfill lowers it; at floor==0 the index is complete and the warning
+// stops). Deduped per request (WarnOncef), so joins/rescans don't repeat it.
+func warnScopedIndex(context *GlueContext, ix interface{}) {
+	si, ok := ix.(scopedIndex)
+	if context == nil || !ok {
 		return
 	}
+	def, floor := si.indexDefn(), si.scopeFloor()
+	if def == nil || def.Since == "" || floor.IsZero() {
+		return // never scoped, or backfilled to complete: full coverage, no warning
+	}
 	context.WarnOncef("index-scope:"+def.Name,
-		"index %q is time-scoped (since=%s): results reflect ONLY containers modified since then"+
-			" (drop the index or re-create without since= for full coverage)",
-		def.Name, def.Since)
+		"index %q is time-scoped (indexed back to %s): results reflect ONLY containers modified since then"+
+			" (.index backfill %s indexes older data; at complete this warning stops)",
+		def.Name, floor.UTC().Format(time.RFC3339), def.Name)
 }
 
 // indexWalkOptions returns the record-walk options an index build/catch-up scans
-// with: the standard scan options, no path prefix, and -- for a time-scoped def --
-// a FileFilter admitting only containers modified at/after def.Since (whole
-// containers; the walk sees the corpus as if older files did not exist).
-func indexWalkOptions(def *indexDef) records.WalkOptions {
+// with: the standard scan options, no path prefix, and -- for a non-zero floor --
+// a FileFilter admitting only containers modified at/after it (whole containers;
+// the walk sees the corpus as if older files did not exist). The floor is the
+// index's EFFECTIVE scope boundary: the stored, backfill-lowered floor when one
+// exists, else the def's declared Since.
+func indexWalkOptions(floor time.Time) records.WalkOptions {
 	opts := ScanWalkOptions
 	opts.PathPrefix = ""
-	if !def.sinceT.IsZero() {
-		since := def.sinceT
+	if !floor.IsZero() {
 		opts.FileFilter = func(_ string, info os.FileInfo) bool {
-			return !info.ModTime().Before(since)
+			return !info.ModTime().Before(floor)
 		}
 	}
 	return opts
+}
+
+// floorFormat / floorParse serialize a stored floor: decimal UnixNano, with "0"
+// meaning COMPLETE (backfilled to the beginning -- the index covers everything,
+// distinct from "no floor stored", which means the def's declared Since applies).
+func floorFormat(t time.Time) string {
+	if t.IsZero() {
+		return "0"
+	}
+	return strconv.FormatInt(t.UnixNano(), 10)
+}
+
+func floorParse(b []byte) (time.Time, bool) {
+	n, err := strconv.ParseInt(string(b), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if n == 0 {
+		return time.Time{}, true // complete
+	}
+	return time.Unix(0, n), true
 }

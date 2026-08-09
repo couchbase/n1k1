@@ -706,7 +706,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 			scan := vars.Temps[o.Params[0].(int)].(*plan.IndexScan)
 
 			if si, isSI := scan.Index().(index); isSI {
-				warnScopedIndex(context, si.indexDefn()) // time-scoped: disclose (never silently partial)
+				warnScopedIndex(context, si) // time-scoped: disclose (never silently partial)
 				SISpansScan(context, conn, scan, si, false)
 				return
 			}
@@ -798,7 +798,7 @@ func DatastoreScanIndexCovering(o *base.Op, vars *base.Vars,
 		return
 	}
 	if gctx, _ := vars.Temps[0].(*GlueContext); gctx != nil {
-		warnScopedIndex(gctx, si.indexDefn()) // time-scoped: disclose (never silently partial)
+		warnScopedIndex(gctx, si) // time-scoped: disclose (never silently partial)
 	}
 	paths := si.indexDefn().keyPaths
 
@@ -887,10 +887,7 @@ func DatastoreScanFTS(o *base.Op, vars *base.Vars,
 		yieldErr(fmt.Errorf("DatastoreScanFTS: index %T is not an FTSIndex", scan.Index()))
 		return
 	}
-	// (interface assertion, not *ftsIndex: that type is !wasm-only, this file isn't.)
-	if fi, hasDef := fts.(interface{ indexDefn() *indexDef }); hasDef {
-		warnScopedIndex(context, fi.indexDefn()) // time-scoped: disclose (never silently partial)
-	}
+	warnScopedIndex(context, fts) // time-scoped: disclose (never silently partial)
 	outName := scan.SearchInfo().OutName()
 
 	// Evaluate the SEARCH() info (field/query/options/offset/limit) on this

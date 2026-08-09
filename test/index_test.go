@@ -1249,3 +1249,133 @@ func TestSecondaryIndexTimeScoped(t *testing.T) {
 		t.Fatalf("out-of-scope churn must not build (full %d->%d, catchup %d->%d)", full2, f, cu2, c)
 	}
 }
+
+// TestSecondaryIndexBackfill: DESIGN-indexing.md rung 2 — paged BACKWARDS backfill
+// of a time-scoped index. Pages go newest-first and commit atomically with the
+// lowered floor; the disclosure warning tracks the CURRENT floor and STOPS at
+// complete; appends to a backfilled container catch up incrementally afterwards.
+func TestSecondaryIndexBackfill(t *testing.T) {
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeF := func(name string, lines ...string) {
+		if err := os.WriteFile(filepath.Join(ksDir, name),
+			[]byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeF("ancient.jsonl", `{"id":"anc1","sev":"ERROR"}`)
+	writeF("old.jsonl", `{"id":"old1","sev":"ERROR"}`, `{"id":"old2","sev":"INFO"}`)
+	writeF("new.jsonl", `{"id":"new1","sev":"ERROR"}`)
+	chT := func(name string, t0 time.Time) {
+		if err := os.Chtimes(filepath.Join(ksDir, name), t0, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chT("ancient.jsonl", time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))
+	chT("old.jsonl", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err := os.MkdirAll(filepath.Join(root, ".n1k1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".n1k1", "catalog.json"), []byte(`{
+		"indexes": [
+			{"name": "bysev", "keyspace": "logs", "keys": ["sev"],
+			 "since": "2026-01-01T00:00:00Z"}
+		]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(q string) (ids []string, warned bool) {
+		t.Helper()
+		sess, err := glue.OpenSession(root, "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("run %q: %v", q, err)
+		}
+		for _, r := range res.Rows {
+			var m map[string]string
+			if json.Unmarshal(r, &m) == nil && m["id"] != "" {
+				ids = append(ids, m["id"])
+			}
+		}
+		sort.Strings(ids)
+		for _, w := range res.Warnings {
+			warned = warned || strings.Contains(w.Error(), "time-scoped")
+		}
+		return ids, warned
+	}
+	backfill := func(pages int) *glue.IndexBackfillResult {
+		t.Helper()
+		sess, err := glue.OpenSession(root, "default")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+		res, err := glue.BackfillIndex(sess.Store.Datastore, "bysev", pages, nil)
+		if err != nil {
+			t.Fatalf("backfill: %v", err)
+		}
+		return res
+	}
+	const q = `SELECT l.id AS id FROM logs l WHERE l.sev = "ERROR"`
+
+	// Scoped: only the recent container, disclosed.
+	ids, warned := run(q)
+	if strings.Join(ids, ",") != "new1" || !warned {
+		t.Fatalf("scoped start: ids=%v warned=%v, want [new1] true", ids, warned)
+	}
+
+	// Page 1: newest-first means old.jsonl (2024) before ancient.jsonl (2023);
+	// floor lowers, still disclosed, still resumable.
+	r1 := backfill(1)
+	if r1.Complete || r1.Containers != 1 || r1.Remaining != 1 || r1.Floor == "" {
+		t.Fatalf("page 1 = %+v, want 1 container, 1 remaining, a floor, not complete", r1)
+	}
+	ids, warned = run(q)
+	if strings.Join(ids, ",") != "new1,old1" || !warned {
+		t.Fatalf("after page 1: ids=%v warned=%v, want [new1 old1] true (newest-first)", ids, warned)
+	}
+
+	// Page 2 exhausts the candidates: COMPLETE, full answers, the warning STOPS.
+	r2 := backfill(0)
+	if !r2.Complete || r2.Containers != 1 || r2.Remaining != 0 {
+		t.Fatalf("page 2 = %+v, want complete via the last container", r2)
+	}
+	ids, warned = run(q)
+	if strings.Join(ids, ",") != "anc1,new1,old1" || warned {
+		t.Fatalf("complete: ids=%v warned=%v, want [anc1 new1 old1] false (warning stops)", ids, warned)
+	}
+
+	// Backfill on a complete index is a clean no-op.
+	if r3 := backfill(0); !r3.Complete || r3.Containers != 0 {
+		t.Fatalf("no-op backfill = %+v, want complete, 0 containers", r3)
+	}
+
+	// An APPEND to a BACKFILLED container catches up incrementally (its watermark
+	// was committed with the page), not via a full rebuild.
+	fullBase, cuBase := glue.IndexBuildCounts()
+	f, err := os.OpenFile(filepath.Join(ksDir, "old.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(`{"id":"old3","sev":"ERROR"}` + "\n")
+	f.Close()
+	ids, warned = run(q)
+	if strings.Join(ids, ",") != "anc1,new1,old1,old3" || warned {
+		t.Fatalf("append after complete: ids=%v warned=%v, want the append visible, no warning", ids, warned)
+	}
+	full2, cu2 := glue.IndexBuildCounts()
+	if full2 != fullBase {
+		t.Fatalf("append to a backfilled container must not full-rebuild (full %d->%d)", fullBase, full2)
+	}
+	if cu2 == cuBase {
+		t.Fatal("append should count as an incremental catch-up")
+	}
+}

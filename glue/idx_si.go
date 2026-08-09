@@ -132,6 +132,7 @@ type IndexInfo struct {
 	Keys      []string
 	Where     string
 	Since     string // non-empty = TIME-SCOPED: only containers modified since then are indexed
+	Floor     string // scoped + built: the CURRENT backfill floor (RFC3339), or "complete"
 	Mapping   string // fts: the raw bleve index-mapping JSON, when the def carries one
 	Built     bool   // false if the artifact couldn't be opened/built (see Err)
 	Entries   int    // indexed doc/entry count, when Built
@@ -392,6 +393,7 @@ func (d *siDatastore) wrappedKeyspace(namespace, keyspace string) (*siKeyspace, 
 func (si *secondaryIndex) fillInfo(info *IndexInfo) {
 	info.Built = true
 	info.Path = si.db.Path()
+	info.Floor = floorInfo(si.def, si.scopeFloor())
 	if fi, err := os.Stat(si.db.Path()); err == nil {
 		info.SizeBytes = fi.Size()
 	}
@@ -623,9 +625,23 @@ type secondaryIndex struct {
 	ks  *siKeyspace
 	def *indexDef
 	db  *bolt.DB
+
+	// floorNanos is the CURRENT effective scope boundary (UnixNano; 0 = complete /
+	// unscoped), refreshed at every open and lowered by BackfillIndex. Atomic:
+	// scans read it (disclosure) while a concurrent backfill lowers it.
+	floorNanos atomic.Int64
 }
 
-func (si *secondaryIndex) indexDefn() *indexDef             { return si.def }
+func (si *secondaryIndex) indexDefn() *indexDef { return si.def }
+
+// scopeFloor reports the effective scope boundary for scan-time disclosure
+// (zero = the index covers everything; see scopedIndex).
+func (si *secondaryIndex) scopeFloor() time.Time {
+	if n := si.floorNanos.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
+}
 func (si *secondaryIndex) KeyspaceId() string               { return si.ks.Id() }
 func (si *secondaryIndex) Id() string                       { return si.def.Name }
 func (si *secondaryIndex) Name() string                     { return si.def.Name }
@@ -827,7 +843,13 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 	// index, not globally, so other indexes keep building in parallel.
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
-	sig, err := sourceSignature(srcDir, def.sinceT)
+	// The EFFECTIVE scope boundary: the stored, backfill-lowered floor when one
+	// exists (BackfillIndex), else the def's declared Since. Everything downstream
+	// -- signature, catch-up, rebuild, scan-time disclosure -- keys off it, so a
+	// backfilled index stays coherent across reopens and even full rebuilds (the
+	// floor lives in the meta bucket, which a rebuild preserves).
+	floor := getIndexFloor(slot.si.db, def)
+	sig, err := sourceSignature(srcDir, floor)
 	if err != nil {
 		return nil, err
 	}
@@ -845,13 +867,13 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 		// fingerprint-mismatched container leaves entries a fold can't retract).
 		caughtUp := false
 		if !force {
-			caughtUp, err = catchUpIndex(slot.si.db, ks, def, srcDir, sig, onDoc)
+			caughtUp, err = catchUpIndex(slot.si.db, ks, def, srcDir, sig, floor, onDoc)
 			if err != nil {
 				return nil, err
 			}
 		}
 		if !caughtUp {
-			if err := buildIndex(slot.si.db, ks, def, srcDir, sig, onDoc); err != nil {
+			if err := buildIndex(slot.si.db, ks, def, srcDir, sig, floor, onDoc); err != nil {
 				return nil, err
 			}
 			indexBuildsFull.Add(1)
@@ -859,6 +881,7 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 			indexBuildsCatchUp.Add(1)
 		}
 	}
+	slot.si.floorNanos.Store(floorNanos(floor))
 	// Re-home to the current keyspace wrapper (Indexer()/Fetch route through it).
 	slot.si.ks = ks
 	return slot.si, nil
@@ -870,12 +893,12 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 // encode(keyValues)+docID. v1 rebuilds the whole index in one transaction. onDoc,
 // when non-nil, is called with the running scanned-doc count (throttled) for
 // progress reporting.
-func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, onDoc func(int)) error {
+func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, floor time.Time, onDoc func(int)) error {
 	// Evaluate expressions with a lightweight context (build time -- Now() is the
 	// only context method a simple field/scalar expression might touch).
 	ctx := NewGlueContext(time.Now())
 
-	opts := indexWalkOptions(def)
+	opts := indexWalkOptions(floor)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		return fmt.Errorf("secondary-index build, walk %q: %w", srcDir, err)
@@ -984,7 +1007,7 @@ func indexEntryForDoc(ctx *GlueContext, def *indexDef, rec *records.Record, keyB
 // watermark (legacy sidecar / first build), no entries bucket, or the source
 // violated append-only — a rotated (deleted), truncated, or rewritten-in-place
 // container has entries no fold can retract, exactly the cursor anomaly taxonomy.
-func catchUpIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, onDoc func(int)) (bool, error) {
+func catchUpIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, floor time.Time, onDoc func(int)) (bool, error) {
 	var water map[string]int64
 	var waterFP map[string]string
 	haveState := false
@@ -1006,7 +1029,7 @@ func catchUpIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string
 	}
 
 	ctx := NewGlueContext(time.Now())
-	opts := indexWalkOptions(def)
+	opts := indexWalkOptions(floor)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		return false, fmt.Errorf("secondary-index catch-up, walk %q: %w", srcDir, err)

@@ -289,6 +289,21 @@ corpora rarely need deep history indexed. Paged backwards backfill (`.index back
 walking the floor down, resumable via the same watermark discipline, hybrid serving arriving
 with it) is the optional second rung, not the entry price.
 
+**Rung 2 SHIPPED (backfill half) — `.index backfill <name> [--pages N]`.** The floor from
+the window model, container-aligned: index state stores a FLOOR beside the watermark
+(bolt meta `floor` for gsi — atomic with each page's entries; the `instDir/floor` file
+for fts — written after the batch, crash-safe because re-indexing a page is an upsert).
+A page = the next-newest N not-yet-indexed containers (mtime ties ride along, so the
+indexed set stays exactly {mtime ≥ floor}); each page commits entries + the page
+containers' watermarks (merged into the stored water, so later appends to a backfilled
+container catch up incrementally) + the lowered floor + the re-scoped signature
+together — interrupt + resume safe. At complete the stored floor is 0: the index covers
+the whole keyspace and the disclosure warning STOPS (it names the CURRENT floor while
+backfill is in progress). `.index list/show` show the floor. Guard:
+`TestSecondaryIndexBackfill`. **Still open from rung 2: hybrid serving**
+(index ∪ scan-below-floor) — until then a partially-backfilled index keeps the
+disclosure contract.
+
 **Rung 1 SHIPPED — the time-scoped index (gsi + fts).** An index def carries
 `"since": "<RFC3339>"` (`.index create <name> on <ks> (<expr>) since=<ts|72h|7d>`; a
 duration resolves to an ABSOLUTE cutoff at create — the scope never slides). Both build

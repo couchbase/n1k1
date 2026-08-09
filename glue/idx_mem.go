@@ -582,7 +582,7 @@ func memCachePlan(dataRoot string) []map[string]string {
 func memEntriesBuild(srcDir string, def *indexDef) ([][]byte, error) {
 	ctx := NewGlueContext(time.Now())
 
-	opts := indexWalkOptions(def)
+	opts := indexWalkOptions(def.sinceT)
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		return nil, err
