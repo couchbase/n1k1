@@ -673,7 +673,7 @@ func (si *secondaryIndex) Scan(requestId string, span *datastore.Span, distinct 
 	limit int64, cons datastore.ScanConsistency, vector timestamp.Vector,
 	conn *datastore.IndexConnection) {
 	defer conn.Sender().Close()
-	si.scanSpan(span, limit, nil, false, conn) // hybrid-serves internally (merge-ordered)
+	si.scanSpan(span, limit, nil, false, false, conn) // order unknown here: conservative merge-ordered hybrid
 }
 
 // scanSpan walks the bbolt B+tree in N1QL collation order (guaranteed by the
@@ -688,7 +688,7 @@ func (si *secondaryIndex) Scan(requestId string, span *datastore.Span, distinct 
 // components into IndexEntry.EntryKey so the drainer can reconstruct the projected
 // doc without a fetch (DatastoreScanIndexCovering).
 func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
-	seen map[string]bool, projectKeys bool, conn *datastore.IndexConnection) {
+	seen map[string]bool, projectKeys, orderFree bool, conn *datastore.IndexConnection) {
 	if limit <= 0 {
 		limit = int64(1) << 62
 	}
@@ -702,9 +702,16 @@ func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
 	// span, pre-filtered by the same encoded bounds and SORTED by encoded key --
 	// merged into the walk below so the emission stays key-ordered (the planner
 	// elides ORDER BY when the index provides order; appending would mis-sort).
+	// Under a pushed-down LIMIT only the k smallest are kept (bounded top-k).
 	// nil for an unscoped/complete index or with hybrid off. The two halves are
 	// disjoint by the floor partition, so the merge cannot double-emit a doc.
-	hybrid := si.hybridEntriesForSpan(span, lowEnc, highEnc, conn)
+	//
+	// orderFree (the plan provably doesn't depend on emission order): skip the
+	// collect+sort entirely -- the remainder STREAMS unbuffered after the walk.
+	var hybrid [][]byte
+	if !orderFree {
+		hybrid = si.hybridEntriesForSpan(span, lowEnc, highEnc, limit, conn)
+	}
 	hi := 0
 
 	var sent int64
@@ -801,6 +808,17 @@ func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
 			break
 		}
 		hi++
+	}
+
+	// orderFree: the below-floor remainder STREAMS unbuffered (no collect, no
+	// sort) -- emission order can't matter to this plan (markIndexScanOrderFree).
+	if orderFree && !stopped {
+		si.hybridScanSpan(span, lowEnc, highEnc, conn, func(entry []byte) bool {
+			if sent >= limit {
+				return false
+			}
+			return emit(entry)
+		})
 	}
 }
 

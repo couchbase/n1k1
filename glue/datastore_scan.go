@@ -707,7 +707,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 
 			if si, isSI := scan.Index().(index); isSI {
 				warnScopedIndex(context, si) // time-scoped: disclose (never silently partial)
-				SISpansScan(context, conn, scan, si, false)
+				SISpansScan(context, conn, scan, si, false, o.OrderFree)
 				return
 			}
 
@@ -750,7 +750,7 @@ func DatastoreScanIndex(o *base.Op, vars *base.Vars,
 // double-emit. projectKeys threads through to decode key values for a covering
 // scan (DatastoreScanIndexCovering).
 func SISpansScan(context *GlueContext, conn *datastore.IndexConnection,
-	scan *plan.IndexScan, si index, projectKeys bool) {
+	scan *plan.IndexScan, si index, projectKeys, orderFree bool) {
 	limit := EvalExprInt64(context, scan.Limit(), nil, math.MaxInt64)
 
 	// A correlated index span evaluates its Low/High against the outer row;
@@ -777,7 +777,7 @@ func SISpansScan(context *GlueContext, conn *datastore.IndexConnection,
 			}
 			// (A time-scoped bolt index hybrid-serves INSIDE scanSpan: below-floor
 			// matches are merged in encoded-key order -- see the index interface.)
-			si.scanSpan(dspan, limit, seen, projectKeys, conn)
+			si.scanSpan(dspan, limit, seen, projectKeys, orderFree, conn)
 		}
 	}()
 }
@@ -821,7 +821,7 @@ func DatastoreScanIndexCovering(o *base.Op, vars *base.Vars,
 
 	datastoreScanDrain(o, vars, yieldVals, yieldErr,
 		func(context *GlueContext, conn *datastore.IndexConnection) {
-			SISpansScan(context, conn, scan, si, true)
+			SISpansScan(context, conn, scan, si, true, o.OrderFree)
 		}, buildRow)
 }
 

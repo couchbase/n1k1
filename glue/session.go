@@ -242,6 +242,12 @@ func applyPostConvPasses(conv *Conv, qp *plan.QueryPlan) {
 	// into a spillable temp (opt-in via EnableCTEMaterialize); may wrap the root in a
 	// sequence, so run it last. See optimize_cte.go.
 	conv.materializeMultiRefCTEs()
+
+	// Mark index scans whose emission order the plan doesn't depend on -- so a
+	// time-scoped index streams its hybrid half unbuffered instead of sorting +
+	// merging (DESIGN-indexing.md "hybrid cost anatomy" #1). LAST: it must see the
+	// final tree (a merge-scan created above RELIES on child order).
+	markIndexScanOrderFree(conv.TopOp, conv.stmtOrderFree)
 }
 
 // convForDisplay best-effort converts a cbq plan sub-tree into n1k1's op tree for
@@ -252,7 +258,7 @@ func applyPostConvPasses(conv *Conv, qp *plan.QueryPlan) {
 // regardless, so an unconvertible plan or a convert/pass panic just yields a nil (or
 // partially optimized) tree, never a statement error. qp is the EXPLAIN statement's
 // QueryPlan, threaded so the qp-gated WireASOFJoin runs here too (nil-safe).
-func convForDisplay(inner plan.Operator, qp *plan.QueryPlan) (op *base.Op) {
+func convForDisplay(inner plan.Operator, qp *plan.QueryPlan, stmtOrderFree bool) (op *base.Op) {
 	if inner == nil {
 		return nil
 	}
@@ -261,7 +267,7 @@ func convForDisplay(inner plan.Operator, qp *plan.QueryPlan) (op *base.Op) {
 			op = nil
 		}
 	}()
-	c := &Conv{Temps: []interface{}{nil}}
+	c := &Conv{Temps: []interface{}{nil}, stmtOrderFree: stmtOrderFree}
 	if _, err := inner.Accept(c); err != nil || c.TopOp == nil {
 		return nil
 	}
@@ -379,10 +385,10 @@ func (s *Session) StatementRun(parsed algebra.Statement,
 		// display (the CLI's EXPLAIN / .explain rendering shows what n1k1 would
 		// actually run, and which expressions evaluate natively vs boxed). EXPLAIN
 		// doesn't execute, so a convert failure/panic just leaves Plan nil.
-		return &Result{Rows: []json.RawMessage{b}, Plan: convForDisplay(ex.Plan(), qp)}, nil
+		return &Result{Rows: []json.RawMessage{b}, Plan: convForDisplay(ex.Plan(), qp, statementOrderFree(parsed))}, nil
 	}
 
-	pp, err := PlanConvert(qp)
+	pp, err := PlanConvert(qp, statementOrderFree(parsed))
 	if err != nil {
 		return nil, err
 	}
@@ -406,8 +412,10 @@ type PreparedPlan struct {
 
 // PlanConvert converts a planned QueryPlan into a reusable PreparedPlan (op tree +
 // conv state), applying the same optimizations the execution path relies on.
-func PlanConvert(qp *plan.QueryPlan) (*PreparedPlan, error) {
-	conv := &Conv{Temps: []interface{}{nil}}
+// stmtOrderFree: the originating statement provably has no ORDER BY
+// (statementOrderFree) -- false when unknown (conservative; see Conv.stmtOrderFree).
+func PlanConvert(qp *plan.QueryPlan, stmtOrderFree bool) (*PreparedPlan, error) {
+	conv := &Conv{Temps: []interface{}{nil}, stmtOrderFree: stmtOrderFree}
 	if _, err := qp.PlanOp().Accept(conv); err != nil {
 		return nil, &ErrUnsupported{Reason: err.Error()}
 	}
@@ -713,7 +721,7 @@ func (s *Session) ExecuteRun(e *algebra.Execute) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		pp, err := PlanConvert(qp)
+		pp, err := PlanConvert(qp, statementOrderFree(ps.stmt))
 		if err != nil {
 			return nil, err
 		}

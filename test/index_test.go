@@ -1514,4 +1514,94 @@ func TestSecondaryIndexHybridServe(t *testing.T) {
 	if !sort.StringsAreSorted(ord) || len(ord) != 5 {
 		t.Fatalf("hybrid ORDER BY pushdown must stay key-ordered, got %v", ord)
 	}
+
+	// ORDER BY + LIMIT (the impatient-user query): the hybrid half keeps only the
+	// k smallest matches (bounded top-k) -- results must be the first k of the
+	// full ordered set, below-floor values interleaved.
+	limRes, err := ordSess.Run(`SELECT RAW l.sev FROM logs l WHERE l.sev >= "A" ORDER BY l.sev LIMIT 4`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lim []string
+	for _, r := range limRes.Rows {
+		lim = append(lim, string(r))
+	}
+	if strings.Join(lim, ",") != strings.Join(ord[:4], ",") {
+		t.Fatalf("hybrid ORDER BY LIMIT = %v, want the first 4 of %v", lim, ord)
+	}
+}
+
+// TestIndexScanOrderFreeMarking: the markIndexScanOrderFree post-conv pass
+// (DESIGN-indexing.md "hybrid cost anatomy" #1). A plan may depend on an index
+// scan's emission order ONLY when the statement has an ORDER BY that the planner
+// elided onto index order -- and the plan alone cannot reveal that, so the
+// statement's order-freeness threads into the conv. Guard all three shapes.
+func TestIndexScanOrderFreeMarking(t *testing.T) {
+	root := t.TempDir()
+	ksDir := filepath.Join(root, "default", "logs")
+	if err := os.MkdirAll(ksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ksDir, "l.jsonl"),
+		[]byte(`{"id":"a","sev":"ERROR"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".n1k1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".n1k1", "catalog.json"), []byte(`{
+		"indexes": [{"name": "bysev", "keyspace": "logs", "keys": ["sev"]}]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// scanOrderFree finds the plan's index-scan ops and reports their OrderFree.
+	var walk func(op *base.Op, found *[]bool)
+	walk = func(op *base.Op, found *[]bool) {
+		if op == nil {
+			return
+		}
+		if op.Kind == "datastore-scan-index" || op.Kind == "datastore-scan-index-cover" {
+			*found = append(*found, op.OrderFree)
+		}
+		for _, c := range op.Children {
+			walk(c, found)
+		}
+	}
+	planOf := func(q string) []bool {
+		t.Helper()
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("run %q: %v", q, err)
+		}
+		if res.Plan == nil {
+			t.Fatalf("no plan for %q", q)
+		}
+		var found []bool
+		walk(res.Plan, &found)
+		if len(found) == 0 {
+			t.Fatalf("no index scan in plan for %q", q)
+		}
+		return found
+	}
+
+	// (a) No ORDER BY anywhere: emission order can't matter -> OrderFree.
+	if f := planOf(`SELECT l.id FROM logs l WHERE l.sev = "ERROR"`); !f[0] {
+		t.Fatalf("WHERE-only scan should be OrderFree, got %v", f)
+	}
+	// (b) ORDER BY on the index key: the planner elides the sort (order pushdown),
+	// so the plan DEPENDS on emission order -> NOT OrderFree.
+	if f := planOf(`SELECT l.id FROM logs l WHERE l.sev >= "A" ORDER BY l.sev`); f[0] {
+		t.Fatalf("order-pushdown scan must NOT be OrderFree, got %v", f)
+	}
+	// (c) ORDER BY on a non-key field: an order op sits above the scan and
+	// re-sorts anyway -> OrderFree.
+	if f := planOf(`SELECT l.id FROM logs l WHERE l.sev >= "A" ORDER BY l.id`); !f[0] {
+		t.Fatalf("scan under an order op should be OrderFree, got %v", f)
+	}
 }

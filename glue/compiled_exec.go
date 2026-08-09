@@ -144,7 +144,7 @@ func (s *Session) buildCompiled(ps *preparedStmt) (bin string, cleanup func(), e
 	if err != nil {
 		return "", func() {}, err
 	}
-	pp, err := PlanConvert(qp)
+	pp, err := PlanConvert(qp, statementOrderFree(ps.stmt))
 	if err != nil {
 		return "", func() {}, err
 	}

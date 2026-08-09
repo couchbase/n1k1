@@ -334,6 +334,16 @@ type Op struct {
 	// to their immediate parent operator.
 	Children []*Op `json:"Children,omitempty"`
 
+	// OrderFree, on a datastore-scan-index(-cover) op, records that the plan does
+	// NOT depend on this scan's emission order: either an order op sits above it
+	// (a sort re-establishes any order) or the statement provably has no ORDER BY.
+	// Set by glue's markIndexScanOrderFree post-conv pass; a time-scoped index
+	// then streams its hybrid (below-floor) matches unbuffered instead of
+	// collect+sort+merge. False (the zero value) is the CONSERVATIVE default:
+	// emission stays encoded-key-ordered, because the planner elides ORDER BY when
+	// the index provides key order and result order becomes emission order.
+	OrderFree bool `json:"order_free,omitempty"`
+
 	// StatsBase is the offset of this op's first counter within the flat
 	// Ctx.Stats.Counters array, assigned once by LayoutStats at request setup
 	// (-1 if the op contributes no counters). Not serialized -- it is recomputed

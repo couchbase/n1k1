@@ -283,14 +283,14 @@ func (mi *memIndex) Scan(requestId string, span *datastore.Span, distinct bool,
 	limit int64, cons datastore.ScanConsistency, vector timestamp.Vector,
 	conn *datastore.IndexConnection) {
 	defer conn.Sender().Close()
-	mi.scanSpan(span, limit, nil, false, conn)
+	mi.scanSpan(span, limit, nil, false, false, conn)
 }
 
 // scanSpan binary-searches to the span's low bound then walks the sorted entries
 // in N1QL collation order, applying the same boundary/inclusion rules as the
 // bbolt path (idx_si.go's scanSpan). Does NOT close the sender.
 func (mi *memIndex) scanSpan(span *datastore.Span, limit int64,
-	seen map[string]bool, projectKeys bool, conn *datastore.IndexConnection) {
+	seen map[string]bool, projectKeys, orderFree bool, conn *datastore.IndexConnection) {
 	if limit <= 0 {
 		limit = int64(1) << 62
 	}

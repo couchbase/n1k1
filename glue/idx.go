@@ -19,10 +19,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/couchbase/query/datastore"
 
+	"github.com/couchbase/n1k1/base"
 	"github.com/couchbase/n1k1/records"
 )
 
@@ -55,8 +57,12 @@ type index interface {
 	// emission stays key-ordered (the planner elides ORDER BY when the index
 	// provides the order; an out-of-order hybrid append would silently mis-sort).
 	// An index whose hybridServes() is false keeps the disclosure warning instead.
+	//
+	// orderFree (base.Op.OrderFree, from markIndexScanOrderFree) says the plan does
+	// NOT depend on emission order -- the hybrid half may then STREAM its matches
+	// unbuffered instead of collect+sort+merge.
 	scanSpan(span *datastore.Span, limit int64, seen map[string]bool,
-		projectKeys bool, conn *datastore.IndexConnection)
+		projectKeys, orderFree bool, conn *datastore.IndexConnection)
 }
 
 // sourceSignature summarizes a keyspace directory for change detection: file
@@ -172,4 +178,49 @@ func floorParse(b []byte) (time.Time, bool) {
 		return time.Time{}, true // complete
 	}
 	return time.Unix(0, n), true
+}
+
+// statementOrderFree reports that stmt provably has NO ORDER BY anywhere (top
+// level or any subquery), so no plan built from it can depend on an index scan's
+// emission order. Detection is a text scan of the algebra's regenerated SQL --
+// deliberately conservative: a string literal containing " ORDER BY " is a false
+// NEGATIVE (we treat the statement as ordered), which only costs the hybrid
+// stream optimization, never correctness. The plan side cannot answer this (see
+// Conv.stmtOrderFree).
+func statementOrderFree(stmt fmt.Stringer) bool {
+	if stmt == nil {
+		return false
+	}
+	return !strings.Contains(strings.ToUpper(stmt.String()), " ORDER BY ")
+}
+
+// markIndexScanOrderFree marks each datastore-scan-index(-cover) op whose
+// emission order the FINAL plan tree cannot depend on (base.Op.OrderFree):
+// either an order-offset-limit ancestor re-sorts anyway, or the statement has no
+// ORDER BY at all (stmtOrderFree). A merge-scan subtree flips back to
+// order-REQUIRED -- it consumes its children's order. Everything unknown stays
+// the conservative default (order-sensitive): a time-scoped index then
+// merge-emits its hybrid half in key order, which is always correct.
+func markIndexScanOrderFree(op *base.Op, free bool) {
+	if op == nil {
+		return
+	}
+	switch {
+	case op.Kind == "order-offset-limit":
+		// Only a REAL sort re-establishes order: a bare OFFSET/LIMIT wrapper
+		// reuses this kind with EMPTY order terms (VisitOffset/VisitLimit) and
+		// passes its child's emission order straight through.
+		if len(op.Params) > 0 {
+			if exprs, ok := op.Params[0].([]interface{}); ok && len(exprs) > 0 {
+				free = true
+			}
+		}
+	case strings.Contains(op.Kind, "merge-scan"):
+		free = false // a k-way merge RELIES on child emission order
+	case op.Kind == "datastore-scan-index" || op.Kind == "datastore-scan-index-cover":
+		op.OrderFree = free
+	}
+	for _, c := range op.Children {
+		markIndexScanOrderFree(c, free)
+	}
 }

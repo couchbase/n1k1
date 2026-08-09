@@ -89,7 +89,7 @@ func TestPipeEmitCbqFree(t *testing.T) {
 	}
 	parsed, _ := ParseStatement(`SELECT * FROM beers b`, "default", true)
 	qp, _ := s.Store.PlanStatementQP(parsed, "default", nil, nil)
-	pp, err := PlanConvert(qp)
+	pp, err := PlanConvert(qp, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestPipeStandaloneCompileRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pp, err := PlanConvert(qp)
+	pp, err := PlanConvert(qp, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestExprTreesOptimizeInline(t *testing.T) {
 	emitPipe := func(q string) string {
 		parsed, _ := ParseStatement(q, "default", true)
 		qp, _ := s.Store.PlanStatementQP(parsed, "default", nil, nil)
-		pp, cerr := PlanConvert(qp)
+		pp, cerr := PlanConvert(qp, false)
 		if cerr != nil {
 			t.Fatalf("%s: %v", q, cerr)
 		}

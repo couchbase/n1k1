@@ -328,6 +328,68 @@ and would have served scoped answers silently). Guard: `TestSecondaryIndexHybrid
 (complete answers + no warning straight after the scoped build, covering path, kill
 switch, mid-backfill identity, multi-span IN dedup, ORDER-BY-pushdown ordering).
 
+**Hybrid mitigations #1 + #2 SHIPPED.** (#1) `markIndexScanOrderFree` (post-conv, runs
+last so it sees merge-scan rewrites) stamps `base.Op.OrderFree` on each index-scan op:
+true when a REAL sort is an ancestor (an `order-offset-limit` op WITH order terms — a
+bare OFFSET/LIMIT reuses that kind with empty terms and passes order through, a trap a
+guard now pins) or when the statement provably has no ORDER BY (`statementOrderFree`,
+threaded through `PlanConvert`/`convForDisplay`; conservative false on the ExecConv/
+prepare paths that lack the statement). An OrderFree scan's hybrid half STREAMS the
+remainder unbuffered — zero materialization, zero sort — which is every plan except
+true order-pushdown. (#2) Under a pushed-down LIMIT, the order-sensitive path keeps
+only the k smallest matches in a bounded max-heap (`byteMaxHeap`) — memory O(k)
+regardless of remainder size — so the full collect+sort survives only for ORDER BY
+WITHOUT LIMIT over a scoped index (mitigation #3's case). Guards:
+`TestIndexScanOrderFreeMarking` (all three plan shapes) + the ORDER BY LIMIT case in
+`TestSecondaryIndexHybridServe`.
+
+**Hybrid cost anatomy + the ranked mitigation plan.** What the hybrid half materializes:
+per span, per scan, the below-floor MATCHES (encoded entries — key bytes + doc id, tens of
+bytes each — not documents, and only records surviving the WHERE/span filters), collected
+in memory (NO spill) and sorted before the merge. Mitigating structure: the buffer decays
+with backfill and is zero at complete — it is a transient of the scoped lifecycle. Worst
+case is real anyway: a non-selective span over a huge unindexed remainder, per span, per
+nested-loop rescan. Alternatives considered and their standings:
+
+1. **Sort only when order matters** (SHIPPED, see below): the merge exists solely for
+   ORDER-BY-elided plans (`useIndexOrder`); every other plan streams the remainder
+   unbuffered. Detection cannot come from the plan alone — a v1 `IndexScan` plan carries
+   NO marker distinguishing "no ORDER BY" from "ORDER BY pushed down" (and
+   `InitialProject.preserve_order` is just `!subquery`, not an order signal) — so the
+   ALGEBRA statement's order-freeness threads into the conv (`PlanConvert`), and a
+   post-conv pass marks each index-scan op: order-free iff an `order-offset-limit` op is
+   an ancestor (a sort above re-establishes order) or the whole statement provably has no
+   ORDER BY. Conservative in every unknown (subquery-converted trees, `merge-scan`
+   subtrees which RELY on child order, prepare paths without the statement): default is
+   order-sensitive = merge.
+2. **Top-k heap under a pushed-down LIMIT** (SHIPPED, see below): `ORDER BY key LIMIT k`
+   — THE impatient-user query — needs only the k smallest below-floor matches; a bounded
+   max-heap replaces collect-everything, memory O(k) regardless of remainder size.
+3. **Per-container sort + k-way merge** (open): bound memory by the largest container's
+   matches instead of the total; the DESIGN-merging k-way machinery is the precedent.
+   The principled fallback for ORDER BY without LIMIT over a large remainder; borrow the
+   ORDER-BY op's spill primitives only if a single container's matches overflow.
+4. **Backfill-on-read** (open, opt-in mode if built): a hybrid scan already computes
+   exactly a backfill page's entries — commit them instead of discarding, so the first
+   scoped query's remainder walk IS backfill progress and the concern self-extinguishes.
+   Write-on-read wrinkles: read-only corpora (`--index-store` solves placement), write
+   latency inside a query, concurrency.
+5. **Planner-level alternatives** (analyzed, not chosen): (a) advertise-unordered so the
+   planner always sorts — needs a fork patch (`useIndexOrder` gates only on
+   `Type()==SYSTEM`; no capability interface in this API generation), and it destroys
+   streaming top-k (a forced Order op drains its whole input) while sorting full
+   post-fetch documents instead of compact entries; sound with a monotone-floor
+   refinement (advertise unordered only while floor > 0 — cached plans stay valid since
+   the floor never rises), kept as the escape valve for a hybrid source that genuinely
+   cannot buffer. (b) two complementary partial indexes + planner union — founders on
+   implication-based sargability (no planner case-splits `P ≡ (P∧C)∨(P∧¬C)` over
+   complementary conditions), on the floor being a CONTAINER property with no legal
+   document-predicate spelling, and on UnionScan not preserving order; the scan-layer
+   hybrid IS that union, executed where the floor is live. The legitimate cousin that
+   exists today: a `where ts >= T` PARTIAL index over a data time field, used by the
+   planner when the query's WHERE implies it — per-query opt-in coverage vs the scope's
+   transparent coverage; the two compose (container-physical vs document-logical axes).
+
 **Rung 1 SHIPPED — the time-scoped index (gsi + fts).** An index def carries
 `"since": "<RFC3339>"` (`.index create <name> on <ks> (<expr>) since=<ts|72h|7d>`; a
 duration resolves to an ABSOLUTE cutoff at create — the scope never slides). Both build

@@ -39,6 +39,14 @@ type Conv struct {
 	// TopOp holds top of the converted base.Op tree.
 	TopOp *base.Op
 
+	// stmtOrderFree records that the ORIGINATING statement provably carries no
+	// ORDER BY anywhere (statementOrderFree) -- the discriminator the PLAN cannot
+	// provide: a v1 IndexScan plan looks identical for "no ORDER BY" and "ORDER BY
+	// pushed down onto index order" (no order op either way). Consumed by
+	// markIndexScanOrderFree. The zero value (false) is the conservative default
+	// for paths that don't know the statement (ExecConv, prepare).
+	stmtOrderFree bool
+
 	// withBindings maps a WITH CTE alias to its binding, so a later `FROM <alias>`
 	// (an ExpressionScan over the identifier) can be handled: a non-recursive
 	// binding is inlined to its Expression(); a recursive one becomes a
@@ -145,6 +153,10 @@ func ExecConv(p plan.Operator) (*base.Op, []interface{}, error) {
 		// the merge-join LOWERING is gated on the normalized sort-key wiring, so
 		// this pass only classifies/counts for now (see optimize_temporal.go).
 		recognizeASOFRoot(c.TopOp)
+
+		// ExecConv has no statement in scope, so stmtOrderFree stays its
+		// conservative false -- only order-op-ancestor scans mark OrderFree here.
+		markIndexScanOrderFree(c.TopOp, c.stmtOrderFree)
 
 		// Materialize a multiply-referenced, non-recursive, non-correlated WITH CTE
 		// ONCE into a spillable temp (opt-in via EnableCTEMaterialize); may wrap the

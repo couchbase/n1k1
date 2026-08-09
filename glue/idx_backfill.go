@@ -40,6 +40,7 @@ package glue
 
 import (
 	"bytes"
+	"container/heap"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -422,24 +423,20 @@ func init() {
 // kill switch is set), so no disclosure warning is needed (see warnScopedIndex).
 func (si *secondaryIndex) hybridServes() bool { return IndexHybridServe }
 
-// hybridEntriesForSpan collects one span's matches among containers BELOW the
-// index's floor as fully-encoded entries, SORTED by encoded key -- ready for
-// scanSpan to MERGE into its b+tree walk, so a hybrid-served scan stays
-// key-ordered end to end (the planner elides ORDER BY when the index provides
-// the order). Each below-floor record is evaluated with the SAME key/condition
-// expressions the build uses (indexEntryForDoc) into the SAME order-preserving
-// encoding and filtered with the SAME encoded span bounds (entryWithinSpan) --
-// the scan half cannot drift from the index half. Returns nil for an
-// unscoped/complete index or when hybrid is off. Cost is a records scan of the
+// hybridScanSpan walks the below-floor remainder and invokes fn with each
+// span-matching fully-encoded entry (the SAME key/condition expressions the
+// build uses, the SAME encoding, the SAME span bounds -- the scan half cannot
+// drift from the index half). The entry bytes are only valid DURING the call;
+// fn copies if it retains. fn returning false stops the walk. No-op for an
+// unscoped/complete index or with hybrid off. Cost is a records scan of the
 // unindexed remainder, shrinking as backfill proceeds and zero at complete.
 // NOTE a multi-span (IN/OR) scan re-walks the remainder per span, and a
-// nested-loop rescan per outer row -- the same cost shape as an unindexed inner
-// keyspace.
-func (si *secondaryIndex) hybridEntriesForSpan(span *datastore.Span,
-	lowEnc, highEnc []byte, conn *datastore.IndexConnection) [][]byte {
+// nested-loop rescan per outer row -- the unindexed-inner cost shape.
+func (si *secondaryIndex) hybridScanSpan(span *datastore.Span,
+	lowEnc, highEnc []byte, conn *datastore.IndexConnection, fn func(k []byte) bool) {
 	floor := si.scopeFloor()
 	if floor.IsZero() || !IndexHybridServe || span == nil {
-		return nil
+		return
 	}
 
 	ns := si.ks.Namespace().Name()
@@ -452,28 +449,27 @@ func (si *secondaryIndex) hybridEntriesForSpan(span *datastore.Span,
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
-		return nil
+		return
 	}
 	defer src.Close()
 
 	ctx := NewGlueContext(time.Now())
 	n := len(si.def.rangeKey)
-	var out [][]byte
 	var keyBuf []byte
 	var rec records.Record
 	for {
 		ok, err := src.Next(&rec)
 		if err != nil {
 			conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
-			return nil
+			return
 		}
 		if !ok {
-			break
+			return
 		}
 		entry, ok, err := indexEntryForDoc(ctx, si.def, &rec, &keyBuf)
 		if err != nil {
 			conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
-			return nil
+			return
 		}
 		if !ok {
 			continue // WHERE false / MISSING leading key: not an index row
@@ -485,10 +481,60 @@ func (si *secondaryIndex) hybridEntriesForSpan(span *datastore.Span,
 		if !entryWithinSpan(entry, compEnds, span, lowEnc, highEnc) {
 			continue
 		}
+		if !fn(entry) {
+			return
+		}
+	}
+}
+
+// hybridEntriesForSpan collects one span's below-floor matches SORTED by encoded
+// key, ready for scanSpan to MERGE into its b+tree walk -- the order-preserving
+// path an ORDER-BY-elided plan requires (DESIGN-indexing.md "hybrid cost
+// anatomy"). Under a real pushed-down LIMIT only the k smallest matches are kept
+// (a bounded max-heap -- memory O(k) regardless of remainder size, mitigation
+// #2); otherwise all matches are collected (mitigation #3, per-container merge,
+// is the open follow-up for the ORDER-BY-without-LIMIT worst case).
+func (si *secondaryIndex) hybridEntriesForSpan(span *datastore.Span,
+	lowEnc, highEnc []byte, limit int64, conn *datastore.IndexConnection) [][]byte {
+	const noLimit = int64(1) << 62 // scanSpan's "no pushed limit" sentinel
+	topK := limit > 0 && limit < noLimit
+
+	var out [][]byte
+	h := byteMaxHeap{}
+	si.hybridScanSpan(span, lowEnc, highEnc, conn, func(entry []byte) bool {
+		if topK {
+			if int64(len(h)) < limit {
+				heap.Push(&h, append([]byte(nil), entry...))
+			} else if bytes.Compare(entry, h[0]) < 0 {
+				h[0] = append(h[0][:0], entry...) // replace the largest kept
+				heap.Fix(&h, 0)
+			}
+			return true
+		}
 		out = append(out, append([]byte(nil), entry...)) // keyBuf is reused: copy
+		return true
+	})
+	if topK {
+		out = [][]byte(h)
 	}
 	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i], out[j]) < 0 })
 	return out
+}
+
+// byteMaxHeap is a max-heap of encoded entries (largest at the root), the
+// bounded top-k keeper for hybridEntriesForSpan under a pushed-down LIMIT.
+type byteMaxHeap [][]byte
+
+func (h byteMaxHeap) Len() int            { return len(h) }
+func (h byteMaxHeap) Less(i, j int) bool  { return bytes.Compare(h[i], h[j]) > 0 }
+func (h byteMaxHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *byteMaxHeap) Push(x interface{}) { *h = append(*h, x.([]byte)) }
+func (h *byteMaxHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
 }
 
 // entryWithinSpan applies a span's bounds to one encoded index entry -- the EXACT
