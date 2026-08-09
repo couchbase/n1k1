@@ -673,9 +673,7 @@ func (si *secondaryIndex) Scan(requestId string, span *datastore.Span, distinct 
 	limit int64, cons datastore.ScanConsistency, vector timestamp.Vector,
 	conn *datastore.IndexConnection) {
 	defer conn.Sender().Close()
-	seen := map[string]bool{} // shared with the hybrid half (no double-emits)
-	si.scanSpan(span, limit, seen, false, conn)
-	si.scanBelowFloor([]*datastore.Span{span}, limit, seen, false, conn)
+	si.scanSpan(span, limit, nil, false, conn) // hybrid-serves internally (merge-ordered)
 }
 
 // scanSpan walks the bbolt B+tree in N1QL collation order (guaranteed by the
@@ -700,6 +698,39 @@ func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
 	highEnc := encodeSeq(span.Range.High)
 	incl := span.Range.Inclusion
 
+	// Hybrid serve (rung 2): a time-scoped index's below-floor matches for THIS
+	// span, pre-filtered by the same encoded bounds and SORTED by encoded key --
+	// merged into the walk below so the emission stays key-ordered (the planner
+	// elides ORDER BY when the index provides order; appending would mis-sort).
+	// nil for an unscoped/complete index or with hybrid off. The two halves are
+	// disjoint by the floor partition, so the merge cannot double-emit a doc.
+	hybrid := si.hybridEntriesForSpan(span, lowEnc, highEnc, conn)
+	hi := 0
+
+	var sent int64
+	stopped := false
+	emit := func(k []byte) bool { // both halves; false = stop (limit/consumer)
+		compEnds, docID, ok := splitKey(k, n)
+		if !ok {
+			return true // malformed -- skip defensively
+		}
+		if seen != nil {
+			if seen[string(docID)] {
+				return true
+			}
+			seen[string(docID)] = true
+		}
+		entry := &datastore.IndexEntry{PrimaryKey: string(docID)}
+		if projectKeys {
+			entry.EntryKey = decodeKeyComponents(k, compEnds)
+		}
+		if !conn.Sender().SendEntry(entry) {
+			return false
+		}
+		sent++
+		return true
+	}
+
 	err := si.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(siEntriesBucket))
 		if b == nil {
@@ -714,9 +745,8 @@ func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
 			k, _ = cur.First()
 		}
 
-		var sent int64
 		for ; k != nil && sent < limit; k, _ = cur.Next() {
-			compEnds, docID, ok := splitKey(k, n)
+			compEnds, _, ok := splitKey(k, n)
 			if !ok {
 				continue // malformed -- skip defensively
 			}
@@ -736,33 +766,41 @@ func (si *secondaryIndex) scanSpan(span *datastore.Span, limit int64,
 				p := k[:compEnds[len(span.Range.High)-1]]
 				c := bytes.Compare(p, highEnc)
 				if c > 0 {
-					break // past high; ordered walk -> done
+					break // past high; ordered walk -> done (hybrid tail drains below)
 				}
 				if c == 0 && incl&datastore.HIGH == 0 {
 					continue // exclusive high (later entries may still qualify)
 				}
 			}
 
-			if seen != nil {
-				if seen[string(docID)] {
-					continue
+			// Merge: hybrid entries that sort at/before this indexed entry go first.
+			for hi < len(hybrid) && sent < limit && bytes.Compare(hybrid[hi], k) <= 0 {
+				if !emit(hybrid[hi]) {
+					stopped = true
+					return nil
 				}
-				seen[string(docID)] = true
+				hi++
 			}
-
-			entry := &datastore.IndexEntry{PrimaryKey: string(docID)}
-			if projectKeys {
-				entry.EntryKey = decodeKeyComponents(k, compEnds)
+			if sent >= limit {
+				return nil
 			}
-			if !conn.Sender().SendEntry(entry) {
-				break
+			if !emit(k) {
+				stopped = true
+				return nil
 			}
-			sent++
 		}
 		return nil
 	})
 	if err != nil {
 		conn.Error(errors.NewError(err, "secondary-index scan"))
+		return
+	}
+	// Drain the hybrid tail (all within the span, already ordered).
+	for !stopped && hi < len(hybrid) && sent < limit {
+		if !emit(hybrid[hi]) {
+			break
+		}
+		hi++
 	}
 }
 

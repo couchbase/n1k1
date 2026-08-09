@@ -1494,4 +1494,24 @@ func TestSecondaryIndexHybridServe(t *testing.T) {
 	if strings.Join(rows, ",") != `"anc1","anc2","new1","old1"` || warned {
 		t.Fatalf("hybrid multi-span: rows=%v warned=%v", rows, warned)
 	}
+
+	// ORDER-BY pushdown: the planner ELIDES the sort when the index provides key
+	// order, so hybrid entries must MERGE in encoded-key order, never append --
+	// an appended hybrid emitted below-floor values after larger indexed ones.
+	ordSess, err := glue.OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ordSess.Close()
+	ordRes, err := ordSess.Run(`SELECT RAW l.sev FROM logs l WHERE l.sev >= "A" ORDER BY l.sev`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ord []string
+	for _, r := range ordRes.Rows {
+		ord = append(ord, string(r))
+	}
+	if !sort.StringsAreSorted(ord) || len(ord) != 5 {
+		t.Fatalf("hybrid ORDER BY pushdown must stay key-ordered, got %v", ord)
+	}
 }

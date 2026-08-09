@@ -422,38 +422,24 @@ func init() {
 // kill switch is set), so no disclosure warning is needed (see warnScopedIndex).
 func (si *secondaryIndex) hybridServes() bool { return IndexHybridServe }
 
-// scanBelowFloor emits the spans' matches among containers BELOW the index's
-// floor, per the index interface contract: each record is evaluated with the
-// SAME key/condition expressions the build uses (indexEntryForDoc) into the SAME
-// order-preserving encoding, then filtered with the SAME encoded span bounds --
-// the scan half cannot drift from the index half. Cost is a records scan of the
-// unindexed remainder, shrinking as backfill proceeds (and zero at complete).
-// NOTE a nested-loop rescan re-walks the remainder per outer row -- correct, and
-// the same cost shape as any unindexed inner keyspace.
-func (si *secondaryIndex) scanBelowFloor(spans []*datastore.Span, limit int64,
-	seen map[string]bool, projectKeys bool, conn *datastore.IndexConnection) {
+// hybridEntriesForSpan collects one span's matches among containers BELOW the
+// index's floor as fully-encoded entries, SORTED by encoded key -- ready for
+// scanSpan to MERGE into its b+tree walk, so a hybrid-served scan stays
+// key-ordered end to end (the planner elides ORDER BY when the index provides
+// the order). Each below-floor record is evaluated with the SAME key/condition
+// expressions the build uses (indexEntryForDoc) into the SAME order-preserving
+// encoding and filtered with the SAME encoded span bounds (entryWithinSpan) --
+// the scan half cannot drift from the index half. Returns nil for an
+// unscoped/complete index or when hybrid is off. Cost is a records scan of the
+// unindexed remainder, shrinking as backfill proceeds and zero at complete.
+// NOTE a multi-span (IN/OR) scan re-walks the remainder per span, and a
+// nested-loop rescan per outer row -- the same cost shape as an unindexed inner
+// keyspace.
+func (si *secondaryIndex) hybridEntriesForSpan(span *datastore.Span,
+	lowEnc, highEnc []byte, conn *datastore.IndexConnection) [][]byte {
 	floor := si.scopeFloor()
-	if floor.IsZero() || !IndexHybridServe || len(spans) == 0 {
-		return
-	}
-	if limit <= 0 {
-		limit = int64(1) << 62
-	}
-
-	// Precompute each span's encoded bounds once (scanSpan does the same per call).
-	type encSpan struct {
-		span      *datastore.Span
-		low, high []byte
-	}
-	encs := make([]encSpan, 0, len(spans))
-	for _, sp := range spans {
-		if sp == nil {
-			continue
-		}
-		encs = append(encs, encSpan{span: sp, low: encodeSeq(sp.Range.Low), high: encodeSeq(sp.Range.High)})
-	}
-	if len(encs) == 0 {
-		return
+	if floor.IsZero() || !IndexHybridServe || span == nil {
+		return nil
 	}
 
 	ns := si.ks.Namespace().Name()
@@ -466,20 +452,20 @@ func (si *secondaryIndex) scanBelowFloor(spans []*datastore.Span, limit int64,
 	src, err := records.Walk(srcDir, opts)
 	if err != nil {
 		conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
-		return
+		return nil
 	}
 	defer src.Close()
 
 	ctx := NewGlueContext(time.Now())
 	n := len(si.def.rangeKey)
+	var out [][]byte
 	var keyBuf []byte
 	var rec records.Record
-	var sent int64
-	for sent < limit {
+	for {
 		ok, err := src.Next(&rec)
 		if err != nil {
 			conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
-			return
+			return nil
 		}
 		if !ok {
 			break
@@ -487,40 +473,22 @@ func (si *secondaryIndex) scanBelowFloor(spans []*datastore.Span, limit int64,
 		entry, ok, err := indexEntryForDoc(ctx, si.def, &rec, &keyBuf)
 		if err != nil {
 			conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
-			return
+			return nil
 		}
 		if !ok {
 			continue // WHERE false / MISSING leading key: not an index row
 		}
-		compEnds, docID, ok := splitKey(entry, n)
+		compEnds, _, ok := splitKey(entry, n)
 		if !ok {
 			continue
 		}
-		in := false
-		for _, e := range encs {
-			if entryWithinSpan(entry, compEnds, e.span, e.low, e.high) {
-				in = true
-				break
-			}
-		}
-		if !in {
+		if !entryWithinSpan(entry, compEnds, span, lowEnc, highEnc) {
 			continue
 		}
-		if seen != nil {
-			if seen[string(docID)] {
-				continue
-			}
-			seen[string(docID)] = true
-		}
-		out := &datastore.IndexEntry{PrimaryKey: string(docID)}
-		if projectKeys {
-			out.EntryKey = decodeKeyComponents(entry, compEnds)
-		}
-		if !conn.Sender().SendEntry(out) {
-			return
-		}
-		sent++
+		out = append(out, append([]byte(nil), entry...)) // keyBuf is reused: copy
 	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i], out[j]) < 0 })
+	return out
 }
 
 // entryWithinSpan applies a span's bounds to one encoded index entry -- the EXACT

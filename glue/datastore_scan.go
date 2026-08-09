@@ -766,7 +766,6 @@ func SISpansScan(context *GlueContext, conn *datastore.IndexConnection,
 		// is a coarse mtime signature). A selective index scan's result set is
 		// small, so the map cost is negligible.
 		seen := map[string]bool{}
-		var dspans []*datastore.Span
 		for _, span := range scan.Spans() {
 			dspan, empty, err := EvalSpan(context, span, outerValue)
 			if err != nil {
@@ -776,13 +775,10 @@ func SISpansScan(context *GlueContext, conn *datastore.IndexConnection,
 			if empty {
 				continue
 			}
+			// (A time-scoped bolt index hybrid-serves INSIDE scanSpan: below-floor
+			// matches are merged in encoded-key order -- see the index interface.)
 			si.scanSpan(dspan, limit, seen, projectKeys, conn)
-			dspans = append(dspans, dspan)
 		}
-		// Hybrid serve (rung 2): a time-scoped index unions in the below-floor
-		// remainder, evaluated with the same exprs + encoded span bounds -- so the
-		// scoped scan answers COMPLETELY (and warnScopedIndex stays silent).
-		si.scanBelowFloor(dspans, limit, seen, projectKeys, conn)
 	}()
 }
 

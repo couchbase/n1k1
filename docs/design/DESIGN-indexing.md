@@ -302,26 +302,31 @@ the whole keyspace and the disclosure warning STOPS (it names the CURRENT floor 
 backfill is in progress). `.index list/show` show the floor. Guard:
 `TestSecondaryIndexBackfill`.
 
-**Rung 2 COMPLETE — hybrid serving (gsi).** A time-scoped gsi scan now answers
-COMPLETELY: index entries ∪ an on-the-fly evaluation of below-floor containers
-(`secondaryIndex.scanBelowFloor`), where each below-floor record runs the SAME
-key/condition expressions (`indexEntryForDoc`) into the SAME order-preserving encoding
-and is filtered by the SAME encoded span bounds (`entryWithinSpan`, factored from
-`scanSpan`) — the two halves cannot disagree on semantics. Shares the scan's dedup map
-and limit; rides both the plain and covering paths (EntryKey reconstructs from the
-identical encoding) and the single-span `Scan` interface method. Because results are
-complete, `warnScopedIndex` stays SILENT for hybrid-served gsi (the ClickHouse
-materialize-projection shape: always correct, monotonically faster as backfill lowers
-the floor; the scanned remainder is zero at complete). Kill switch
-`N1K1_INDEX_NOHYBRID` / `glue.IndexHybridServe=false` restores the rung-1
-disclosed-window contract. NOT hybrid: **fts** (text matching needs the index — a
-scoped fts keeps the disclosure warning) and the **in-memory backend** (`-index=mem`:
-`scanBelowFloor` is a no-op, `hybridServes()=false`, so its scoped indexes disclose —
-which also closed a rung-1 gap where the mem backend lacked the `scopedIndex` methods
-entirely and would have served scoped answers silently). Guard:
-`TestSecondaryIndexHybridServe` (complete answers + no warning straight after the
-scoped build, covering path, kill switch, mid-backfill identity, multi-span IN dedup
-across the two halves).
+**Rung 2 COMPLETE — hybrid serving (gsi), ORDER-PRESERVING.** A time-scoped gsi scan
+now answers COMPLETELY: per span, the below-floor containers' matches are collected as
+fully-encoded entries (`hybridEntriesForSpan` — each record runs the SAME key/condition
+expressions, `indexEntryForDoc`, into the SAME order-preserving encoding, filtered by
+the SAME encoded span bounds, `entryWithinSpan`) and **MERGE-emitted in encoded-key
+order with the b+tree walk inside `scanSpan`** — never appended. ⚠ The merge is a
+correctness requirement, not a nicety: the planner ELIDES `ORDER BY` when the index
+provides key order (`useIndexOrder` → no order op in the conv tree, `preserve_order`
+on the projection), so an out-of-order hybrid append silently mis-sorted results (a
+guard test now pins this). The two halves partition on the floor, so the merge cannot
+double-emit; shares the scan's cross-span dedup map and limit; rides the plain path,
+the covering path (EntryKey reconstructs from the identical encoding), and the
+single-span `Scan` interface method. Because results are complete, `warnScopedIndex`
+stays SILENT for hybrid-served gsi (the ClickHouse materialize-projection shape:
+always correct, monotonically faster as backfill lowers the floor; the scanned
+remainder is zero at complete). Kill switch `N1K1_INDEX_NOHYBRID` /
+`glue.IndexHybridServe=false` restores the rung-1 disclosed-window contract. Costs: a
+multi-span (IN/OR) scan re-walks the remainder per span; a nested-loop rescan per
+outer row — the unindexed-inner cost shape. NOT hybrid: **fts** (text matching needs
+the index — a scoped fts keeps the disclosure warning) and the **in-memory backend**
+(`-index=mem`: no hybridServes method, so its scoped indexes disclose — which also
+closed a rung-1 gap where the mem backend lacked the `scopedIndex` methods entirely
+and would have served scoped answers silently). Guard: `TestSecondaryIndexHybridServe`
+(complete answers + no warning straight after the scoped build, covering path, kill
+switch, mid-backfill identity, multi-span IN dedup, ORDER-BY-pushdown ordering).
 
 **Rung 1 SHIPPED — the time-scoped index (gsi + fts).** An index def carries
 `"since": "<RFC3339>"` (`.index create <name> on <ks> (<expr>) since=<ts|72h|7d>`; a
