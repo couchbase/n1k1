@@ -1,6 +1,6 @@
 # Design: Data Sources for n1k1
 
-_Last reviewed: 2026-07-29._
+_Last reviewed: 2026-08-11._
 
 How n1k1 ingests source data — file formats (JSONL, multi-doc JSON, CSV/TSV, YAML,
 Parquet/Iceberg, extracted office/PDF), directory layouts, compression/containers, how a `FROM`
@@ -54,7 +54,8 @@ landed) + materialized views; zstd decode (walker recognizes `.zst`; decode is a
 container; encryption-at-rest; full column-batch Parquet execution (`DESIGN-col.md`); catalogs
 beyond a filesystem/object-store metadata path (REST/Glue); a `[]byte`-oriented zero-copy CSV
 reader + the allocs/op benchmark gate; per-source **sortedness** for multi-source (§2 — per-source
-`-formats`/`namespace` + the federation of kinds + the `-sources` config file have all shipped).
+`-formats`/`namespace` + the federation of kinds + the `-sources` config file have all shipped); an
+**etcd** integration (§9 — dump-first recipe today; an optional `etcd://` connector sketched).
 
 ## Relationship to `DESIGN-indexing.md`
 
@@ -740,6 +741,84 @@ must be *built* with `s3://` locations, needing a write-capable mock (`gofakes3`
 pseudo-version, so `go get`/`go mod tidy` can't load the build list to add the dep; it must happen in
 the repo-sync build (or by vendoring). Remote Parquet already reads real bytes end-to-end via a
 range-honoring `httptest` endpoint (no mock-S3 needed).
+
+## §9 External key-value stores (etcd) — recipe (dump-first) + connector sketch (proposal)
+
+etcd is an opaque, MVCC key-value store: hierarchical byte-string keys (`/config/app/db`), arbitrary-byte
+values. Querying it with SQL++ is attractive because a lot of etcd content is structured — but the right
+integration is **dump-first**, not a live connector, for three reasons: blast-radius (etcd is a
+latency-sensitive *coordination* store the control plane depends on — a full value-scan is a stability
+risk), encoding (see the protobuf box), and dependency weight (a client pulls gRPC).
+
+**What's actually in etcd (the JSON question).** JSON is common in *hand-rolled app* usage (config,
+feature flags, service discovery, leader metadata), but the dominant consumer — **Kubernetes** — stores
+its objects **protobuf-encoded** at the etcd layer (the default since ~1.6); JSON exists only at the
+apiserver's API surface, which transcodes. So a raw etcd value is JSON for app data, protobuf for the
+biggest deployment.
+
+**Recipe A — pipe a dump through the `stdin` keyspace (zero new code, works today).**
+```
+etcdctl get --prefix / -w json \
+  | jq -c '.kvs[] | {key:(.key|@base64d), value:(.value|@base64d|fromjson?), rev:.mod_revision}' \
+  | n1k1 -c 'SELECT s.key, s.value.* FROM stdin s WHERE s.key LIKE "/config/%"'
+```
+`-w json` base64s keys/values; `fromjson?` parses a JSON value (a non-JSON value stays a string). Each row
+carries the etcd `key` + `mod_revision` — the natural provenance/watermark.
+
+**Recipe B — snapshot-at-revision → a versioned, queryable keyspace.** etcd is MVCC: every write bumps a
+global revision, and `--rev=N` reads a **consistent** (torn-read-free) point-in-time view. Dump each
+snapshot to a revision-named file and query the accumulation as an ordinary multi-source keyspace (§2):
+```
+etcdctl get --prefix / --rev=$N -w json | jq -c '…' > etcd/rev-$N.jsonl
+n1k1 etcd/          # one keyspace unioning the snapshots; each row's mod_revision = its version
+```
+Or an `INSERT INTO <name>.jsonl … SELECT …` (target backticked) to materialize from a live scan. Diffing
+two revisions (`--mode diff` over a snapshot-by-key sidecar) yields the Debezium insert/update/delete
+envelope the CEP cursor already emits (`.multi cursor`).
+
+**Handling mutation — the good fit.** etcd's change primitives map 1:1 onto machinery n1k1 already has:
+- **MVCC revision ≈ Iceberg time-travel (§7).** A `--rev=N` snapshot is a consistent version, exactly like
+  `FROM table@snapshot`. A connector would expose `FROM etcd@<rev>`.
+- **Watch ≈ the CEP cursor.** etcd Watch streams PUT/DELETE from a revision onward — a CDC feed the
+  `.multi cursor` append/delta consumer ingests; `mod_revision` is the incremental high-water mark (like
+  the SI catch-up watermark, `DESIGN-indexing.md`).
+- The revision is a perfect **monotonic watermark**: snapshot-at-revision + `INSERT INTO` + the cursor give
+  consistency, history, and incremental catch-up with almost no new code.
+
+**Optional live `etcd://` connector (only if demand + generic-JSON etcd).** A new `Source` kind parallel to
+`s3://` (§8): `etcd://host:2379/prefix` → a keyspace whose scan is a `clientv3.Get(prefix, WithRange)`,
+`_meta.key`/`mod_revision` from the KV, `@<rev>` time-travel via `WithRev`. Pushdown ceiling: etcd
+range-scans filter on the **key** only, so `WHERE _meta.key LIKE '/p/%'` pushes to a prefix scan; value
+predicates run in n1k1 (same shape as a directory scan). ⚠ **Dependency weight:** `clientv3` pulls gRPC +
+a large tree, against n1k1's lean CGO-free / permissive-license ethos — so a connector must be
+**build-tag-gated + optional** (like the object-store backends), never default-on, and never pointed at a
+production control-plane etcd.
+
+**⚠ The protobuf weight problem — why a "generic" decoder does NOT rescue the K8s case.** Protobuf is only
+*partially* self-describing, and the missing half is exactly what SQL++ needs:
+- The wire format is a stream of `(field-number, wire-type)` tags. From raw bytes you recover **field
+  numbers** (1, 2, 3…) and **wire types** (varint / 64-bit / length-delimited / 32-bit) — that's all.
+  `protoc --decode_raw` / protobuf-inspector exploit this to dump a structural tree.
+- What you **cannot** recover without the `.proto`: (1) **field names** — the wire carries `2`, not `spec`,
+  so you get `{"2": …}`, useless for `SELECT spec.replicas`; (2) **concrete scalar type** — a varint could
+  be int32/int64/uint/**sint (zig-zag)**/bool/enum, indistinguishable (a raw `2` may *mean* `1`);
+  (3) **string vs bytes vs nested-message vs packed-repeated** all share wire-type 2, so a decoder must
+  *guess* (try UTF-8, else recurse, else bytes) and routinely mis-parses; (4) **map vs repeated** — a
+  proto3 map is encoded as repeated key/value entries, unrecoverable as a map.
+- So `decode_raw`-to-JSON yields a **numeric-keyed, type-guessed skeleton** — fine for forensics, not a
+  faithful queryable document.
+- Kubernetes compounds it: values are wrapped in a `runtime.Unknown` envelope (a 4-byte `k8s\x00` magic +
+  a protobuf carrying `typeMeta` {apiVersion, kind} as strings — those *are* recoverable — and a `raw`
+  bytes field holding the actual object protobuf, which is **not**, without the K8s API descriptors).
+- Faithful decoding needs the **schemas**: embed the K8s `FileDescriptorSet` and decode via
+  `protoreflect`/`dynamicpb` (heavy + drifts with the cluster version), or — the escape hatch that makes it
+  moot — let the apiserver transcode (`kubectl get -o json`), i.e. the dump-via-API path. Even
+  `google.protobuf.Any` (the self-describing variant) carries only a *type URL*, not the descriptors, so
+  the schema is still needed out-of-band.
+- **Net:** a generic decoder avoids the dependency but produces unqueryable output; a faithful decode
+  requires the schemas (heavy/versioned) or the apiserver — so the protobuf weight *reinforces* dump-via-
+  API. (For **generic app protobuf** where the user HAS the `.proto`, a descriptor-driven decode belongs in
+  an opt-in `*.extract.js` recipe — user supplies the descriptor set — not baked into n1k1.)
 
 ## Dependency licensing (permissive only)
 
