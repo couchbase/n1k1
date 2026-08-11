@@ -756,25 +756,38 @@ its objects **protobuf-encoded** at the etcd layer (the default since ~1.6); JSO
 apiserver's API surface, which transcodes. So a raw etcd value is JSON for app data, protobuf for the
 biggest deployment.
 
-**Recipe A — pipe a dump through the `stdin` keyspace (zero new code, works today).**
+**Recipe A — pipe the values straight in, no `jq` (n1k1 stands alone, works today).** When etcd values
+are JSON, `--print-value-only` already emits NDJSON — one JSON doc per value, newline-separated — which is
+exactly the `stdin` keyspace's format, so **etcdctl → n1k1 with nothing in between**:
 ```
-etcdctl get --prefix / -w json \
-  | jq -c '.kvs[] | {key:(.key|@base64d), value:(.value|@base64d|fromjson?), rev:.mod_revision}' \
-  | n1k1 -c 'SELECT s.key, s.value.* FROM stdin s WHERE s.key LIKE "/config/%"'
+etcdctl get --prefix /config/ --print-value-only \
+  | n1k1 -c 'SELECT s.* FROM stdin s WHERE s.env = "prod"'
 ```
-`-w json` base64s keys/values; `fromjson?` parses a JSON value (a non-JSON value stays a string). Each row
-carries the etcd `key` + `mod_revision` — the natural provenance/watermark.
+No base64, no `jq`, no external filter — the `stdin` keyspace buffers the stream, so field access, `WHERE`,
+`UNNEST`, and aggregates all work (verified). The etcd KEY isn't carried (values usually self-identify —
+`{"app":"web",…}`); if you need the key/revision alongside, see the base64 note.
 
-**Recipe B — snapshot-at-revision → a versioned, queryable keyspace.** etcd is MVCC: every write bumps a
-global revision, and `--rev=N` reads a **consistent** (torn-read-free) point-in-time view. Dump each
-snapshot to a revision-named file and query the accumulation as an ordinary multi-source keyspace (§2):
+⚠ **Keys/revisions & the base64 wall.** The structured form `etcdctl -w json` wraps everything in
+`{kvs:[{key,value,mod_revision,…}]}` with key/value **base64-encoded**. n1k1 reads the whole object and can
+`UNNEST s.kvs`, but the value can't be turned into a nested doc *in-engine*: `BASE64_DECODE` returns a
+**binary** value and there's no binary→text coercion in SQL++ today (`DECODE_JSON` needs a string, so
+`DECODE_JSON(BASE64_DECODE(kv.value))` → null). Until a native `base64→text` (or a `DECODE_JSON` that
+accepts the base64 form) lands, the key-preserving path needs a decode hop — so the value-only recipe
+above is the jq-free one. (That small native helper is the enhancement that would make the full
+key+value+revision recipe stand alone too — a candidate `base64_text()` / binary→string builtin.)
+
+**Recipe B — snapshot-at-revision → a versioned, queryable keyspace (still jq-free).** etcd is MVCC: every
+write bumps a global revision, and `--rev=N` reads a **consistent** (torn-read-free) point-in-time view.
+Dump each snapshot's values to a revision-named file and query the accumulation as an ordinary
+multi-source keyspace (§2):
 ```
-etcdctl get --prefix / --rev=$N -w json | jq -c '…' > etcd/rev-$N.jsonl
-n1k1 etcd/          # one keyspace unioning the snapshots; each row's mod_revision = its version
+etcdctl get --prefix / --rev=$N --print-value-only > etcd/rev-$N.jsonl
+n1k1 etcd/          # one keyspace unioning the snapshots; the FILENAME carries the snapshot revision
 ```
-Or an `INSERT INTO <name>.jsonl … SELECT …` (target backticked) to materialize from a live scan. Diffing
-two revisions (`--mode diff` over a snapshot-by-key sidecar) yields the Debezium insert/update/delete
-envelope the CEP cursor already emits (`.multi cursor`).
+The snapshot revision rides in the filename (per-record `mod_revision` needs the base64 form above), so
+`rev-<N>.jsonl` self-documents its version. Or `INSERT INTO <name>.jsonl … SELECT …` (target backticked)
+to materialize from a live scan. Diffing two revisions (`--mode diff` over a snapshot-by-key sidecar)
+yields the Debezium insert/update/delete envelope the CEP cursor already emits (`.multi cursor`).
 
 **Handling mutation — the good fit.** etcd's change primitives map 1:1 onto machinery n1k1 already has:
 - **MVCC revision ≈ Iceberg time-travel (§7).** A `--rev=N` snapshot is a consistent version, exactly like
