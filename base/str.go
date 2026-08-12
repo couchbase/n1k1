@@ -13,6 +13,7 @@ package base
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"math"
 	"strconv"
@@ -317,6 +318,27 @@ func StrTransformInto(v Val, c *ValComparer, bufPre []byte,
 	}
 	bufPre = StrEncode(c, transform(decoded), bufPre)
 	return Val(bufPre), bufPre
+}
+
+// StrBase64DecodeInto base64-decodes string v's bytes and re-encodes them as a JSON
+// STRING into bufEnc (bufDec is decode scratch): MISSING -> MISSING, non-string or
+// invalid base64 -> NULL. Unlike the stock BASE64_DECODE -- which runs the decoded bytes
+// back through value.NewValue and thus PARSES them as JSON (base64 of `{"a":1}` -> the
+// object) -- this ALWAYS yields a string, so a base64'd plain string (an etcd key path, a
+// non-JSON value) round-trips to a queryable string. Two buffers keep encode's read
+// (bufDec) and write (bufEnc) from aliasing. Mirrors the unary-combinator shape of
+// StrLength (one named base leaf -> codegen-safe; see DESIGN-exprs.md).
+func StrBase64DecodeInto(v Val, c *ValComparer, bufDec, bufEnc []byte) (out Val, dec, enc []byte) {
+	decoded, sentinel, ok := StrDecode(v)
+	if !ok {
+		return sentinel, bufDec, bufEnc
+	}
+	bufDec, err := base64.StdEncoding.AppendDecode(bufDec[:0], decoded)
+	if err != nil {
+		return ValNull, bufDec, bufEnc
+	}
+	bufEnc = StrEncode(c, bufDec, bufEnc)
+	return Val(bufEnc), bufDec, bufEnc
 }
 
 // StrLength: the byte length of the decoded string as a JSON int; MISSING ->

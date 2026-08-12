@@ -100,6 +100,7 @@ type/collation semantics.
 | `between` `in` `is_distinct_from`/`is_not_distinct_from` | `engine/expr_between.go`/`_in.go`/`_distinct.go` | BETWEEN / IN / null-safe (in)equality |
 | string transforms: `upper` `lower` `title` `trim`(2-arg cutset) `ltrim` `rtrim` `reverse` `length` `contains` `position0/1` `repeat` `replace`(3-arg) `substr` `lpad` `rpad` `split` | `engine/expr_str.go` + `base/str.go` | decode→transform→re-encode into a lifted buffer; arity-dispatched. `repeat` overflow → runtime error (`base.ErrStrRepeat`). `mb_*`/4-arg `replace`/`round_nearest` fall back |
 | `regexp_contains` `regexp_like` | `engine/expr_str.go` | **constant** pattern only (compiled once); dynamic → fallback |
+| `base64_decode_string` | `engine/expr_str.go` + `base/str.go` | base64-decode → force a STRING (never re-parse as JSON, unlike the boxed `BASE64_DECODE`); two lifted buffers (decode scratch + encode output) avoid aliasing. Boxed fallback `glue/base64_decode_string.go`. DESIGN-data.md §9 |
 | math: `abs` `ceil` `floor` `round`(1/2-arg) `trunc` `sqrt` `exp` `ln` `log` `sign` `degrees` `radians` `sin` `cos` `tan` `asin` `acos` `atan` `power` `atan2` | `engine/expr_math.go` + `base/math.go` | func-passing to stdlib `math.*` / `base.Math*` |
 | `date_part_millis` `date_add_millis` | `engine/expr_date.go` + `base/datetime.go` | millis math in the process zone; named-TZ + date-STRING funcs fall back |
 | `to_boolean` `to_string` `to_number` | `engine/expr_type.go` | scalar conversions |

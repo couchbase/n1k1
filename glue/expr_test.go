@@ -137,6 +137,39 @@ func TestArithDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
+// TestBase64DecodeStringDifferentialVsCBQ proves the native ExprBase64DecodeString
+// lowering is byte-identical to the boxed glue.base64DecodeStringFunc: decode -> a
+// STRING result (never re-parsed as JSON), with MISSING/non-string/invalid-base64 -> the
+// right unknown. Both lanes share nothing but this test.
+func TestBase64DecodeStringDifferentialVsCBQ(t *testing.T) {
+	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
+	f := func(arg expression.Expression) expression.Expression { return newBase64DecodeStringFunc(arg) }
+
+	cases := []struct {
+		name string
+		expr expression.Expression
+	}{
+		{"plain-string", f(c("L2NvbmZpZy9hcHA="))},       // "/config/app"
+		{"json-text-stays-string", f(c("eyJhIjoxfQ=="))}, // base64 of {"a":1} -> the STRING "{\"a\":1}"
+		{"empty", f(c(""))},                              // "" -> ""
+		{"utf8", f(c("w6nDqcOp"))},                       // base64 of "ééé"
+		{"bad-base64", f(c("!!notbase64"))},              // -> NULL
+		{"non-string-number", f(c(5))},                   // -> NULL
+		{"non-string-null", f(c(value.NULL_VALUE))},      // -> NULL
+	}
+	for _, tc := range cases {
+		want := cbqEval(t, tc.expr)
+		got, ok := nativeEval(t, tc.expr)
+		if !ok {
+			t.Errorf("%s: expression did not optimize to the native path", tc.name)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		}
+	}
+}
+
 func TestCondUnknownDifferentialVsCBQ(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	num := c(3)

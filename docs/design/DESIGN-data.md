@@ -765,16 +765,27 @@ etcdctl get --prefix /config/ --print-value-only \
 ```
 No base64, no `jq`, no external filter — the `stdin` keyspace buffers the stream, so field access, `WHERE`,
 `UNNEST`, and aggregates all work (verified). The etcd KEY isn't carried (values usually self-identify —
-`{"app":"web",…}`); if you need the key/revision alongside, see the base64 note.
+`{"app":"web",…}`); if you need the key/revision alongside, see Recipe A2.
 
-⚠ **Keys/revisions & the base64 wall.** The structured form `etcdctl -w json` wraps everything in
-`{kvs:[{key,value,mod_revision,…}]}` with key/value **base64-encoded**. n1k1 reads the whole object and can
-`UNNEST s.kvs`, but the value can't be turned into a nested doc *in-engine*: `BASE64_DECODE` returns a
-**binary** value and there's no binary→text coercion in SQL++ today (`DECODE_JSON` needs a string, so
-`DECODE_JSON(BASE64_DECODE(kv.value))` → null). Until a native `base64→text` (or a `DECODE_JSON` that
-accepts the base64 form) lands, the key-preserving path needs a decode hop — so the value-only recipe
-above is the jq-free one. (That small native helper is the enhancement that would make the full
-key+value+revision recipe stand alone too — a candidate `base64_text()` / binary→string builtin.)
+**Recipe A2 — keys + revisions too, still jq-free (`BASE64_DECODE_STRING`).** The structured form
+`etcdctl -w json` wraps everything in `{kvs:[{key,value,mod_revision,…}]}` with key/value **base64-encoded**.
+n1k1 does the whole decode in-engine — `UNNEST s.kvs`, then decode each field:
+```
+etcdctl get --prefix / -w json | n1k1 -c '
+  SELECT BASE64_DECODE_STRING(kv.`key`) AS k,      -- key path -> string
+         BASE64_DECODE(kv.`value`)       AS v,      -- JSON value -> nested object (auto-parsed)
+         kv.mod_revision                 AS rev
+  FROM stdin s UNNEST s.kvs AS kv
+  WHERE BASE64_DECODE_STRING(kv.`key`) LIKE "/config/%"'
+```
+`BASE64_DECODE_STRING(s)` decodes s and forces a **STRING** result. It fills the gap the stock
+`BASE64_DECODE` leaves: `BASE64_DECODE` runs the decoded bytes back through JSON parsing (handy — base64 of
+`{"a":1}` yields the object), but a base64'd **plain** string (a key path, a non-JSON value) then comes
+back as an unusable binary. So use `BASE64_DECODE` for JSON values and `BASE64_DECODE_STRING` for keys /
+plain-string values. It is **native in n1k1's byte lane** (`engine/expr_str.go` + `base.StrBase64DecodeInto`,
+decode→re-encode into a lifted buffer, no boxing) with a boxed cbq fallback (`glue/base64_decode_string.go`),
+so a `WHERE BASE64_DECODE_STRING(x.token) = …` filter over a big scan stays zero-boxing. Name follows
+Snowflake's `BASE64_DECODE_STRING`.
 
 **Recipe B — snapshot-at-revision → a versioned, queryable keyspace (still jq-free).** etcd is MVCC: every
 write bumps a global revision, and `--rev=N` reads a **consistent** (torn-read-free) point-in-time view.

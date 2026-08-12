@@ -45,6 +45,8 @@ func init() {
 		"abs", "ceil", "floor", "sqrt", "exp", "ln", "log", "sign", // unary math (expr_math.go)
 		"degrees", "radians", "sin", "cos", "tan", "asin", "acos", "atan",
 		"upper", "lower", "length", "title", "trim", "ltrim", "rtrim", "reverse", // unary string (expr_str.go)
+		"base64_decode_string", // BASE64_DECODE_STRING: decode -> force STRING (expr_str.go); boxed fallback in glue/base64_decode_string.go
+
 		"contains", "position0", "position1", // binary string (expr_str.go)
 		"regexp_contains", "regexp_like", // regexp predicates, constant-pattern only (expr_str.go)
 		"replace",            // ternary string, 3-arg form (expr_str.go)
