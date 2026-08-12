@@ -1,8 +1,8 @@
-# Ideas: Infrastructure-state use cases (k8s, Terraform, multi-cloud)
+# Design: Infrastructure-state use cases (k8s, Terraform, multi-cloud)
 
-_Brainstorm, 2026-08-12. **Exploratory — not a commitment.** No code implied; this records
-which queries would be compelling over infrastructure-state data, what people use today
-instead, and where n1k1 would (and would NOT) bring something new. Companion to
+_Last reviewed: 2026-08-12. **Exploratory — a use-case study, not a build commitment.** It
+records which queries would be compelling over infrastructure-state data, what people use
+today instead, and where n1k1 would (and would NOT) bring something new. Companion to
 `DESIGN-data.md` §9 (the etcd dump recipes) and `DESIGN-merging.md` (ASOF)._
 
 The prompt: pretend we have etcd/apiserver data for a realistic k8s estate —
@@ -50,10 +50,35 @@ FROM prod_deploys pr JOIN test_deploys te ON pr.metadata.name = te.metadata.name
 WHERE pr._image != te._image;
 ```
 
-⚠ **Gap this use case exposes:** "in prod but NOT in test" wants `FULL OUTER JOIN`, which
-n1k1 lacks (cbq-fork parser gap + a new engine op — see TODO/`joins-advanced`). The
-workaround is `UNION ALL` + `GROUP BY name HAVING COUNT(*) = 1`. If infra-state becomes a
-real target, FULL OUTER moves up the priority list.
+**Set-diff without `FULL OUTER JOIN`.** "In prod but NOT in test (and vice versa)" is the
+classic `FULL OUTER JOIN` shape, which **n1k1 deliberately does not have**: the cbq fork's
+grammar declares `INNER`/`LEFT`/`RIGHT`/`OUTER` but **no `FULL` token at all**
+(`parser/n1ql/n1ql.y`), so `FULL [OUTER] JOIN` is a parse error at `FULL`. Adding it would
+mean a lexer + goyacc + algebra + planner change *plus* a new engine op (unlike
+`A RIGHT JOIN B`, which the fork rewrites to `B LEFT OUTER JOIN A`, FULL needs unmatched
+rows from **both** sides, i.e. right-side match tracking) — exactly the merge-hostile
+grammar change the project avoids. Every feature so far has needed **zero** fork grammar
+changes, and the idiom below covers the use case, so this stays a non-goal.
+
+```sql
+-- (a) which names exist on exactly ONE side  ->  {canary,test}, {legacy,prod}
+SELECT u.name AS name, MIN(u.src) AS only_in
+FROM (SELECT p.metadata.name AS name, "prod" AS src FROM prod p
+      UNION ALL
+      SELECT t.metadata.name AS name, "test" AS src FROM test t) u
+GROUP BY u.name HAVING COUNT(*) = 1 ORDER BY u.name;
+
+-- (b) the FULL result: every name, both sides, null where absent
+SELECT u.name AS name, MAX(u.prod) AS prod, MAX(u.test) AS test
+FROM (SELECT p.metadata.name AS name, p.metadata.name AS prod, MISSING AS test FROM prod p
+      UNION ALL
+      SELECT t.metadata.name AS name, MISSING AS prod, t.metadata.name AS test FROM test t) u
+GROUP BY u.name ORDER BY u.name;
+```
+
+Both verified against a prod/test fixture; (b) returns matched rows plus `null` on the
+missing side — i.e. genuine FULL OUTER semantics via `UNION ALL` + `GROUP BY`. Worth
+packaging as a `*.macro.js` (`@full_outer(...)`) so the boilerplate is written once.
 
 ### 3. Time travel — where it starts feeling like a superpower
 
@@ -173,5 +198,6 @@ The feature that would make the whole story sing is already half-built: a **dete
 (`.multi --queries`) shipped as a git repo of `*.sql++` cluster-conformance checks, run over
 any snapshot bundle in **one shared scan**.
 
-**Prerequisites this story would surface:** `FULL OUTER JOIN` (multi-cluster set diffs),
+**What this story would surface:** a `@full_outer` macro (the set-diff boilerplate above),
 and — if raw etcd rather than the apiserver is ever the source — the protobuf wall (§9).
+Notably it does **not** require a `FULL OUTER JOIN` grammar change; that stays a non-goal.

@@ -81,7 +81,13 @@ _Last reviewed: 2026-07-23._
       folding mismatched data; (2) document each version's schema; (3) a deprecation/default-version
       policy as versions accrue. Ties into `registry:` (remote precanned queries -- signing/pinning;
       see tmp/naming.md).
-- [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL).
+- [ ] JOIN types: FULL OUTER (cbq-fork grammar does not support FULL -- confirmed: n1ql.y
+      declares INNER/LEFT/RIGHT/OUTER, no FULL token, so `FULL [OUTER] JOIN` is a parse
+      error). Adding it = lexer + goyacc + algebra + planner + a NEW engine op (unlike
+      RIGHT, which the fork rewrites to LEFT OUTER, FULL needs right-side match tracking)
+      -- merge-hostile, so currently a NON-GOAL. Workaround (verified, both the set-diff
+      and the full both-sides-with-nulls form): UNION ALL + GROUP BY, see
+      DESIGN-use-cases.md "Set-diff without FULL OUTER JOIN"; worth a @full_outer macro.
 - [ ] GROUP BY ROLLUP / CUBE / GROUPING SETS (cbq-fork grammar does not support).
 - [ ] Large IN-list hash membership (perf; LARGE RHS only): implement cbq's `expression.InlistContext`
       on GlueContext (a `map[*In]*InlistHash` + a before-rows `EnableInlistHash` walk over the boxed

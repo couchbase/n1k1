@@ -32,14 +32,9 @@ secondary/FTS indexes, and a rich CLI (cmd/n1k1).
 | [DESIGN-sorting.md](DESIGN-sorting.md#status--remaining-todos) | shared sorted-stream substrate; the grep -A/-B/-C context fan-out |
 | [DESIGN-stats.md](DESIGN-stats.md#status--remaining-todos) | per-operator counters, the live runtime footer, running-aggregate display |
 | [DESIGN-testing.md](DESIGN-testing.md#status--remaining-todos) | testing: recorded-cbq conformance suite, gsi corpus, compiler-differential sweep, EE-stub bootstrap |
+| [DESIGN-use-cases.md](DESIGN-use-cases.md) | infrastructure-state use cases (k8s / Terraform / multi-cloud): compelling queries, honest comparison vs Steampipe/CloudQuery/OPA, and why a "$ANY_CLOUD → k8s view" is only thin-envelope-deep. Exploratory |
 | [DESIGN-variant.md](DESIGN-variant.md) | Parquet/Iceberg VARIANT type: JSON+typed-scalar carrier, shredded reads, INSERT write-back, zero-alloc byte-nav |
 | [DESIGN-vectors.md](DESIGN-vectors.md) | vector search: `VECTOR_DISTANCE` (native + columnar float32 kernel), `VECTORIZE_BATCH` embeddings, Parquet vector columns |
-
-Exploratory (brainstorm, not a commitment):
-
-| doc | scope |
-|-----|-------|
-| [IDEAS-use-cases.md](IDEAS-use-cases.md) | infrastructure-state use cases (k8s / Terraform / multi-cloud): compelling queries, honest comparison vs Steampipe/CloudQuery/OPA, and why a "$ANY_CLOUD → k8s view" is only thin-envelope-deep |
 
 -------------------------------------------------------
 ## The way the n1k1 compiler works...
