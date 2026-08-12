@@ -35,6 +35,12 @@ secondary/FTS indexes, and a rich CLI (cmd/n1k1).
 | [DESIGN-variant.md](DESIGN-variant.md) | Parquet/Iceberg VARIANT type: JSON+typed-scalar carrier, shredded reads, INSERT write-back, zero-alloc byte-nav |
 | [DESIGN-vectors.md](DESIGN-vectors.md) | vector search: `VECTOR_DISTANCE` (native + columnar float32 kernel), `VECTORIZE_BATCH` embeddings, Parquet vector columns |
 
+Exploratory (brainstorm, not a commitment):
+
+| doc | scope |
+|-----|-------|
+| [IDEAS-use-cases.md](IDEAS-use-cases.md) | infrastructure-state use cases (k8s / Terraform / multi-cloud): compelling queries, honest comparison vs Steampipe/CloudQuery/OPA, and why a "$ANY_CLOUD → k8s view" is only thin-envelope-deep |
+
 -------------------------------------------------------
 ## The way the n1k1 compiler works...
 
