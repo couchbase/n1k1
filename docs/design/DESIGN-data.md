@@ -783,7 +783,8 @@ etcdctl get --prefix / -w json | n1k1 -c '
 `{"a":1}` yields the object), but a base64'd **plain** string (a key path, a non-JSON value) then comes
 back as an unusable binary. So use `BASE64_DECODE` for JSON values and `BASE64_DECODE_STRING` for keys /
 plain-string values. It is **native in n1k1's byte lane** (`engine/expr_str.go` + `base.StrBase64DecodeInto`,
-decode→re-encode into a lifted buffer, no boxing) with a boxed cbq fallback (`glue/base64_decode_string.go`),
+decode→re-encode into a lifted buffer, no boxing) — native-only, with `glue/base64_decode_string.go` just
+registering the name for cbq's parser and delegating to that same helper —
 so a `WHERE BASE64_DECODE_STRING(x.token) = …` filter over a big scan stays zero-boxing. Name follows
 Snowflake's `BASE64_DECODE_STRING`.
 

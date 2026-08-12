@@ -13,28 +13,27 @@
 
 package glue
 
-// BASE64_DECODE_STRING(s) base64-decodes s and returns the bytes reinterpreted as a
-// UTF-8 STRING -- always a string, never binary. It fills a gap the stock BASE64_DECODE
-// leaves: BASE64_DECODE runs the decoded bytes back through value.NewValue, which PARSES
-// them as JSON -- so base64 of `{"a":1}` conveniently yields the object {"a":1}, but
-// base64 of a plain string (an etcd key like `/config/app`, or a non-JSON value) yields
-// an unusable BINARY value with no binary->text coercion in SQL++. This function forces
-// the string interpretation, so a base64'd key/plaintext round-trips to a queryable
-// string. Name follows Snowflake's BASE64_DECODE_STRING (vs its BASE64_DECODE_BINARY).
+// BASE64_DECODE_STRING(s): base64-decode s and return the bytes as a UTF-8 STRING --
+// always a string, never re-parsed as JSON (unlike the stock BASE64_DECODE, which runs
+// the decoded bytes back through value.NewValue and so yields the object for base64 of
+// `{"a":1}` but an unusable binary for a base64'd plain string like an etcd key path).
+// Name follows Snowflake's BASE64_DECODE_STRING. See DESIGN-data.md §9.
 //
-// LANE: this is a boxed (cbq value.Value) scalar function, registered like node() /
-// multi_matches() -- n1k1's Convert has no native []byte lowering, so it NA()s the
-// projection to the boxed lane while the scan stays native. That's right for a
-// once-per-row ingest projection (BASE64_DECODE is boxed too); not a hot-path primitive.
-//
-// Semantics mirror the stock Base64Decode: MISSING -> MISSING, a non-STRING arg -> NULL,
-// invalid base64 -> NULL. See DESIGN-data.md §9 (the etcd recipe drove this).
+// n1k1 favors its NATIVE []byte lane: the ONE implementation is base.StrBase64DecodeInto
+// (byte-in, byte-out, no boxing), and engine/expr_str.go's ExprBase64DecodeString lowers
+// a convertible call straight to it via glue/expr_optimize.go's optSelf (zero-boxing).
+// This file is NOT a second (boxed) implementation -- it exists only because cbq's parser
+// resolves a function name against its registry (like node()/multi_matches()), and its
+// Evaluate is a thin bridge that DELEGATES to the same native helper for the rare case an
+// operand isn't natively convertible (bridging value->bytes->helper->value there).
 
 import (
-	"encoding/base64"
+	"bytes"
 
 	"github.com/couchbase/query/expression"
 	"github.com/couchbase/query/value"
+
+	"github.com/couchbase/n1k1/base"
 )
 
 // Base64DecodeStringFuncName is the registered SQL++ function name (lowercase, like the
@@ -68,6 +67,10 @@ func (this *base64DecodeStringFunc) Constructor() expression.FunctionConstructor
 	}
 }
 
+// Evaluate bridges the boxed operand value to the native byte-lane implementation
+// (base.StrBase64DecodeInto) -- the single source of truth. Only reached when the
+// operand isn't natively convertible (a convertible call lowers straight to the native
+// op); MISSING/non-string/invalid-base64 propagate exactly as the native lane does.
 func (this *base64DecodeStringFunc) Evaluate(item value.Value, context expression.Context) (value.Value, error) {
 	arg, err := this.Operands()[0].Evaluate(item, context)
 	if err != nil {
@@ -76,12 +79,17 @@ func (this *base64DecodeStringFunc) Evaluate(item value.Value, context expressio
 	if arg.Type() == value.MISSING {
 		return value.MISSING_VALUE, nil
 	}
-	if arg.Type() != value.STRING {
-		return value.NULL_VALUE, nil
+	var buf bytes.Buffer // the operand's JSON bytes -> a base.Val for the native helper
+	if err := arg.WriteJSON(nil, &buf, "", "", true); err != nil {
+		return nil, err
 	}
-	b, derr := base64.StdEncoding.DecodeString(arg.ToString())
-	if derr != nil {
+	out, _, _ := base.StrBase64DecodeInto(base.Val(buf.Bytes()), base.NewValComparer(), nil, nil)
+	switch base.ValKind(out) {
+	case base.ValKindMissing:
+		return value.MISSING_VALUE, nil
+	case base.ValKindNull:
 		return value.NULL_VALUE, nil
+	default:
+		return value.NewValue([]byte(out)), nil // out is a JSON string -> stringValue
 	}
-	return value.NewValue(string(b)), nil // string(): force text, never re-parse as JSON
 }

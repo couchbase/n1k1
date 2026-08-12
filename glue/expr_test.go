@@ -137,35 +137,39 @@ func TestArithDifferentialVsCBQ(t *testing.T) {
 	}
 }
 
-// TestBase64DecodeStringDifferentialVsCBQ proves the native ExprBase64DecodeString
-// lowering is byte-identical to the boxed glue.base64DecodeStringFunc: decode -> a
-// STRING result (never re-parsed as JSON), with MISSING/non-string/invalid-base64 -> the
-// right unknown. Both lanes share nothing but this test.
-func TestBase64DecodeStringDifferentialVsCBQ(t *testing.T) {
+// TestBase64DecodeStringNative pins BASE64_DECODE_STRING's native lane against absolute
+// expected bytes (a STRING result, never re-parsed as JSON; MISSING/non-string/invalid
+// -> the right unknown), AND checks the cbq-registration bridge agrees. Both share the
+// one native helper (base.StrBase64DecodeInto), so the absolute `want` guards against a
+// shared bug that two-path agreement alone wouldn't catch.
+func TestBase64DecodeStringNative(t *testing.T) {
 	c := func(v interface{}) expression.Expression { return expression.NewConstant(v) }
 	f := func(arg expression.Expression) expression.Expression { return newBase64DecodeStringFunc(arg) }
 
 	cases := []struct {
 		name string
 		expr expression.Expression
+		want string // absolute expected JSON bytes
 	}{
-		{"plain-string", f(c("L2NvbmZpZy9hcHA="))},       // "/config/app"
-		{"json-text-stays-string", f(c("eyJhIjoxfQ=="))}, // base64 of {"a":1} -> the STRING "{\"a\":1}"
-		{"empty", f(c(""))},                              // "" -> ""
-		{"utf8", f(c("w6nDqcOp"))},                       // base64 of "ééé"
-		{"bad-base64", f(c("!!notbase64"))},              // -> NULL
-		{"non-string-number", f(c(5))},                   // -> NULL
-		{"non-string-null", f(c(value.NULL_VALUE))},      // -> NULL
+		{"plain-string", f(c("L2NvbmZpZy9hcHA=")), `"/config/app"`},
+		{"json-text-stays-string", f(c("eyJhIjoxfQ==")), `"{\"a\":1}"`}, // base64 of {"a":1} -> the STRING
+		{"empty", f(c("")), `""`},
+		{"utf8", f(c("w6nDqcOp")), `"ééé"`}, // base64 of "ééé"
+		{"bad-base64", f(c("!!notbase64")), `null`},
+		{"non-string-number", f(c(5)), `null`},
+		{"non-string-null", f(c(value.NULL_VALUE)), `null`},
 	}
 	for _, tc := range cases {
-		want := cbqEval(t, tc.expr)
 		got, ok := nativeEval(t, tc.expr)
 		if !ok {
 			t.Errorf("%s: expression did not optimize to the native path", tc.name)
 			continue
 		}
-		if got != want {
-			t.Errorf("%s: native=%q, cbq=%q", tc.name, got, want)
+		if got != tc.want {
+			t.Errorf("%s: native=%q, want %q", tc.name, got, tc.want)
+		}
+		if viaCbq := cbqEval(t, tc.expr); viaCbq != tc.want {
+			t.Errorf("%s: cbq-bridge=%q, want %q", tc.name, viaCbq, tc.want)
 		}
 	}
 }
