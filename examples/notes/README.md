@@ -1,4 +1,4 @@
-# `catalog/` — a markdown knowledge catalog (frontmatter + outline + links)
+# `notes/` — markdown notes with frontmatter (front/body + outline + links)
 
 Six markdown files under `default/concepts/`, in the shape Jekyll, Hugo, Obsidian and
 Google's [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog) all share: a
@@ -21,7 +21,7 @@ Everything below runs as-is, with no `-ext` flag — both layers ship in the bin
 ```sh
 n1k1 -c 'SELECT c.front.title, c.front.`type`, c.front.owner, c.front.status
            FROM concepts AS c WHERE c.front IS NOT MISSING
-          ORDER BY c.front.`type`, c.front.title' examples/catalog
+          ORDER BY c.front.`type`, c.front.title' examples/notes
 ```
 
 ```
@@ -48,7 +48,7 @@ unterminated `tags:` list. Neither fails the scan:
 n1k1 -c 'SELECT c.filename,
                 CASE WHEN c.front_error IS NOT MISSING
                      THEN "broken frontmatter" ELSE "no frontmatter" END AS problem
-           FROM concepts AS c WHERE c.front IS MISSING ORDER BY c.filename' examples/catalog
+           FROM concepts AS c WHERE c.front IS MISSING ORDER BY c.filename' examples/notes
 ```
 
 ```
@@ -63,7 +63,7 @@ scratch_notes.md   no frontmatter
 ```sh
 n1k1 -c 'SELECT c.filename, s.depth, s.trail
            FROM concepts AS c UNNEST md_sections(c.body) AS s
-          WHERE s.depth = 2 ORDER BY c.filename' examples/catalog
+          WHERE s.depth = 2 ORDER BY c.filename' examples/notes
 ```
 
 ```
@@ -84,7 +84,7 @@ A concept's id is its path minus `.md`, so a dangling `/concepts/…` link is a 
 n1k1 -c 'SELECT DISTINCT c.filename AS src, l.target AS dangling
            FROM concepts AS c UNNEST md_links(c.body) AS l
           WHERE l.kind = "absolute"
-            AND SPLIT(l.target, "/")[2] || ".md" NOT IN (SELECT RAW filename FROM concepts)' examples/catalog
+            AND SPLIT(l.target, "/")[2] || ".md" NOT IN (SELECT RAW filename FROM concepts)' examples/notes
 ```
 
 ```
@@ -98,7 +98,7 @@ recommended form), `relative`, or `external`.
 
 ```sh
 n1k1 -c 'SELECT c.filename, k.lang, k.line FROM concepts AS c
-           UNNEST md_code(c.body) AS k WHERE k.lang = "sql" ORDER BY c.filename' examples/catalog
+           UNNEST md_code(c.body) AS k WHERE k.lang = "sql" ORDER BY c.filename' examples/notes
 ```
 
 The three SQL blocks are real: the one in `orders.md` runs against the sibling `shop/`

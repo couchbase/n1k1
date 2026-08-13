@@ -26,7 +26,7 @@ Status legend (matches the design doc):
 | `warehouse/` | K | Parquet columnar files → JSON rows (transpose; multi-file keyspace) | `SELECT region, SUM(amount) FROM sales GROUP BY region` | ✅ |
 | `kb/` | L | docs & media → extract-provider rows (`{filename,kind,text,…}`) | `SELECT filename FROM default:docs WHERE text LIKE '%vacation%'` | 🟢 |
 | `infra/` | Y | YAML → JSON records: `---` multi-doc streams + top-level sequences | `SELECT team, SUM(replicas) FROM services GROUP BY team` | 🟢 |
-| `catalog/` | §4 | markdown + YAML frontmatter (Jekyll/Hugo/Obsidian/OKF) → `front`/`body`, plus outline/link/code UDFs | `SELECT c.front.title FROM concepts AS c WHERE "sales" IN c.front.tags` | ✅ |
+| `notes/` | §4 | markdown + YAML frontmatter (Jekyll/Hugo/Obsidian/OKF) → `front`/`body`, plus outline/link/code UDFs | `SELECT c.front.title FROM concepts AS c WHERE "sales" IN c.front.tags` | ✅ |
 
 Not a data tree but living here too: **`kmeans/`** — a k-means / IVF-partitioning /
 dataset-census pipeline over any keyspace's vector field, run entirely through the CLI
