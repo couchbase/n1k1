@@ -499,13 +499,13 @@ func TestExtShippedJSExamples(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterExtensionDir(shipped): %v", err)
 	}
-	// Scalar UDF demos (*.js), the builtin_chart / builtin_decimal / builtin_ejson
-	// multi-export MODULES (a whole family per file; builtin_chart exports the
-	// chart_vegalite aggregate), the geomean + hll aggregates (*.agg.js; hll is the
-	// mergeable HyperLogLog sketch), and the series streaming source (*.stream.js),
-	// sorted by filename stem.
+	// Scalar UDF demos (*.js), the builtin_* multi-export MODULES (a whole family per
+	// file: builtin_chart exports the chart_vegalite aggregate, builtin_markdown the
+	// md_sections/md_links/md_code outline+link+code scanners), the geomean + hll
+	// aggregates (*.agg.js; hll is the mergeable HyperLogLog sketch), and the series
+	// streaming source (*.stream.js), sorted by filename stem.
 	want := []string{"add_two_numbers", "builtin_census_agg", "builtin_chart", "builtin_decimal", "builtin_ejson",
-		"celsius_to_fahrenheit", "geomean", "hll", "series", "slugify",
+		"builtin_markdown", "celsius_to_fahrenheit", "geomean", "hll", "series", "slugify",
 		"vector_nearest", "vector_nearest_dist"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("shipped extension names = %v, want %v", names, want)
@@ -723,8 +723,8 @@ func TestExtRegisterExtensionGlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterExtensionGlob: %v", err)
 	}
-	if strings.Join(names, ",") != "builtin_census_agg,builtin_chart,builtin_decimal,builtin_ejson" {
-		t.Fatalf("glob names = %v, want [builtin_census_agg builtin_chart builtin_decimal builtin_ejson]", names)
+	if strings.Join(names, ",") != "builtin_census_agg,builtin_chart,builtin_decimal,builtin_ejson,builtin_markdown" {
+		t.Fatalf("glob names = %v, want [builtin_census_agg builtin_chart builtin_decimal builtin_ejson builtin_markdown]", names)
 	}
 	sess := extSession(t)
 	// EJSON_DECODE (builtin_ejson) strips the tag off a DECIMAL_ADD (builtin_decimal) result.

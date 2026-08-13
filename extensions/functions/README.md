@@ -3,7 +3,10 @@
 Most files here are **examples** you load with `-ext`. The `builtin_*.js` ones are
 different: they are `go:embed`ed into the binary (see `embed.go`) and registered at
 startup, so they need no flag — `builtin_chart` (the `chart_vegalite()` charting
-aggregate), `builtin_decimal` (exact `DECIMAL_*` math) and `builtin_ejson`.
+aggregate), `builtin_markdown` (`md_sections`/`md_links`/`md_code`, which turn a
+markdown document's outline, link graph and code fences into rows — the companion to the
+scan layer's native YAML-frontmatter split), `builtin_decimal` (exact `DECIMAL_*` math)
+and `builtin_ejson`.
 
 Four kinds of file live here, all keyed by file name:
 
