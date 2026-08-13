@@ -93,7 +93,7 @@ DuckDB), JavaScript, Python, MongoDB, and jq.
 | **Text records** | JSON (one doc per file, or multi-doc), JSONL/NDJSON, CSV/TSV (header keys, light type inference), YAML (incl. `---` streams), TOML |
 | **Columnar** | Parquet, Apache Iceberg — projection / predicate / partition pushdown, time travel, `VARIANT` |
 | **Compressed** | `.gz` |
-| **Documents** | text extracted from `.pdf`, `.docx`/`.pptx`/`.xlsx`, `.txt`/`.log`/`.md`, `.rtf`; metadata for images and video |
+| **Documents** | text extracted from `.pdf`, `.docx`/`.pptx`/`.xlsx`, `.txt`/`.log`/`.md`, `.rtf`; metadata for images and video. Markdown with YAML frontmatter (Jekyll/Hugo/Obsidian/OKF) also yields a parsed `front` object + `body` |
 | **Clouds / Remote** | `s3://`, `gs://` (Google), `abfs://` (Azure) — Iceberg tables and Parquet, read via ranged GETs |
 
 Files and directories become keyspaces (tables) by convention — a flat

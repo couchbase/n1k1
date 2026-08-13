@@ -416,6 +416,19 @@ seam (match a file → describe it → extract rows); a user brings a git repo o
 **Status: LANDED (E1–E5).** Two-phase, pluggable (`*.extract.js` matched by ext **or** name-regexp
 with priority), streaming, metadata-rich. Only auto-cloning the recipe repo from git remains.
 
+**Markdown frontmatter (native).** `.md`/`.markdown` go through `mdExtract`, which — beyond the
+verbatim `text` — splits a leading `---`-fenced YAML block into a parsed `front` object plus the
+remaining `body`. That is the convention Jekyll / Hugo / Obsidian and Google'''s **OKF** ("every
+concept is a UTF-8 markdown file with a YAML frontmatter block") share, so a knowledge corpus
+becomes queryable by its own fields: `WHERE front.type = "table" AND "sales" IN front.tags`.
+It is native rather than a `*.extract.js` recipe for one reason: the YAML decoder already lives
+in Go here, and reimplementing YAML in JS would be strictly worse. Deliberate choices:
+`text` stays the WHOLE file so existing LIKE/FTS queries do not change meaning; the opening fence
+must be the first line and an unterminated one is just an `<hr>`; and a fenced-but-unparseable
+block sets `front_error` rather than failing the scan, so a broken-frontmatter sweep is a query
+(`WHERE front_error IS NOT MISSING`) instead of a silent omission. The *second* level — heading
+outline, link graph, code fences — belongs in composable UDFs over `text`/`body`, not here.
+
 **Two outputs on two cadences:**
 1. **`describe(file) → ExtractSpec`** — a *cheap, once-per-file* pass that may only **sample**,
    returning what the planner/manifest need before a full scan: format, framing, the timestamp/sort

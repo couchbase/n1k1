@@ -52,6 +52,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3" // markdown frontmatter (mdExtract)
 )
 
 // ExtractedDoc is the result of cracking open one unstructured file: its full-
@@ -82,8 +84,8 @@ var extractors = map[string]Extractor{
 	".pptx":     pptxExtract,
 	".txt":      textExtract,
 	".log":      textExtract,
-	".md":       textExtract,
-	".markdown": textExtract,
+	".md":       mdExtract, // + YAML frontmatter -> front/body
+	".markdown": mdExtract,
 	".rtf":      rtfExtract,
 	// Media -> metadata only (no text without OCR/ASR).
 	".png":  imageExtract,
@@ -283,15 +285,97 @@ func slideNum(name string) int {
 
 // ------------------------------------------------------------------ TXT/MD/LOG
 
-// textExtract reads a plain-text file (TXT/LOG/MD/MARKDOWN) verbatim as its text.
-// Markdown is kept raw -- it's already human-readable and lossless for LIKE/FTS,
-// and preserving the source avoids a lossy markdown->plain conversion.
+// textExtract reads a plain-text file (TXT/LOG) verbatim as its text.
 func textExtract(path string) (ExtractedDoc, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return ExtractedDoc{}, err
 	}
 	return ExtractedDoc{Text: strings.TrimSpace(string(b))}, nil
+}
+
+// mdExtract reads a markdown file: the text verbatim (markdown is kept raw -- already
+// human-readable, lossless for LIKE/FTS, and a markdown->plain conversion would only
+// lose information) PLUS, when the file opens with a `---`-fenced YAML frontmatter
+// block, the parsed block as `front` and the markdown after it as `body`.
+//
+// Frontmatter is the convention Jekyll / Hugo / Obsidian and Google's OKF ("every
+// concept is a UTF-8 markdown file with a YAML frontmatter block") all share, so
+// parsing it generically makes those corpora queryable by their own fields:
+//
+//	SELECT front.type, front.title FROM concepts WHERE "sales" IN front.tags
+//
+// Deliberately conservative, and ADDITIVE so no existing query changes meaning:
+//   - `text` stays the WHOLE file, frontmatter included (LIKE/FTS unaffected);
+//   - the opening fence must be the FIRST line -- a `---` further down is an <hr>;
+//   - with no closing fence there is no frontmatter at all (again, just an <hr>);
+//   - a fenced but unparseable block reports `front_error` rather than failing the
+//     scan, so a broken-frontmatter sweep is a query (WHERE front_error IS NOT
+//     MISSING) instead of a silent omission.
+func mdExtract(path string) (ExtractedDoc, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ExtractedDoc{}, err
+	}
+	text := string(b)
+	ed := ExtractedDoc{Text: strings.TrimSpace(text)}
+
+	front, body, ok := splitFrontmatter(text)
+	if !ok {
+		return ed, nil // no frontmatter: a plain markdown file
+	}
+	ed.Meta = map[string]interface{}{"body": strings.TrimSpace(body)}
+
+	var v interface{}
+	if err := yaml.Unmarshal([]byte(front), &v); err != nil {
+		// Keep the first line only: yaml's errors are multi-line and the rest is noise.
+		msg, _, _ := strings.Cut(err.Error(), "\n")
+		ed.Meta["front_error"] = strings.TrimSpace(msg)
+		return ed, nil
+	}
+	m, isMap := yamlToJSONValue(v).(map[string]interface{})
+	if !isMap {
+		ed.Meta["front_error"] = "frontmatter is not a YAML mapping"
+		return ed, nil
+	}
+	ed.Meta["front"] = m
+	return ed, nil
+}
+
+// splitFrontmatter splits a leading `---`-fenced YAML block off a markdown file. It
+// returns the block's YAML source, the markdown after the closing fence, and whether
+// a COMPLETE fence pair was found starting at the very first line.
+func splitFrontmatter(text string) (front, body string, ok bool) {
+	s := strings.TrimPrefix(text, "\ufeff") // tolerate a UTF-8 BOM
+	nl := strings.IndexByte(s, '\n')
+	if nl < 0 || !isFrontFence(s[:nl]) {
+		return "", "", false
+	}
+	rest := s[nl+1:]
+	for off := 0; off <= len(rest); {
+		end := strings.IndexByte(rest[off:], '\n')
+		line := rest[off:]
+		next := len(rest) // no trailing newline: the fence ends the file
+		if end >= 0 {
+			line, next = rest[off:off+end], off+end+1
+		}
+		if isFrontFence(line) {
+			return rest[:off], rest[next:], true
+		}
+		if end < 0 {
+			break
+		}
+		off = next
+	}
+	return "", "", false // unterminated: not frontmatter
+}
+
+// isFrontFence reports whether a line is a frontmatter delimiter: `---` (the
+// convention) or `...` (YAML's own end-of-document marker), ignoring trailing space
+// and a CRLF's \r.
+func isFrontFence(line string) bool {
+	t := strings.TrimRight(line, " \t\r")
+	return t == "---" || t == "..."
 }
 
 // ------------------------------------------------------------------ RTF

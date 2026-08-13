@@ -1256,6 +1256,7 @@ func AllModes() WalkOptions {
 //	yaml      → .yaml/.yml           toml  → .toml
 //	extract   → every extract format (all of the below groups)
 //	doc       → .pdf/.docx/.xlsx/.pptx    text → .txt/.log/.md/.markdown/.rtf
+//	                                      (.md also splits YAML frontmatter -> front/body)
 //	image     → .png/.jpg/.jpeg           video → .mp4/.mov
 //	pdf|docx|xlsx|pptx|txt|md|rtf|png|jpg|mp4|… → that one extension
 //	gzip      → allow .gz            recurse → descend subdirs
