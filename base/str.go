@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"unicode"
@@ -328,17 +329,35 @@ func StrTransformInto(v Val, c *ValComparer, bufPre []byte,
 // non-JSON value) round-trips to a queryable string. Two buffers keep encode's read
 // (bufDec) and write (bufEnc) from aliasing. Mirrors the unary-combinator shape of
 // StrLength (one named base leaf -> codegen-safe; see DESIGN-exprs.md).
-func StrBase64DecodeInto(v Val, c *ValComparer, bufDec, bufEnc []byte) (out Val, dec, enc []byte) {
+func StrBase64DecodeInto(v Val, c *ValComparer, bufDec, bufEnc []byte) (out Val, dec, enc []byte, err error) {
 	decoded, sentinel, ok := StrDecode(v)
 	if !ok {
-		return sentinel, bufDec, bufEnc
+		return sentinel, bufDec, bufEnc, nil
 	}
-	bufDec, err := base64.StdEncoding.AppendDecode(bufDec[:0], decoded)
-	if err != nil {
-		return ValNull, bufDec, bufEnc
+	// Try padded standard first (the common interchange form), then the UNPADDED
+	// and URL-safe variants: n1k1's own cursor position tokens are RawStd
+	// (ISSUE-26 -- the tool's decoder must read the tool's own artifacts), and
+	// JWT-style tokens are RawURL. The fallbacks are unambiguous: a string that
+	// several variants accept decodes identically under all of them (the
+	// families differ only in +/ vs -_ and in padding).
+	//
+	// Undecodable input is an ERROR, not NULL: "wrong padding" and "not base64 at
+	// all" must never be the same silent answer (a decode failure is a fact about
+	// the input worth surfacing, and NULL reads as MISSING downstream).
+	var derr error
+	for _, e := range [...]*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding,
+		base64.URLEncoding, base64.RawURLEncoding} {
+		var b []byte
+		b, derr = e.AppendDecode(bufDec[:0], decoded)
+		if derr == nil {
+			bufDec = b
+			bufEnc = StrEncode(c, bufDec, bufEnc)
+			return Val(bufEnc), bufDec, bufEnc, nil
+		}
+		bufDec = b[:0] // keep any grown capacity for the next try
 	}
-	bufEnc = StrEncode(c, bufDec, bufEnc)
-	return Val(bufEnc), bufDec, bufEnc
+	return ValNull, bufDec, bufEnc,
+		fmt.Errorf("BASE64_DECODE_STRING: not base64 in any variant (std/raw/url): %v", derr)
 }
 
 // StrLength: the byte length of the decoded string as a JSON int; MISSING ->

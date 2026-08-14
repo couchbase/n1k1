@@ -83,7 +83,10 @@ func (this *base64DecodeStringFunc) Evaluate(item value.Value, context expressio
 	if err := arg.WriteJSON(nil, &buf, "", "", true); err != nil {
 		return nil, err
 	}
-	out, _, _ := base.StrBase64DecodeInto(base.Val(buf.Bytes()), base.NewValComparer(), nil, nil)
+	out, _, _, derr := base.StrBase64DecodeInto(base.Val(buf.Bytes()), base.NewValComparer(), nil, nil)
+	if derr != nil {
+		return nil, derr // undecodable input is an ERROR, not a silent NULL (ISSUE-26)
+	}
 	switch base.ValKind(out) {
 	case base.ValKindMissing:
 		return value.MISSING_VALUE, nil

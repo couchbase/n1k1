@@ -153,9 +153,11 @@ func TestBase64DecodeStringNative(t *testing.T) {
 	}{
 		{"plain-string", f(c("L2NvbmZpZy9hcHA=")), `"/config/app"`},
 		{"json-text-stays-string", f(c("eyJhIjoxfQ==")), `"{\"a\":1}"`}, // base64 of {"a":1} -> the STRING
+		{"json-text-UNPADDED", f(c("eyJhIjoxfQ")), `"{\"a\":1}"`},       // RawStd: n1k1's own cursor tokens (ISSUE-26)
+		{"url-safe", f(c("Pz8_YQ==")), `"???a"`},      // URL alphabet (_ for /)
+		{"url-safe-unpadded", f(c("Pz8_YQ")), `"???a"`}, // RawURL: JWT-style segments
 		{"empty", f(c("")), `""`},
 		{"utf8", f(c("w6nDqcOp")), `"ééé"`}, // base64 of "ééé"
-		{"bad-base64", f(c("!!notbase64")), `null`},
 		{"non-string-number", f(c(5)), `null`},
 		{"non-string-null", f(c(value.NULL_VALUE)), `null`},
 	}
@@ -171,6 +173,27 @@ func TestBase64DecodeStringNative(t *testing.T) {
 		if viaCbq := cbqEval(t, tc.expr); viaCbq != tc.want {
 			t.Errorf("%s: cbq-bridge=%q, want %q", tc.name, viaCbq, tc.want)
 		}
+	}
+
+	// ISSUE-26 ask 2: UNDECODABLE input is a query ERROR, never a silent NULL --
+	// "wrong padding" (now decoded fine, above) and "not base64 at all" must never
+	// be the same answer. End-to-end through a session so both eval lanes and the
+	// error surfacing are covered.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "default", "k"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "default", "k", "d.json"), []byte(`{"x":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := OpenSession(root, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if _, err := sess.Run(`SELECT RAW BASE64_DECODE_STRING("!!!not base64!!!")`); err == nil ||
+		!strings.Contains(err.Error(), "not base64") {
+		t.Fatalf("garbage input must be a loud decode error, got %v", err)
 	}
 }
 

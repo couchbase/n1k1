@@ -108,24 +108,32 @@ func ExprStrTransform(lzVars *base.Vars, labels base.Labels, params []interface{
 	return lzExprFunc
 }
 
-// ExprBase64DecodeString handles BASE64_DECODE_STRING(s): decode s from base64 and
-// re-encode the bytes as a JSON string -- MISSING -> MISSING, non-string / invalid
-// base64 -> NULL. Two lifted buffers (decode scratch + encode output) keep re-encode's
-// read and write from aliasing. Mirrors ExprLength's unary-combinator shape, so the one
-// named base leaf (base.StrBase64DecodeInto) rides LzExprFmt into the compiled path.
+// ExprBase64DecodeString handles BASE64_DECODE_STRING(s): decode s from base64 (padded
+// or unpadded, standard or URL-safe -- n1k1's own cursor tokens are RawStd) and
+// re-encode the bytes as a JSON string -- MISSING -> MISSING, non-string -> NULL,
+// UNDECODABLE -> a query ERROR (never a silent NULL: a decode failure is a fact about
+// the input, ISSUE-26). Two lifted buffers (decode scratch + encode output) keep
+// re-encode's read and write from aliasing. Mirrors ExprLength's unary-combinator
+// shape, so the one named base leaf (base.StrBase64DecodeInto) rides LzExprFmt into
+// the compiled path.
 func ExprBase64DecodeString(lzVars *base.Vars, labels base.Labels,
 	params []interface{}, path string) (lzExprFunc base.ExprFunc) {
 	exprA := params[0].([]interface{})
 
 	var lzBufPre []byte // <== varLift: lzBufPre by path
 	var lzBufDec []byte // <== varLift: lzBufDec by path
+	var lzB64Err error  // <== varLift: lzB64Err by path
 
 	lzA := MakeExprFunc(lzVars, labels, exprA, path, "A") // !lzRHS, via: lzExprFunc
 
 	lzExprFunc = func(lzVals base.Vals, lzYieldErr base.YieldErr) (lzVal base.Val) {
 		lzVal = lzA(lzVals, lzYieldErr) // <== emitCaptured: path "A"
 
-		lzVal, lzBufDec, lzBufPre = base.StrBase64DecodeInto(lzVal, lzVars.Ctx.ValComparer, lzBufDec, lzBufPre)
+		lzVal, lzBufDec, lzBufPre, lzB64Err = base.StrBase64DecodeInto(lzVal, lzVars.Ctx.ValComparer, lzBufDec, lzBufPre)
+
+		if lzB64Err != nil {
+			lzYieldErr(lzB64Err)
+		}
 
 		return lzVal
 	}
