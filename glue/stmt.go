@@ -299,24 +299,32 @@ func FileStoreBound(path string, b Binding) (*Store, error) {
 		// record files at the top of a table dir, so this precedes flat discovery.
 		// See flat.go / records/iceberg.go.
 		ds = ice
-	} else {
+	} else if flat := maybeFlat(path, ds); flat != ds {
 		// Flat discovery: fake synthetic default keyspaces for loose top-level
 		// record files -- union-by-basename for a pure flat root, or one keyspace
 		// per file for a grab-bag dir with subdirs (e.g. ~/Desktop). No-op for the
 		// normal <ns>/<keyspace> layout with no loose root files. See flat.go.
-		if flat := maybeFlat(path, ds); flat != ds {
-			ds = flat // flat layout (secondary indexes not wired here in v1)
-		} else {
-			// Normal <ns>/<keyspace> layout: advertise any secondary indexes
-			// declared in .n1k1/catalog.json so selective queries plan an
-			// IndexScan instead of a full primary scan. See idx_si.go.
-			wrapped, werr := maybeSecondaryIndexes(path, ds)
-			if werr != nil {
-				return nil, werr
-			}
-			ds = wrapped
-		}
+		ds = flat
 	}
+
+	// Outermost: advertise any secondary indexes declared in the sidecar catalog
+	// (.n1k1/catalog.json -- which --index-store may relocate OUTSIDE the data)
+	// so selective queries plan an IndexScan instead of a full primary scan. This
+	// wraps EVERY layout -- classic <ns>/<keyspace>, flat/grab-bag/single-file,
+	// AND bound logical keyspaces (the manifest layer below resolves the name;
+	// the index side reads the keyspace's OWN records source, indexSourceFiles)
+	// -- so a read-only bundle reached through a bind manifest is indexable
+	// without touching it (ISSUE-27). The sidecar anchors at the data root (a
+	// single-file open anchors at the file's parent dir).
+	sidecarAt := path
+	if flatFile != "" {
+		sidecarAt = dsPath
+	}
+	wrapped, werr := maybeSecondaryIndexes(sidecarAt, ds)
+	if werr != nil {
+		return nil, werr
+	}
+	ds = wrapped
 
 	return &Store{
 		Datastore:       ds,

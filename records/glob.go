@@ -79,7 +79,8 @@ func GlobFiles(absGlob string, opts WalkOptions) (base string, files []string, e
 			}
 			return nil
 		}
-		if opts.eligible(path) && globMatch(pattern, path) {
+		if opts.eligible(path) && globMatch(pattern, path) &&
+			(opts.FileFilter == nil || opts.FileFilter(path, info)) {
 			files = append(files, path)
 		}
 		return nil

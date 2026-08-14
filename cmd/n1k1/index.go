@@ -42,7 +42,29 @@ func (c *cli) eagerBuildIndexes() {
 // cmdIndex dispatches the .index command family: `.index [list]`, `.index show
 // <name>`, `.index rebuild [<name>]`, `.index suggest`, `.index create`, `.index
 // help`. (`.indexes` is an alias for `.index list`.)
+//
+// A TRAILING `--bind <manifest>` on any subcommand runs THIS command over a
+// session bound with the manifest (binding.go), so a logical (bound) keyspace --
+// e.g. `sessions = projects/**/*.jsonl` over a read-only bundle -- resolves for
+// create/build/list/backfill (ISSUE-27). The interactive session is untouched.
 func (c *cli) cmdIndex(arg string) {
+	arg, bind, berr := stripTrailingBind(arg)
+	if berr != nil {
+		fmt.Fprintf(c.stderr, "%s: .index: %v\n", c.prog, berr)
+		c.failed = true
+		return
+	}
+	if bind != "" {
+		sess, _, err := c.multiSession(bind)
+		if err != nil {
+			fmt.Fprintf(c.stderr, "%s: .index --bind: %v\n", c.prog, err)
+			c.failed = true
+			return
+		}
+		saved, savedBind := c.sess, c.indexBind
+		c.sess, c.indexBind = sess, bind
+		defer func() { c.sess, c.indexBind = saved, savedBind }()
+	}
 	sub, rest := splitFirst(arg)
 	switch strings.ToLower(sub) {
 	case "", "list":
@@ -143,10 +165,12 @@ func (c *cli) cmdIndexCreate(arg string) {
 		fmt.Fprintln(c.stderr, "no datastore open (open a <ns>/<keyspace> directory first)")
 		return
 	}
-	if glue.IsFlatDatastore(c.sess.Store.Datastore) {
-		fmt.Fprintf(c.stderr, "%s: secondary indexes need a <namespace>/<keyspace> datastore directory; "+
-			"%q is a flat/single-file datastore, where they aren't supported yet (nothing written)\n", c.prog, c.dir)
-		return
+	if glue.IsFlatDatastore(c.sess.Store.Datastore) && glue.IndexStore() == "" {
+		// Flat/bound layouts index fine (ISSUE-27), but their sidecar defaults to
+		// INSIDE the data dir -- advise the read-only-bundle escape hatch.
+		fmt.Fprintf(c.stderr, "%snote: the index sidecar (catalog + built indexes) will live inside %q; "+
+			"for a read-only bundle, relaunch with -index-store <dir> to keep it untouched\n",
+			c.icon("⚠️  "), c.dir)
 	}
 
 	var fragment []byte
@@ -174,8 +198,17 @@ func (c *cli) cmdIndexCreate(arg string) {
 	}
 
 	// Re-open so the datastore re-wraps with the freshly-written catalog (it may
-	// not have been index-wrapped before if this is the first index).
-	sess, oerr := glue.OpenSession(c.dir, defaultNamespace)
+	// not have been index-wrapped before if this is the first index). With --bind,
+	// re-open BOUND (the created index's keyspace may be a bound logical name);
+	// that session lives only for the build below -- the dispatcher restores the
+	// interactive session afterwards.
+	var sess *glue.Session
+	var oerr error
+	if c.indexBind != "" {
+		sess, _, oerr = c.multiSession(c.indexBind)
+	} else {
+		sess, oerr = glue.OpenSession(c.dir, defaultNamespace)
+	}
 	if oerr != nil {
 		fmt.Fprintf(c.stderr, "%s: reopen after create: %v\n", c.prog, oerr)
 		return
@@ -191,6 +224,22 @@ func (c *cli) cmdIndexCreate(arg string) {
 	}
 	prog.finish()
 	fmt.Fprintf(c.stderr, "%screated %s\n", c.icon("✓ "), strings.Join(added, ", "))
+}
+
+// stripTrailingBind strips a TRAILING `--bind <manifest>` from an .index arg
+// string. Trailing only, so a key/where expression body can never be mangled --
+// the two final whitespace-delimited tokens must be exactly `--bind <path>`.
+func stripTrailingBind(arg string) (rest, bind string, err error) {
+	fields := strings.Fields(strings.TrimSpace(arg))
+	if len(fields) >= 1 && fields[len(fields)-1] == "--bind" {
+		return "", "", fmt.Errorf("--bind wants a manifest path (usage: .index <subcommand> ... --bind <manifest>)")
+	}
+	if len(fields) >= 2 && fields[len(fields)-2] == "--bind" {
+		bind = fields[len(fields)-1]
+		i := strings.LastIndex(arg, "--bind")
+		return strings.TrimSpace(arg[:i]), bind, nil
+	}
+	return arg, "", nil
 }
 
 // parseCreateDSL parses `<name> on <keyspace> (<expr>[, <expr>]) [where <expr>]`
@@ -530,10 +579,10 @@ func (c *cli) cmdIndexSuggest(keyspace string) {
 		fmt.Fprintf(c.stderr, "  .index create %s on %s (%s)\n",
 			quoteIdent(s.Name), ksDisplay, quotePath(s.Field))
 	}
-	if glue.IsFlatDatastore(c.sess.Store.Datastore) {
-		fmt.Fprintf(c.stderr, "%snote: this is a flat/single-file datastore, where secondary indexes "+
-			"aren't supported yet -- the above is advisory only (they need a <namespace>/<keyspace> layout).\n",
-			c.icon("⚠️  "))
+	if glue.IsFlatDatastore(c.sess.Store.Datastore) && glue.IndexStore() == "" {
+		fmt.Fprintf(c.stderr, "%snote: flat/single-file datastore -- the index sidecar would live inside %q; "+
+			"for a read-only bundle, relaunch with -index-store <dir> to keep it untouched.\n",
+			c.icon("⚠️  "), c.dir)
 	}
 }
 
@@ -556,6 +605,11 @@ func (c *cli) cmdIndexHelp() {
                            commits atomically (interrupt + resume safe); at COMPLETE the
                            index covers the whole keyspace and the warning stops
   .index help              this help
+
+Any subcommand takes a TRAILING --bind <manifest>: it runs over a session bound with
+the manifest (like .multi --bind), so a logical keyspace (sessions = projects/**/*.jsonl)
+is indexable -- flat, grab-bag, and single-file layouts index too. For a READ-ONLY
+bundle, relaunch with -index-store <dir> so the sidecar lives outside the data.
 
 Index definitions live in <dataRoot>/.n1k1/catalog.json:
   {
@@ -644,9 +698,6 @@ func (c *cli) indexInfos() []glue.IndexInfo {
 		switch {
 		case c.indexMode == "off":
 			fmt.Fprintln(c.stderr, "secondary indexes disabled (-index=off)")
-		case glue.IsFlatDatastore(c.sess.Store.Datastore):
-			fmt.Fprintln(c.stderr, "secondary indexes aren't supported for this flat/single-file datastore "+
-				"(they need a <namespace>/<keyspace> layout)")
 		default:
 			fmt.Fprintf(c.stderr, "no secondary indexes (create one with .index create, or declare them in %s)\n", c.catalogPath())
 		}

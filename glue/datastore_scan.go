@@ -73,6 +73,7 @@ func isFullScan(scan *plan.IndexScan) bool {
 // (<root>/<ns>/<keyspace>/<key>.json), i.e. not a synthetic flat-root (RecordsDir)
 // or single-file (RecordsFile) keyspace -- matching where the native fetch applies.
 func dirKeyspace(ks datastore.Keyspace) bool {
+	ks = KeyspaceRecordsInner(ks)
 	if _, ok := ks.(interface{ RecordsDir() string }); ok {
 		return false
 	}
@@ -300,7 +301,7 @@ func DatastoreScanKeys(o *base.Op, vars *base.Vars,
 // setting) and opts.PathPrefix (this scan's dir-relative prefix) are preserved. A
 // keyspace with no override -- the ordinary case -- returns opts unchanged.
 func applyKeyspaceFormats(ks datastore.Keyspace, opts records.WalkOptions) records.WalkOptions {
-	fk, ok := ks.(interface {
+	fk, ok := KeyspaceRecordsInner(ks).(interface {
 		RecordsFormats() (records.WalkOptions, bool)
 	})
 	if !ok {
@@ -480,10 +481,28 @@ func DatastoreScanRecords(o *base.Op, vars *base.Vars,
 	yieldErr(nil)
 }
 
+// KeyspaceRecordsInner returns the keyspace that actually ADVERTISES its records
+// source (RecordsDir / RecordsFile / RecordsGlob / RecordsFormats / Iceberg /
+// Parquet). The secondary-index wrappers (siKeyspace, memKeyspace) embed the
+// datastore.Keyspace INTERFACE, so those extra methods don't promote through them
+// -- an index-wrapped flat/bound keyspace (ISSUE-27) would otherwise mis-resolve
+// as a classic <ns>/<keyspace> directory. Every records-source resolver unwraps
+// through this first. A no-op for an unwrapped keyspace.
+func KeyspaceRecordsInner(ks datastore.Keyspace) datastore.Keyspace {
+	for {
+		u, ok := ks.(interface{ recordsAdvertiser() datastore.Keyspace })
+		if !ok {
+			return ks
+		}
+		ks = u.recordsAdvertiser()
+	}
+}
+
 // KeyspaceMetaPathPrefix is the keyspace's location relative to the datastore dir, used
 // to prefix records' _meta.path. For a flat root the files sit directly under the
 // datastore dir, so there's no prefix.
 func KeyspaceMetaPathPrefix(keyspace datastore.Keyspace) string {
+	keyspace = KeyspaceRecordsInner(keyspace)
 	if _, ok := keyspace.(interface{ RecordsDir() string }); ok {
 		return "" // flat root
 	}
@@ -498,6 +517,7 @@ func KeyspaceMetaPathPrefix(keyspace datastore.Keyspace) string {
 // scan/fetch execution, so it reads the directory itself rather than routing
 // through cbq's ScanEntries/Fetch.
 func KeyspaceDir(keyspace datastore.Keyspace) (string, error) {
+	keyspace = KeyspaceRecordsInner(keyspace)
 	// A synthetic flat-root keyspace knows its own directory (the root itself),
 	// which isn't <root>/<ns>/<keyspace>. See flat.go.
 	if rd, ok := keyspace.(interface{ RecordsDir() string }); ok {
@@ -515,6 +535,28 @@ func KeyspaceDir(keyspace datastore.Keyspace) (string, error) {
 	return filepath.Join(root, ns.Name(), keyspace.Name()), nil
 }
 
+// globWalkBase re-anchors a glob keyspace's walk base when the base collapsed onto
+// a single FILE. IDEA-0001: a glob with no metacharacters (a bound single FILE,
+// e.g. `--bind ns_error=ns_server.error.log`) has GlobBase == the file itself, so
+// the per-file walk base IS the file and rel(base, file) collapses to ".". That
+// makes the extract plugin's match-path "." -> ExtractPluginFor misses -> the file
+// falls back to a whole-file blob (0 framed records, a silent "clean" read).
+// Binding must change WHICH files, never HOW they frame, so re-anchor the walk
+// base at the pack data root -- exactly what the auto keyspace and the describe
+// path (extractPluginMatchPath) use -- when the base collapsed onto a file.
+// Multi-file globs (base is a real dir) are untouched. Shared by the scan path
+// (KeyspaceRecordsOpen) and the index-side walks (indexSourceFiles), so their
+// record-id spaces can never diverge.
+func globWalkBase(base string) string {
+	if fi, statErr := os.Stat(base); statErr == nil && !fi.IsDir() {
+		if root := dataRootFor(resolveAbs(base)); root != "" {
+			return root
+		}
+		return filepath.Dir(base)
+	}
+	return base
+}
+
 // KeyspaceRecordsOpen opens a records.Source for a keyspace: a single flat file
 // when it advertises RecordsFile (DESIGN-data.md scenario B2), otherwise its
 // directory (flat-root or <root>/<ns>/<keyspace>) walked and unioned. This is the
@@ -523,6 +565,7 @@ func KeyspaceDir(keyspace datastore.Keyspace) (string, error) {
 // they can never diverge -- the class of bug that once made .schema, which sampled
 // the filesystem on its own, report 0 docs for these layouts.
 func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *GlueContext) (records.Source, error) {
+	ks = KeyspaceRecordsInner(ks)
 	// Per-source -formats (multi-source, DESIGN-data.md §2): if this keyspace carries a
 	// format override, apply it here -- the single choke point every scan/agg/vector path
 	// funnels through -- so its file eligibility differs from the global while .meta and
@@ -580,23 +623,7 @@ func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *
 			if err != nil {
 				return nil, err
 			}
-			// IDEA-0001: a glob with no metacharacters (a bound single FILE, e.g.
-			// `--bind ns_error=ns_server.error.log`) has GlobBase == the file itself,
-			// so the per-file walk base IS the file and rel(base, file) collapses to
-			// ".". That makes the extract plugin's match-path "." -> ExtractPluginFor misses
-			// -> the file falls back to a whole-file blob (0 framed records, a silent
-			// "clean" read). Binding must change WHICH files, never HOW they frame, so
-			// re-anchor the walk base at the pack data root -- exactly what the auto
-			// keyspace and the describe path (extractPluginMatchPath) use -- when the base
-			// collapsed onto a file. Multi-file globs (base is a real dir) are untouched.
-			if fi, statErr := os.Stat(base); statErr == nil && !fi.IsDir() {
-				if root := dataRootFor(resolveAbs(base)); root != "" {
-					base = root
-				} else {
-					base = filepath.Dir(base)
-				}
-			}
-			return records.WalkPrelisted(base, files, opts), nil
+			return records.WalkPrelisted(globWalkBase(base), files, opts), nil
 		}
 	}
 	if rf, ok := ks.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
@@ -940,7 +967,7 @@ func DatastoreScanFTS(o *base.Op, vars *base.Vars,
 	// fallback for a real cbq keyspace whose ids neither path handles. (Fetching via
 	// keyspace.Fetch alone silently returned ZERO rows on any multi-record keyspace,
 	// and made an FTS index hijack equality predicates into empty results -- IDEA-0030.)
-	keyspace := scan.Keyspace()
+	keyspace := KeyspaceRecordsInner(scan.Keyspace())
 	nativeDir, containerDir := "", ""
 	_, isFlat := keyspace.(interface{ RecordsDir() string })
 	_, isFile := keyspace.(interface{ RecordsFile() string })

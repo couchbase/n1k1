@@ -209,7 +209,7 @@ func buildIndexesConcurrent(ds datastore.Datastore, force bool, only string,
 			}
 			ks = k
 			ksCache[key] = k
-			totalCache[key] = countSourceFiles(filepath.Join(sds.root, def.Namespace, def.Keyspace))
+			totalCache[key] = countSourceFiles(k)
 		}
 		jobs = append(jobs, job{ks: ks, def: def, total: totalCache[key]})
 	}
@@ -286,27 +286,16 @@ func buildIndexesConcurrent(ds datastore.Datastore, force bool, only string,
 	return firstErr
 }
 
-// countSourceFiles counts the record files under a keyspace dir -- an estimate of
-// the doc count for a progress-bar denominator (exact for one-doc-per-file; a
-// lower bound for multi-doc files, so a bar may saturate early). Best-effort: 0 on
-// error means "unknown total" (the UI shows an indeterminate count-up).
-func countSourceFiles(dir string) int {
-	var n int
-	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if d.Name() == sidecarDir {
-				return filepath.SkipDir
-				// TODO: We should skip well-known dirs like .git, etc.
-			}
-			return nil
-		}
-		n++
-		return nil
-	})
-	return n
+// countSourceFiles counts a keyspace's record files -- an estimate of the doc
+// count for a progress-bar denominator (exact for one-doc-per-file; a lower bound
+// for multi-doc files, so a bar may saturate early). Best-effort: 0 on error
+// means "unknown total" (the UI shows an indeterminate count-up).
+func countSourceFiles(ks datastore.Keyspace) int {
+	_, files, err := indexSourceFiles(ks, indexWalkOptions(time.Time{}))
+	if err != nil {
+		return 0
+	}
+	return len(files)
 }
 
 // SecondaryIndexInfos returns one IndexInfo per declared index (across all
@@ -413,6 +402,10 @@ type siDatastore struct {
 	cat  *catalog
 }
 
+// indexWrapInner exposes the wrapped inner datastore so layout probes
+// (IsFlatDatastore) can see through the index layer.
+func (d *siDatastore) indexWrapInner() datastore.Datastore { return d.Datastore }
+
 func (d *siDatastore) NamespaceById(id string) (datastore.Namespace, errors.Error) {
 	ns, err := d.Datastore.NamespaceById(id)
 	if err != nil {
@@ -473,6 +466,11 @@ type siKeyspace struct {
 	onceFTS sync.Once
 	ftsIx   *ftsIndexer
 }
+
+// recordsAdvertiser exposes the wrapped keyspace, whose records-source
+// advertisements (RecordsDir/RecordsFile/RecordsGlob/...) don't promote through
+// the interface embed above. See KeyspaceRecordsInner.
+func (b *siKeyspace) recordsAdvertiser() datastore.Keyspace { return b.Keyspace }
 
 // secondaryIndexer builds (lazily) the GSI indexer over this keyspace's non-fts
 // catalog defs.
@@ -873,7 +871,6 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 	instDir := filepath.Join(sidecarRootFor(ks.sds.root), sidecarDir, ns, ks.Name(), "idx",
 		fmt.Sprintf("%s__si__%s", fsSafe(def.Name), def.defHash()))
 	dbPath := filepath.Join(instDir, "data.bolt")
-	srcDir := filepath.Join(ks.sds.root, ns, ks.Name()) // source records: always the data root
 
 	slot := indexSlotFor(dbPath)
 
@@ -907,7 +904,7 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 	// backfilled index stays coherent across reopens and even full rebuilds (the
 	// floor lives in the meta bucket, which a rebuild preserves).
 	floor := getIndexFloor(slot.si.db, def)
-	sig, err := sourceSignature(srcDir, floor)
+	sig, err := indexSourceSignature(ks, floor)
 	if err != nil {
 		return nil, err
 	}
@@ -925,13 +922,13 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 		// fingerprint-mismatched container leaves entries a fold can't retract).
 		caughtUp := false
 		if !force {
-			caughtUp, err = catchUpIndex(slot.si.db, ks, def, srcDir, sig, floor, onDoc)
+			caughtUp, err = catchUpIndex(slot.si.db, ks, def, sig, floor, onDoc)
 			if err != nil {
 				return nil, err
 			}
 		}
 		if !caughtUp {
-			if err := buildIndex(slot.si.db, ks, def, srcDir, sig, floor, onDoc); err != nil {
+			if err := buildIndex(slot.si.db, ks, def, sig, floor, onDoc); err != nil {
 				return nil, err
 			}
 			indexBuildsFull.Add(1)
@@ -951,15 +948,14 @@ func openSecondaryIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bo
 // encode(keyValues)+docID. v1 rebuilds the whole index in one transaction. onDoc,
 // when non-nil, is called with the running scanned-doc count (throttled) for
 // progress reporting.
-func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, floor time.Time, onDoc func(int)) error {
+func buildIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, sig string, floor time.Time, onDoc func(int)) error {
 	// Evaluate expressions with a lightweight context (build time -- Now() is the
 	// only context method a simple field/scalar expression might touch).
 	ctx := NewGlueContext(time.Now())
 
-	opts := indexWalkOptions(floor)
-	src, err := records.Walk(srcDir, opts)
+	src, err := indexSourceOpen(ks, indexWalkOptions(floor))
 	if err != nil {
-		return fmt.Errorf("secondary-index build, walk %q: %w", srcDir, err)
+		return fmt.Errorf("secondary-index build, open keyspace %q: %w", ks.Name(), err)
 	}
 	defer src.Close()
 
@@ -1065,7 +1061,7 @@ func indexEntryForDoc(ctx *GlueContext, def *indexDef, rec *records.Record, keyB
 // watermark (legacy sidecar / first build), no entries bucket, or the source
 // violated append-only — a rotated (deleted), truncated, or rewritten-in-place
 // container has entries no fold can retract, exactly the cursor anomaly taxonomy.
-func catchUpIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string, floor time.Time, onDoc func(int)) (bool, error) {
+func catchUpIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, sig string, floor time.Time, onDoc func(int)) (bool, error) {
 	var water map[string]int64
 	var waterFP map[string]string
 	haveState := false
@@ -1087,10 +1083,9 @@ func catchUpIndex(db *bolt.DB, ks *siKeyspace, def *indexDef, srcDir, sig string
 	}
 
 	ctx := NewGlueContext(time.Now())
-	opts := indexWalkOptions(floor)
-	src, err := records.Walk(srcDir, opts)
+	src, err := indexSourceOpen(ks, indexWalkOptions(floor))
 	if err != nil {
-		return false, fmt.Errorf("secondary-index catch-up, walk %q: %w", srcDir, err)
+		return false, fmt.Errorf("secondary-index catch-up, open keyspace %q: %w", ks.Name(), err)
 	}
 	defer src.Close()
 

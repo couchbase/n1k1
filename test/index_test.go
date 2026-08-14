@@ -1605,3 +1605,129 @@ func TestIndexScanOrderFreeMarking(t *testing.T) {
 		t.Fatalf("scan under an order op should be OrderFree, got %v", f)
 	}
 }
+
+// TestSecondaryIndexBoundKeyspace guards ISSUE-27: a BOUND logical keyspace over
+// a read-only bundle (nested files reached via a bind-manifest glob, NOT a
+// <ns>/<keyspace> layout) is indexable, with the whole sidecar (catalog + built
+// indexes) relocated OUTSIDE the data via the index store. It walks the full
+// arc: scoped build -> disclosed window (hybrid off) -> hybrid complete answer ->
+// backfill to complete -- then asserts the bundle itself was never written to.
+func TestSecondaryIndexBoundKeyspace(t *testing.T) {
+	bundle, store := t.TempDir(), t.TempDir()
+	defer func(prev string) { glue.SetIndexStore(prev) }(glue.IndexStore())
+	glue.SetIndexStore(store)
+	defer func(prev bool) { glue.IndexHybridServe = prev }(glue.IndexHybridServe)
+
+	writeF := func(rel string, lines ...string) {
+		p := filepath.Join(bundle, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeF("projects/alpha/s1.jsonl",
+		`{"id":"old1","sev":"ERROR"}`,
+		`{"id":"old2","sev":"INFO"}`)
+	writeF("projects/alpha/s2.jsonl",
+		`{"id":"new1","sev":"ERROR"}`,
+		`{"id":"new2","sev":"WARN"}`)
+	writeF("projects/beta/s3.jsonl",
+		`{"id":"new3","sev":"ERROR"}`)
+	writeF("jobs/j1/state.json", `{"state":"done"}`)
+	past := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(bundle, "projects/alpha/s1.jsonl"), past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := glue.CatalogAddIndexes(bundle, []byte(`{
+		"indexes": [
+			{"name": "bysev", "keyspace": "sessions", "keys": ["sev"],
+			 "since": "2026-01-01T00:00:00Z"}
+		]
+	}`)); err != nil {
+		t.Fatalf("CatalogAddIndexes: %v", err)
+	}
+
+	binding := glue.Binding{"sessions": "projects/**/*.jsonl"}
+	run := func(q string) (ids []string, warnings []string) {
+		t.Helper()
+		sess, err := glue.OpenSessionBound(bundle, "default", binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+		res, err := sess.Run(q)
+		if err != nil {
+			t.Fatalf("run %q: %v", q, err)
+		}
+		for _, r := range res.Rows {
+			var m map[string]string
+			if json.Unmarshal(r, &m) == nil && m["id"] != "" {
+				ids = append(ids, m["id"])
+			}
+		}
+		sort.Strings(ids)
+		for _, w := range res.Warnings {
+			warnings = append(warnings, w.Error())
+		}
+		return ids, warnings
+	}
+	const q = `SELECT s.id AS id FROM sessions s WHERE s.sev = "ERROR"`
+
+	// (a) Hybrid OFF (rung-1 disclosed window): scoped answer + warning.
+	glue.IndexHybridServe = false
+	ids, warns := run(q)
+	glue.IndexHybridServe = true
+	if strings.Join(ids, ",") != "new1,new3" {
+		t.Fatalf("scoped bound-index answer = %v, want [new1 new3]", ids)
+	}
+	disclosed := false
+	for _, w := range warns {
+		disclosed = disclosed || strings.Contains(w, "time-scoped")
+	}
+	if !disclosed {
+		t.Fatalf("a scoped bound-index query must disclose the scope; warnings = %v", warns)
+	}
+
+	// (b) Hybrid ON (default): index + below-floor scan answers COMPLETELY, silently.
+	ids, warns = run(q)
+	if strings.Join(ids, ",") != "new1,new3,old1" {
+		t.Fatalf("hybrid bound-index answer = %v, want [new1 new3 old1]", ids)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("hybrid serves completely; wanted no warnings, got %v", warns)
+	}
+
+	// (c) Backfill to COMPLETE, then the disclosed window covers everything.
+	sess, err := glue.OpenSessionBound(bundle, "default", binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := glue.BackfillIndex(sess.Store.Datastore, "bysev", 0, nil)
+	sess.Close()
+	if err != nil {
+		t.Fatalf("BackfillIndex: %v", err)
+	}
+	if !res.Complete {
+		t.Fatalf("backfill (all pages) should complete; got %+v", res)
+	}
+	glue.IndexHybridServe = false
+	ids, warns = run(q)
+	glue.IndexHybridServe = true
+	if strings.Join(ids, ",") != "new1,new3,old1" || len(warns) != 0 {
+		t.Fatalf("complete bound index: ids=%v warns=%v, want all ids + no warnings", ids, warns)
+	}
+
+	// (d) The read-only bundle was NEVER written to: no sidecar inside it.
+	err = filepath.Walk(bundle, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() && strings.HasPrefix(info.Name(), ".") && p != bundle {
+			t.Fatalf("sidecar dir %q leaked into the read-only bundle", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -43,14 +43,23 @@ import (
 
 const flatRootNamespace = "default"
 
-// IsFlatDatastore reports whether ds is a synthetic flat / grab-bag / single-file
-// datastore (from maybeFlat / maybeFlatFile). Secondary indexes aren't supported
-// on these layouts -- they need the classic <namespace>/<keyspace> directory tree
-// -- so the CLI uses this to refuse .index create/etc. honestly rather than
-// silently no-op (buildIndexesConcurrent skips a non-siDatastore).
+// IsFlatDatastore reports whether ds is (or wraps) a synthetic flat / grab-bag /
+// single-file datastore (from maybeFlat / maybeFlatFile). Secondary indexes DO
+// work on these layouts (the index side reads each keyspace's own records source;
+// ISSUE-27), so this no longer gates a refusal -- the CLI uses it for advisory
+// notes (e.g. suggesting --index-store so a read-only bundle stays untouched).
+// The secondary-index wrappers sit ABOVE the flat layer, so unwrap them.
 func IsFlatDatastore(ds datastore.Datastore) bool {
-	_, ok := ds.(*flatDatastore)
-	return ok
+	for {
+		switch d := ds.(type) {
+		case *flatDatastore:
+			return true
+		case interface{ indexWrapInner() datastore.Datastore }:
+			ds = d.indexWrapInner()
+		default:
+			return false
+		}
+	}
 }
 
 // maybeFlat wraps ds so a directory's loose top-level record files are queryable,

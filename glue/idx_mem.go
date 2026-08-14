@@ -70,6 +70,10 @@ type memDatastore struct {
 	cat  *catalog
 }
 
+// indexWrapInner exposes the wrapped inner datastore so layout probes
+// (IsFlatDatastore) can see through the index layer.
+func (d *memDatastore) indexWrapInner() datastore.Datastore { return d.Datastore }
+
 func (d *memDatastore) NamespaceById(id string) (datastore.Namespace, errors.Error) {
 	ns, err := d.Datastore.NamespaceById(id)
 	if err != nil {
@@ -133,6 +137,11 @@ type memKeyspace struct {
 	once sync.Once
 	ix   *memIndexer
 }
+
+// recordsAdvertiser exposes the wrapped keyspace, whose records-source
+// advertisements (RecordsDir/RecordsFile/RecordsGlob/...) don't promote through
+// the interface embed above. See KeyspaceRecordsInner.
+func (b *memKeyspace) recordsAdvertiser() datastore.Keyspace { return b.Keyspace }
 
 func (k *memKeyspace) indexer() *memIndexer {
 	k.once.Do(func() {

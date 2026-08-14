@@ -236,7 +236,10 @@ func TestIndexSuggestEmitsCreateCommands(t *testing.T) {
 // TestIndexCreateRefusesFlatDatastore: .index create on a flat/grab-bag datastore
 // refuses honestly (secondary indexes need a <ns>/<keyspace> layout) rather than
 // claiming success and writing an orphan catalog.
-func TestIndexCreateRefusesFlatDatastore(t *testing.T) {
+// TestIndexCreateFlatDatastore: a flat/grab-bag layout is INDEXABLE (ISSUE-27 --
+// the index side reads the keyspace's own records source), and without an
+// -index-store the CLI notes the sidecar will land inside the data dir.
+func TestIndexCreateFlatDatastore(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
@@ -253,14 +256,14 @@ func TestIndexCreateRefusesFlatDatastore(t *testing.T) {
 
 	c.cmdIndexCreate("ix on orgs (id)")
 
-	if !strings.Contains(errb.String(), "aren't supported") {
-		t.Errorf("expected an honest refusal, got: %q", errb.String())
+	if !strings.Contains(errb.String(), "created ix") {
+		t.Errorf("flat layouts are indexable now; got: %q", errb.String())
 	}
-	if strings.Contains(errb.String(), "created") {
-		t.Errorf("must not claim success: %q", errb.String())
+	if !strings.Contains(errb.String(), "-index-store") {
+		t.Errorf("without -index-store the sidecar lands in the data dir -- expected the advisory note; got: %q", errb.String())
 	}
-	if _, serr := os.Stat(filepath.Join(root, ".n1k1", "catalog.json")); !os.IsNotExist(serr) {
-		t.Errorf("no catalog.json should be written on refusal (stat err: %v)", serr)
+	if _, serr := os.Stat(filepath.Join(root, ".n1k1", "catalog.json")); serr != nil {
+		t.Errorf("catalog.json should be written: %v", serr)
 	}
 }
 

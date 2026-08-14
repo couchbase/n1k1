@@ -18,8 +18,10 @@ cbgt, n1fty, or cbauth. Companion: `DESIGN-data.md`.
   proved necessary but not sufficient; two prototypes reverted — see §COUNT).
 - [ ] Array/object index shapes (`ARRAY … FOR … END`, `ANY`/`UNNEST`) — unsupported; the
   advisor skips any path crossing an array.
-- [ ] Secondary indexes require the classic `<ns>/<keyspace>` directory layout; flat/
-  single-file/glob layouts advertise none (`.index create` refuses a flat datastore).
+- [x] Flat / single-file / glob / BOUND keyspaces are indexable (ISSUE-27) — the index side
+  resolves each keyspace's own records source; `.index ... --bind <manifest>` +
+  `--index-store` keep read-only bundles untouched (§"Indexes over flat / bound / glob
+  keyspaces"). The `mem` backend (wasm) still assumes the classic layout.
 - [ ] Eager wildcard GSI + adaptive auto-index (`.index auto`) — need fork-side planner work /
   workload logging (research, §"index everything").
 - [ ] `CREATE`/`DROP INDEX` DDL unwired (`VisitCreateIndex` = `NA()`) — define via `catalog.json`.
@@ -206,6 +208,37 @@ state owned by another process) can still be indexed. Only the sidecar moves; so
 always read from the data root. Same rule as the cursor store: *n1k1 never writes inside a bundle it
 doesn't own*. Default (empty) keeps the sidecar under the data root, backward-compatible with
 existing in-bundle catalogs. Guard: `TestIndexStoreRelocatesSidecar`. (ISSUE-12 §3.)
+
+## Indexes over flat / bound / glob keyspaces (SHIPPED — ISSUE-27)
+
+Indexes originally insisted on the classic `<ns>/<keyspace>` directory tree (every index-side walk
+hardcoded `filepath.Join(root, ns, ks)`), which made them unreachable exactly where they matter
+most: **bundles you don't own** — `~/.claude` reached via a bind manifest
+(`sessions = projects/**/*.jsonl`), a grab-bag dir, a single big file. The wall fell by resolving
+the records source **from the keyspace, not from an assumed directory**:
+
+- **`indexSourceFiles(ks, opts)`** (`glue/idx.go`) mirrors `KeyspaceRecordsOpen`'s glob → file →
+  dir resolution (sharing `globWalkBase`, the IDEA-0001 single-file re-anchor), so every index-side
+  walk — `buildIndex`/`catchUpIndex`, `buildBleve`/`catchUpBleve`, backfill paging,
+  `hybridScanSpan` — reads the **same files under the same record ids** the scan path serves.
+  Temp/Iceberg/remote-Parquet keyspaces error as not-indexable. `indexSourceSignature` is the same
+  listing as change detection (only record-eligible files can stale the index now).
+- **`KeyspaceRecordsInner`** (`glue/datastore_scan.go`): the si wrappers embed the
+  `datastore.Keyspace` INTERFACE, so the inner keyspace's `RecordsDir/RecordsFile/RecordsGlob/...`
+  advertisements don't promote through them — every records-source resolver (scan, fetch,
+  extract/framing, index) unwraps first. Without this an index-wrapped flat keyspace silently
+  mis-resolves as a classic directory.
+- **`FileStore` wraps every layout** with `maybeSecondaryIndexes` (classic AND flat/single-file/
+  iceberg), and the **binding layer sits below** the si wrapper, so a bound logical name resolves
+  through the chain at build/scan time.
+- **CLI**: any `.index` subcommand takes a trailing `--bind <manifest>` (same manifests as
+  `.multi --bind`); flat-layout refusals are gone, replaced by an advisory note pointing at
+  `-index-store` when the sidecar would land inside the data dir.
+
+The whole rung stack composes: `since=` scoped builds, disclosure, backfill, and hybrid serving all
+work over a bound keyspace, with the sidecar in the index store — the bundle is never written.
+Guards: `TestSecondaryIndexBoundKeyspace` (test/), `TestIndexCreateFlatDatastore` (cmd/n1k1/).
+Not covered (yet): the `mem` backend keeps the classic-layout assumption (wasm builds).
 
 ## Freshness & incremental maintenance (future)
 

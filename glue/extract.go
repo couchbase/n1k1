@@ -412,6 +412,7 @@ func (f KeyspaceFraming) Label() string {
 // structured-extension test (IsStructuredFile). No file content is read -- safe on the
 // interactive listing path even over a huge (e.g. 240 MB log) keyspace.
 func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
+	ks = KeyspaceRecordsInner(ks)
 	// A session TEMP KEYSPACE (temp_keyspace.go) has no files -- its rows live in
 	// memory -- so classify it directly rather than probing the filesystem.
 	if IsTempKeyspace(ks) {
@@ -468,6 +469,7 @@ func KeyspaceFramingFor(ks datastore.Keyspace) (KeyspaceFraming, error) {
 // (optional) supplies the per-request walk cache for the directory case; nil walks
 // fresh.
 func keyspaceFiles(ks datastore.Keyspace, gctx *GlueContext) ([]string, error) {
+	ks = KeyspaceRecordsInner(ks)
 	// keyspaceFiles re-walks rather than going through KeyspaceRecordsOpen, so apply any
 	// per-source -formats override here too (so .tables framing/counts + sorted-source
 	// reflect the same file set the scan sees). A no-op for an ordinary keyspace.

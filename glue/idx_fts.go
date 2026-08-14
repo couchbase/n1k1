@@ -671,7 +671,6 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 	instDir := filepath.Join(sidecarRootFor(ks.sds.root), sidecarDir, ns, ks.Name(), "idx",
 		fmt.Sprintf("%s__fts__%s", fsSafe(def.Name), def.defHash()))
 	bleveDir := filepath.Join(instDir, "bleve")
-	srcDir := filepath.Join(ks.sds.root, ns, ks.Name()) // source records: always the data root
 
 	slot := ftsSlotFor(bleveDir)
 
@@ -681,12 +680,12 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 			return
 		}
 		floor := readFTSFloor(instDir, def) // effective scope: stored floor, else def.Since
-		sig, e := sourceSignature(srcDir, floor)
+		sig, e := indexSourceSignature(ks, floor)
 		if e != nil {
 			slot.err = e
 			return
 		}
-		idx, e := openOrBuildBleve(bleveDir, instDir, ks, def, srcDir, sig, floor, onDoc)
+		idx, e := openOrBuildBleve(bleveDir, instDir, ks, def, sig, floor, onDoc)
 		if e != nil {
 			slot.err = e
 			return
@@ -702,14 +701,14 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
 	floor := readFTSFloor(instDir, def) // effective scope: stored floor, else def.Since
-	sig, err := sourceSignature(srcDir, floor)
+	sig, err := indexSourceSignature(ks, floor)
 	if err != nil {
 		return nil, err
 	}
 	if force || readFTSSig(instDir) != sig {
 		caughtUp := false
 		if !force {
-			ok, e := catchUpBleve(slot.fi.idx, def, instDir, srcDir, sig, floor, onDoc)
+			ok, e := catchUpBleve(slot.fi.idx, ks, def, instDir, sig, floor, onDoc)
 			if e != nil {
 				return nil, e
 			}
@@ -719,7 +718,7 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 			indexBuildsCatchUp.Add(1)
 		} else {
 			slot.fi.idx.Close()
-			idx, e := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, floor, onDoc)
+			idx, e := buildBleve(bleveDir, instDir, ks, def, sig, floor, onDoc)
 			if e != nil {
 				return nil, e
 			}
@@ -735,13 +734,13 @@ func openFTSIndex(ks *siKeyspace, def *indexDef, onDoc func(int), force bool) (*
 // openOrBuildBleve opens the bleve dir if it exists (catching up incrementally when
 // stale), else builds it.
 func openOrBuildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
-	srcDir, sig string, floor time.Time, onDoc func(int)) (bleve.Index, error) {
+	sig string, floor time.Time, onDoc func(int)) (bleve.Index, error) {
 	if _, err := os.Stat(bleveDir); err == nil {
 		if idx, e := bleve.Open(bleveDir); e == nil {
 			if readFTSSig(instDir) == sig {
 				return idx, nil
 			}
-			if ok, e2 := catchUpBleve(idx, def, instDir, srcDir, sig, floor, onDoc); e2 == nil && ok {
+			if ok, e2 := catchUpBleve(idx, ks, def, instDir, sig, floor, onDoc); e2 == nil && ok {
 				indexBuildsCatchUp.Add(1)
 				return idx, nil
 			}
@@ -749,7 +748,7 @@ func openOrBuildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 		}
 		// Fall through to rebuild on a corrupt/unopenable/uncatchable dir.
 	}
-	idx, err := buildBleve(bleveDir, instDir, ks, def, srcDir, sig, floor, onDoc)
+	idx, err := buildBleve(bleveDir, instDir, ks, def, sig, floor, onDoc)
 	if err == nil {
 		indexBuildsFull.Add(1)
 	}
@@ -758,7 +757,7 @@ func openOrBuildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 
 // buildBleve (re)creates the bleve index from a full keyspace scan.
 func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
-	srcDir, sig string, floor time.Time, onDoc func(int)) (bleve.Index, error) {
+	sig string, floor time.Time, onDoc func(int)) (bleve.Index, error) {
 	if err := os.RemoveAll(bleveDir); err != nil {
 		return nil, err
 	}
@@ -767,11 +766,10 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 		return nil, fmt.Errorf("fts build, bleve.New %q: %w", bleveDir, err)
 	}
 
-	opts := indexWalkOptions(floor)
-	src, err := records.Walk(srcDir, opts)
+	src, err := indexSourceOpen(ks, indexWalkOptions(floor))
 	if err != nil {
 		idx.Close()
-		return nil, fmt.Errorf("fts build, walk %q: %w", srcDir, err)
+		return nil, fmt.Errorf("fts build, open keyspace %q: %w", ks.Name(), err)
 	}
 	defer src.Close()
 
@@ -842,16 +840,15 @@ func buildBleve(bleveDir, instDir string, ks *siKeyspace, def *indexDef,
 // or a per-doc-file keyspace whose record ids carry no position), or any
 // SourceAnomalies violation (rotated/truncated/rewritten container -- adds-only
 // can't retract those postings).
-func catchUpBleve(idx bleve.Index, def *indexDef, instDir, srcDir, sig string, floor time.Time, onDoc func(int)) (bool, error) {
+func catchUpBleve(idx bleve.Index, ks *siKeyspace, def *indexDef, instDir, sig string, floor time.Time, onDoc func(int)) (bool, error) {
 	water, waterFP, err := getBleveWater(idx)
 	if err != nil || len(water) == 0 {
 		return false, err
 	}
 
-	opts := indexWalkOptions(floor)
-	src, err := records.Walk(srcDir, opts)
+	src, err := indexSourceOpen(ks, indexWalkOptions(floor))
 	if err != nil {
-		return false, fmt.Errorf("fts catch-up, walk %q: %w", srcDir, err)
+		return false, fmt.Errorf("fts catch-up, open keyspace %q: %w", ks.Name(), err)
 	}
 	defer src.Close()
 

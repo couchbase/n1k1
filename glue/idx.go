@@ -159,6 +159,96 @@ func indexWalkOptions(floor time.Time) records.WalkOptions {
 	return opts
 }
 
+// indexSourceFiles resolves WHERE an indexable keyspace's records live: the walk
+// base plus the sorted absolute file list, in the exact id space the scan path
+// uses. It mirrors KeyspaceRecordsOpen's glob/file/dir branches (the single "where
+// does a keyspace's data live" resolver), so a flat/bound/glob keyspace -- a
+// read-only bundle reached through a bind manifest, ISSUE-27 -- indexes the SAME
+// files, under the SAME record ids, its scans read. Keyspaces whose records aren't
+// local files (session temp, Iceberg, remote Parquet) are not indexable: error.
+// opts' eligibility + FileFilter (a time-scope floor) gate the listing.
+func indexSourceFiles(ks datastore.Keyspace, opts records.WalkOptions) (string, []string, error) {
+	ks = KeyspaceRecordsInner(ks)
+	opts = applyKeyspaceFormats(ks, opts)
+	if _, ok := ks.(interface {
+		RecordsSource(records.WalkOptions) (records.Source, error)
+	}); ok {
+		return "", nil, fmt.Errorf("keyspace %q is a session temp keyspace (in-memory rows): not indexable", ks.Name())
+	}
+	if it, ok := ks.(interface{ IcebergMetadata() string }); ok && it.IcebergMetadata() != "" {
+		return "", nil, fmt.Errorf("keyspace %q is an Apache Iceberg table: not indexable (it carries its own manifest statistics)", ks.Name())
+	}
+	if pq, ok := ks.(interface{ ParquetURL() string }); ok && pq.ParquetURL() != "" {
+		return "", nil, fmt.Errorf("keyspace %q is a remote Parquet object: not indexable", ks.Name())
+	}
+	if g, ok := ks.(interface{ RecordsGlob() (string, bool) }); ok {
+		if pattern, has := g.RecordsGlob(); has {
+			base, files, err := records.GlobFiles(pattern, opts)
+			if err != nil {
+				return "", nil, err
+			}
+			return globWalkBase(base), files, nil
+		}
+	}
+	if rf, ok := ks.(interface{ RecordsFile() string }); ok && rf.RecordsFile() != "" {
+		f := rf.RecordsFile()
+		if opts.FileFilter != nil {
+			if fi, serr := os.Stat(f); serr != nil || !opts.FileFilter(f, fi) {
+				return filepath.Dir(f), nil, nil // out of scope (e.g. below a floor)
+			}
+		}
+		return filepath.Dir(f), []string{f}, nil
+	}
+	dir, err := KeyspaceDir(ks)
+	if err != nil {
+		return "", nil, err
+	}
+	files, err := records.WalkFiles(dir, opts)
+	if err != nil {
+		return "", nil, err
+	}
+	return dir, files, nil
+}
+
+// indexSourceOpen opens the records source an index-side walk reads (build,
+// catch-up, backfill, hybrid scan-below-floor): indexSourceFiles' listing served
+// through the same per-file framing (opts) the scan path uses.
+func indexSourceOpen(ks datastore.Keyspace, opts records.WalkOptions) (records.Source, error) {
+	base, files, err := indexSourceFiles(ks, opts)
+	if err != nil {
+		return nil, err
+	}
+	return records.WalkPrelisted(base, files, applyKeyspaceFormats(ks, opts)), nil
+}
+
+// indexSourceSignature summarizes an indexable keyspace for change detection --
+// file count and newest mtime (nanoseconds) over the keyspace's OWN file list,
+// restricted to the index's time scope (floor). The sourceSignature model, but
+// listing via indexSourceFiles so the change-detection universe is exactly what
+// builds and scans read: works for glob/bound/flat keyspaces, and only
+// record-eligible files can stale the index.
+func indexSourceSignature(ks datastore.Keyspace, floor time.Time) (string, error) {
+	_, files, err := indexSourceFiles(ks, indexWalkOptions(floor))
+	if err != nil {
+		return "", err
+	}
+	var count, newest int64
+	for _, f := range files {
+		fi, serr := os.Stat(f)
+		if serr != nil {
+			continue // raced away; the next signature sees the truth
+		}
+		count++
+		if mt := fi.ModTime().UnixNano(); mt > newest {
+			newest = mt
+		}
+	}
+	var b [16]byte
+	binary.BigEndian.PutUint64(b[0:8], uint64(count))
+	binary.BigEndian.PutUint64(b[8:16], uint64(newest))
+	return fmt.Sprintf("%x", b), nil
+}
+
 // floorFormat / floorParse serialize a stored floor: decimal UnixNano, with "0"
 // meaning COMPLETE (backfilled to the beginning -- the index covers everything,
 // distinct from "no floor stored", which means the def's declared Since applies).

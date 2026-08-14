@@ -204,8 +204,9 @@ func DatastoreFetch(o *base.Op, vars *base.Vars, yieldVals base.YieldVals,
 	nativeDir := ""
 	containerDir := ""
 	if DatastoreFetchCBQ {
-		_, isFlat := keyspace.(interface{ RecordsDir() string })
-		_, isFile := keyspace.(interface{ RecordsFile() string })
+		inner := KeyspaceRecordsInner(keyspace)
+		_, isFlat := inner.(interface{ RecordsDir() string })
+		_, isFile := inner.(interface{ RecordsFile() string })
 		if !isFlat && !isFile {
 			// Memoized per request when we have a context (keyspaceDir), so a
 			// nested-loop join's per-outer-row re-invocation of this op doesn't
@@ -502,6 +503,7 @@ func readWholeFileInto(p string, bufp *[]byte) (doc []byte, ok bool, err error) 
 // records.Walk / records.File assign each record's id prefix, so a fetch resolves
 // the same path the scan named. Returns "" when the keyspace isn't a container.
 func containerBaseDir(keyspace datastore.Keyspace) string {
+	keyspace = KeyspaceRecordsInner(keyspace)
 	if rd, ok := keyspace.(interface{ RecordsDir() string }); ok && rd.RecordsDir() != "" {
 		return rd.RecordsDir()
 	}

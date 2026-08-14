@@ -542,6 +542,7 @@ type cli struct {
 
 	mode         string
 	indexMode    string // -index: eager|lazy|off (drives eager build on open)
+	indexBind    string // transient: `.index ... --bind <manifest>` in flight (cmdIndexCreate's reopen honors it)
 	timer        bool
 	verbose      int // 0=off, 1=show query plans, 2=+timing (see .verbose)
 	explain      bool

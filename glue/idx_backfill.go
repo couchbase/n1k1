@@ -142,15 +142,14 @@ func BackfillIndex(ds datastore.Datastore, name string, pages int,
 	return backfillSI(ks, def, pages, onDoc)
 }
 
-// backfillCandidates lists the containers still BELOW floor (mtime < floor),
-// sorted newest-first, with their mtimes. Uses the unfiltered walk listing (the
-// same eligibility rules as any scan).
-func backfillCandidates(srcDir string, floor time.Time) (files []string, mtimes map[string]time.Time, err error) {
-	opts := ScanWalkOptions
-	opts.PathPrefix = ""
-	all, err := records.WalkFiles(srcDir, opts)
+// backfillCandidates lists the keyspace's containers still BELOW floor (mtime <
+// floor), sorted newest-first, with their mtimes -- plus the walk base the page
+// scan must anchor at (the keyspace's own id space; see indexSourceFiles). Uses
+// the unfiltered listing (the same eligibility rules as any scan).
+func backfillCandidates(ks *siKeyspace, floor time.Time) (base string, files []string, mtimes map[string]time.Time, err error) {
+	base, all, err := indexSourceFiles(ks, indexWalkOptions(time.Time{}))
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 	mtimes = map[string]time.Time{}
 	for _, f := range all {
@@ -170,7 +169,7 @@ func backfillCandidates(srcDir string, floor time.Time) (files []string, mtimes 
 		}
 		return files[i] < files[j]
 	})
-	return files, mtimes, nil
+	return base, files, mtimes, nil
 }
 
 // backfillPage selects this invocation's page: the newest `pages` candidates,
@@ -204,8 +203,6 @@ func backfillSI(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*Ind
 	if err != nil {
 		return nil, err
 	}
-	ns := ks.Namespace().Name()
-	srcDir := filepath.Join(ks.sds.root, ns, ks.Name())
 
 	floor := getIndexFloor(si.db, def)
 	res := &IndexBackfillResult{Name: def.Name}
@@ -214,7 +211,7 @@ func backfillSI(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*Ind
 		return res, nil // already complete
 	}
 
-	files, mtimes, err := backfillCandidates(srcDir, floor)
+	base, files, mtimes, err := backfillCandidates(ks, floor)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +228,8 @@ func backfillSI(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*Ind
 	// per-container watermarks so future appends to these containers catch up.
 	ctx := NewGlueContext(time.Now())
 	filter := NewRecordScanFilter(nil, nil)
-	scan := filter.wrap(records.WalkPrelisted(srcDir, page, indexWalkOptions(time.Time{})))
+	scan := filter.wrap(records.WalkPrelisted(base, page,
+		applyKeyspaceFormats(ks, indexWalkOptions(time.Time{}))))
 	var entries [][]byte
 	var keyBuf []byte
 	var rec records.Record
@@ -259,7 +257,7 @@ func backfillSI(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*Ind
 		onDoc(res.Docs)
 	}
 
-	sig, err := sourceSignature(srcDir, newFloor)
+	sig, err := indexSourceSignature(ks, newFloor)
 	if err != nil {
 		return nil, err
 	}
@@ -316,8 +314,6 @@ func backfillFTS(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*In
 	if err != nil {
 		return nil, err
 	}
-	ns := ks.Namespace().Name()
-	srcDir := filepath.Join(ks.sds.root, ns, ks.Name())
 	instDir := filepath.Dir(fi.bleveDir)
 
 	floor := readFTSFloor(instDir, def)
@@ -327,7 +323,7 @@ func backfillFTS(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*In
 		return res, nil
 	}
 
-	files, mtimes, err := backfillCandidates(srcDir, floor)
+	base, files, mtimes, err := backfillCandidates(ks, floor)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +337,8 @@ func backfillFTS(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*In
 	res.Containers = len(page)
 
 	filter := NewRecordScanFilter(nil, nil)
-	scan := filter.wrap(records.WalkPrelisted(srcDir, page, indexWalkOptions(time.Time{})))
+	scan := filter.wrap(records.WalkPrelisted(base, page,
+		applyKeyspaceFormats(ks, indexWalkOptions(time.Time{}))))
 	batch := fi.idx.NewBatch()
 	var rec records.Record
 	for {
@@ -393,7 +390,7 @@ func backfillFTS(ks *siKeyspace, def *indexDef, pages int, onDoc func(int)) (*In
 	if err := writeFTSFloor(instDir, newFloor); err != nil {
 		return nil, err
 	}
-	sig, err := sourceSignature(srcDir, newFloor)
+	sig, err := indexSourceSignature(ks, newFloor)
 	if err != nil {
 		return nil, err
 	}
@@ -439,14 +436,12 @@ func (si *secondaryIndex) hybridScanSpan(span *datastore.Span,
 		return
 	}
 
-	ns := si.ks.Namespace().Name()
-	srcDir := filepath.Join(si.ks.sds.root, ns, si.ks.Name())
 	opts := ScanWalkOptions
 	opts.PathPrefix = ""
 	opts.FileFilter = func(_ string, info os.FileInfo) bool {
 		return info.ModTime().Before(floor) // ONLY the unindexed remainder
 	}
-	src, err := records.Walk(srcDir, opts)
+	src, err := indexSourceOpen(si.ks, opts)
 	if err != nil {
 		conn.Error(errors.NewError(err, "secondary-index hybrid scan"))
 		return
