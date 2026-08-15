@@ -179,6 +179,11 @@ type CompiledMultiQueryEntries struct {
 	// and populated on each Run; surfaced by the caller so a skip is visible, not silent.
 	GatedSkipped []string
 
+	// RunWarnings collects the last run's engine advisories (standalone results +
+	// the fused context), un-deduped and in arrival order. Reset per run;
+	// MultiQueryRunReport.Warnings is the deduped caller-facing view.
+	RunWarnings []string
+
 	// CorrelationGroups maps a temporal-correlation signature (left keyspace, right
 	// keyspace, key, direction) to the Tags of the correlation entries that share it
 	// (DESIGN-sorting.md Part B). A group of >1 could share ONE sorted scan of each
@@ -209,6 +214,13 @@ type MultiQueryRunReport struct {
 	// (IDEA-0015-followup): woken<<scanned means the literal is rare/absent, woken
 	// with 0 matched means the predicate ran but never held. Fused entries only.
 	WokenByEntry map[string]int64
+
+	// Warnings are the run's engine advisories -- scoped-index disclosure,
+	// skipped unreadable containers (ISSUE-28) -- harvested from BOTH the
+	// standalone entries' Session.Run results and the fused plan's context,
+	// deduped (N standalone entries re-scanning one keyspace warn once here).
+	// A report that skipped evidence must NAME the skips.
+	Warnings []string
 }
 
 // corpusLabelResultsLabels is the uniform two-column labelResults schema every per-keyspace
@@ -843,9 +855,18 @@ func (cc *CompiledMultiQueryEntries) RunReport() ([]LabelResult, *MultiQueryRunR
 	for label, w := range cc.wokenByTag {
 		woken[label] = *w
 	}
+	var warnings []string
+	seenWarn := map[string]bool{}
+	for _, w := range cc.RunWarnings {
+		if !seenWarn[w] {
+			seenWarn[w] = true
+			warnings = append(warnings, w)
+		}
+	}
 	return labelResults, &MultiQueryRunReport{
 		ScannedByKeyspace: cc.scannedByKeyspace(stats),
 		WokenByEntry:      woken,
+		Warnings:          warnings,
 	}, err
 }
 
@@ -905,6 +926,7 @@ func (cc *CompiledMultiQueryEntries) runStream(onLabelResult func(LabelResult) e
 	s := cc.session
 
 	cc.GatedSkipped = nil // repopulated per run by streamStandalone's index-gating.
+	cc.RunWarnings = nil  // repopulated per run (standalone results + fused context).
 
 	// Memory-behavior knobs + result. A fresh shared, race-safe merge-counter set is
 	// installed for this run (propagated to each entry Run's Ctx by PlanExec + the
@@ -1002,6 +1024,13 @@ func (cc *CompiledMultiQueryEntries) runStream(onLabelResult func(LabelResult) e
 
 	engine.ExecOp(cc.Plan, vars, yieldVals, yieldErr, "", "")
 
+	// Harvest the fused run's advisories (scoped-index disclosure, skipped
+	// unreadable containers, ...) -- this context is run-local, so anything left
+	// on it would otherwise vanish (ISSUE-28: a .multi report must NAME its skips).
+	for _, w := range gctx.GetErrors() {
+		cc.RunWarnings = append(cc.RunWarnings, w.Error())
+	}
+
 	return execErr
 }
 
@@ -1037,6 +1066,9 @@ func (cc *CompiledMultiQueryEntries) streamStandalone(onLabelResult func(LabelRe
 		res, err := cc.session.Run(d.Stmt)
 		if err != nil {
 			return fmt.Errorf("standalone query %q: %w", d.Label, err)
+		}
+		for _, w := range res.Warnings {
+			cc.RunWarnings = append(cc.RunWarnings, w.Error())
 		}
 		for _, row := range res.Rows {
 			if err := onLabelResult(LabelResult{

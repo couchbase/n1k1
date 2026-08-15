@@ -1238,6 +1238,16 @@ type WalkOptions struct {
 	// containers modified since T -- DESIGN-indexing.md "Newest-first / partial").
 	// nil admits every eligible file.
 	FileFilter func(path string, info os.FileInfo) bool
+
+	// FileUnreadable, when non-nil, is consulted when a LISTED file cannot be
+	// OPENED -- a dangling symlink (readdir/glob still name it), a file that
+	// vanished between list and open, a permission flip. Return true to SKIP the
+	// whole container and continue the walk (the callback owns any disclosure);
+	// return false to fail the walk with the open error. nil = fail (ISSUE-28's
+	// complaint: one dangling symlink aborted every scan). Open-time only: a file
+	// that opens but breaks MID-read still errors -- partial data was emitted, so
+	// "skip the container" is no longer a coherent recovery.
+	FileUnreadable func(path string, err error) bool
 }
 
 // AllModes returns the flexible default: recurse, all supported formats, gzip on.
@@ -1562,6 +1572,10 @@ func (w *walkSource) NextColumns() (cols, valids [][]byte, rows int, ok bool, er
 			}
 			s, e := OpenFile(w.files[w.iCB], "")
 			if e != nil {
+				if w.opts.FileUnreadable != nil && w.opts.FileUnreadable(w.files[w.iCB], e) {
+					w.iCB++ // container skipped (the callback disclosed it)
+					continue
+				}
 				return nil, nil, 0, false, e
 			}
 			if w.proj != nil {
@@ -1611,6 +1625,10 @@ func (w *walkSource) Next(rec *Record) (bool, error) {
 			rel = filepath.ToSlash(rel)
 			s, err := OpenFile(path, rel)
 			if err != nil {
+				if w.opts.FileUnreadable != nil && w.opts.FileUnreadable(path, err) {
+					w.i++ // container skipped (the callback disclosed it)
+					continue
+				}
 				return false, err
 			}
 			// Forward an optional column projection to the per-file source before it

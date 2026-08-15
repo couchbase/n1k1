@@ -82,6 +82,9 @@ func main() {
 		indexStoreFlag = flag.String("index-store", "", "directory for the index sidecar "+
 			"(catalog.json + built indexes); default is <datastore>/"+"."+prog+". Set this to index a "+
 			"READ-ONLY datastore, so n1k1 never writes inside the bundle")
+		haltUnreadable = flag.Bool("halt-on-unreadable", false,
+			"abort a scan when a listed container can't be OPENED (dangling symlink, file "+
+				"vanished after listing) instead of the default skip-and-warn")
 		variantFidelity = flag.Bool("variant-fidelity", false,
 			"Parquet VARIANT scan carries typed-scalar fidelity (V-carrier) instead of the "+
 				"Phase-0 JSON projection; a lone VARIANT column reads via the zero-copy borrow path")
@@ -154,6 +157,10 @@ func main() {
 	// the datastore bundle, so a READ-ONLY datastore can still be indexed. Empty keeps
 	// the sidecar under the datastore dir. Set before any store open / catalog read.
 	glue.SetIndexStore(*indexStoreFlag)
+
+	// -halt-on-unreadable: one unopenable container aborts the scan (the
+	// pre-ISSUE-28 behavior) instead of the default skip-and-warn.
+	glue.ScanHaltUnreadable = *haltUnreadable
 
 	// -meta controls per-file metadata injection (_meta).
 	mm, merr := records.ParseMetaMode(*metaFlag)

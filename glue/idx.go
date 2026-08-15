@@ -218,6 +218,14 @@ func indexSourceOpen(ks datastore.Keyspace, opts records.WalkOptions) (records.S
 	if err != nil {
 		return nil, err
 	}
+	if opts.FileUnreadable == nil {
+		// ISSUE-28 ask 2 (resolver agreement): the index side skips an unopenable
+		// container exactly like the scan side, so "which files are in this
+		// keyspace" has ONE answer (and matches indexSourceSignature's stat-skips).
+		// Disclosure happens where a reader sees it -- the SCAN of the same
+		// keyspace warns per skipped file (KeyspaceRecordsOpen).
+		opts.FileUnreadable = func(string, error) bool { return true }
+	}
 	return records.WalkPrelisted(base, files, applyKeyspaceFormats(ks, opts)), nil
 }
 

@@ -630,6 +630,13 @@ func (c *cli) cmdMultiRun(arg string) {
 		))
 	}
 	c.renderRows(rows, "", false)
+	// Engine advisories FIRST, before the counts: a run that skipped evidence
+	// (an unreadable container, ISSUE-28) or served a time-scoped window must
+	// NAME it -- results without the disclosure are the confident-wrong-subset
+	// shape the scoped-index contract exists to prevent.
+	for _, w := range report.Warnings {
+		fmt.Fprintf(c.stderr, "%s%s\n", c.icon("⚠️  "), c.style.Yellow("Warning: "+w))
+	}
 	fmt.Fprintf(c.stderr, "%s%d labelResult(s) from %d query/queries\n", c.icon("🔎 "), len(labelResults), len(dets))
 	if n := len(cc.GatedSkipped); n > 0 {
 		// A gated skip means the entry's `gate:` precondition matched no row in its

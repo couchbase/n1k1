@@ -405,6 +405,23 @@ feed each through format detection as if a directory (also covers office docx/xl
 gzip/zstd streams aren't seekable, so columnar formats lose random-access/pushdown when gzipped —
 fine for row formats.
 
+### Unreadable containers: skip-and-disclose (SHIPPED — ISSUE-28)
+
+A container the LISTING names but the OPEN can't reach — a dangling symlink (readdir/glob
+still return it; Claude Code symlinks sub-agent transcripts whose target sessions rotate
+away), a file that vanished between list and open, a permission flip — **skips with a
+per-file disclosure warning instead of aborting the scan** (a consumer measured 4 dangling
+links out of 565 files taking down 100% of queries, on a read-only bundle where they
+couldn't delete the links). Mechanics: `records.WalkOptions.FileUnreadable` (open-time
+hook in `walkSource`, row + columnar paths); `KeyspaceRecordsOpen` installs the default
+skip + `WarnOncef` policy; the index-side walks (`indexSourceOpen`) skip identically so
+"which files are in this keyspace" has ONE answer. `-halt-on-unreadable`
+(`glue.ScanHaltUnreadable`) restores the abort — mirroring the cursor's
+`--halt-on-violation`: tolerance is the default, silence is never an option. Open-time
+only: a file that opens but breaks MID-read still errors (partial rows were emitted).
+`.multi run` surfaces engine advisories (this skip, scoped-index disclosure) in its
+report via `MultiQueryRunReport.Warnings`. Guard: `TestScanSkipsUnreadableContainer`.
+
 ## §4 The `extract` provider — unstructured & semi-structured sources
 
 Crack files that aren't clean rows (office/PDF **and** the messy semi-structured bulk — logs,

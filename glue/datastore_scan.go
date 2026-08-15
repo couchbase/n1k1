@@ -311,7 +311,11 @@ func applyKeyspaceFormats(ks datastore.Keyspace, opts records.WalkOptions) recor
 	if !has {
 		return opts
 	}
+	// The override carries the FORMAT lockdown; the caller's scan policy -- meta
+	// mode, path prefix, time-scope filter, unreadable-container policy -- rides
+	// through unchanged.
 	fo.Meta, fo.PathPrefix = opts.Meta, opts.PathPrefix
+	fo.FileFilter, fo.FileUnreadable = opts.FileFilter, opts.FileUnreadable
 	return fo
 }
 
@@ -535,6 +539,12 @@ func KeyspaceDir(keyspace datastore.Keyspace) (string, error) {
 	return filepath.Join(root, ns.Name(), keyspace.Name()), nil
 }
 
+// ScanHaltUnreadable restores the pre-ISSUE-28 contract: one unreadable container
+// (dangling symlink, vanished file) ABORTS the scan instead of the default
+// skip-and-disclose. CLI -halt-on-unreadable. Mirrors the cursor's
+// --halt-on-violation: tolerance is the default, silence is never an option.
+var ScanHaltUnreadable = false
+
 // globWalkBase re-anchors a glob keyspace's walk base when the base collapsed onto
 // a single FILE. IDEA-0001: a glob with no metacharacters (a bound single FILE,
 // e.g. `--bind ns_error=ns_server.error.log`) has GlobBase == the file itself, so
@@ -566,6 +576,26 @@ func globWalkBase(base string) string {
 // the filesystem on its own, report 0 docs for these layouts.
 func KeyspaceRecordsOpen(ks datastore.Keyspace, opts records.WalkOptions, gctx *GlueContext) (records.Source, error) {
 	ks = KeyspaceRecordsInner(ks)
+	// ISSUE-28: a container the LISTING names but the OPEN can't reach -- a dangling
+	// symlink (readdir/glob still return it), a file rotated away between list and
+	// open, a permission flip -- must not abort the whole scan: 4 dangling links out
+	// of 565 files took 100% of a consumer's queries down, on a read-only bundle
+	// where they couldn't even delete the links. Default: SKIP the container and
+	// DISCLOSE it (one warning per file per request), the same treatment a cursor
+	// gives an append-only violation -- continue, and name what was skipped.
+	// -halt-on-unreadable (ScanHaltUnreadable) restores the abort; a caller may
+	// also pre-set its own FileUnreadable policy.
+	if opts.FileUnreadable == nil && !ScanHaltUnreadable {
+		warnCtx := gctx
+		opts.FileUnreadable = func(path string, err error) bool {
+			if warnCtx != nil {
+				warnCtx.WarnOncef("unreadable:"+path,
+					"scan SKIPPED unreadable container %q: %v -- results omit it "+
+						"(run with -halt-on-unreadable to make this an error)", path, err)
+			}
+			return true
+		}
+	}
 	// Per-source -formats (multi-source, DESIGN-data.md §2): if this keyspace carries a
 	// format override, apply it here -- the single choke point every scan/agg/vector path
 	// funnels through -- so its file eligibility differs from the global while .meta and
