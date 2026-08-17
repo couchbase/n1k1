@@ -100,7 +100,9 @@ html, body {
 .impress-on-up-why .step,   .impress-on-up-sqlpp .step,
 .impress-on-up-data .step,  .impress-on-up-engine .step,
 .impress-on-up-compiler .step, .impress-on-up-multi .step,
-.impress-on-up-extend .step,   .impress-on-up-rigor .step {
+.impress-on-up-extend .step,   .impress-on-up-rigor .step,
+.impress-on-up-index .step,    .impress-on-up-docs .step,
+.impress-on-up-pack .step {
   opacity: 0.95;
 }
 
@@ -435,3 +437,12 @@ th          { color: var(--ink-dim); font-weight: 600; font-size: 15px;
    stay quiet, and the list only exists while it's open.) */
 .deck-nav option           { background: #11161d; color: var(--ink); }
 .deck-nav option.nav-depth0 { font-weight: 700; }
+
+/* 7.4.1 carries the full verbatim expand() body — the one slide dense enough
+   to need tighter leading to clear a 1080p viewport. Keep the font size: this
+   buys the room without shrinking the glyphs. */
+#ext-vectors-src pre { line-height: 1.28; }
+
+/* 5.1 packs a 13-line pipeline diagram plus a code block and bullets. Tighten
+   its blocks so the card clears a 1080p viewport with no content dropped. */
+#comp-lz pre { line-height: 1.35; margin: 10px 0; }

@@ -35,8 +35,12 @@ document, so the content is never trapped.
 The deck is one big top-down **poster**, not a linear stack:
 
 - The **title** is bare text at the top center, huge.
-- Eight **section panels** (`class="step hub"`, `data-scale="5"`) sit in
-  two rows of four below it, read left-to-right in narrative order.
+- Eleven **section panels** (`class="step hub"`, `data-scale="5"`) sit
+  below it in three rows — four, four, then three centred — read
+  left-to-right in narrative order. Adding a row means moving the closing
+  card (currently `y=13500`) and re-centring the `#map` / `#overview`
+  cameras (currently `(0, 4100)` at scale 27) so the whole board still
+  frames.
   A panel is a giant borderless card: a heading at the top, a faint
   watermark numeral, and deliberate empty space below.
 - Each panel's **child slides** (`data-scale="1"`) sit *inside the

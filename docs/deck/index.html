@@ -18,11 +18,16 @@
      SPATIAL LAYOUT — a top-down tree on one big poster.
 
        - title: bare text at top center, huge
-       - 8 section PANELS (.hub, data-scale="5", footprint ~5500 x 3900),
-         in two rows of four, read left-to-right:
+       - 11 section PANELS (.hub, data-scale="5", footprint ~5500 x 3900),
+         in three rows, read left-to-right:
              row 1 (y=0):     why      sqlpp    data     engine
                               x=-9300  x=-3100  x=3100   x=9300
              row 2 (y=4800):  compiler multi    extend   rigor
+             row 3 (y=9600):  index    docs     pack        <- added 2026-08-13
+                              x=-6200  x=0      x=6200      (centred under 4-wide)
+         The closing card sits below the last row (y=13500), and the poster
+         cameras are centred on the whole board at (0, 4100) scale 27 — both
+         need moving if a row is ever added or removed.
        - each panel's child slides (data-scale="1") sit INSIDE the panel's
          footprint, positioned via data-rel-to + data-rel-x/y from the
          panel's center:
@@ -92,7 +97,7 @@
        <strong>both an interpreter and a compiler</strong></p>
   </div>
 
-  <div id="map" class="step camera" data-x="0" data-y="1100" data-z="0" data-scale="25">
+  <div id="map" class="step camera" data-x="0" data-y="4100" data-z="0" data-scale="27">
     <!-- camera position: the whole poster, shown right after the title -->
   </div>
 
@@ -512,7 +517,6 @@ Vals = [ ['"alice"', '"bob"'], <em>[uint64(42), uint64(43)]</em> ] <span class="
     <ul>
       <li><code>engine/*.go</code> is a plan-tree interpreter written in a
           disciplined "lz" subset of Go.</li>
-      </li>
     </ul>
 <pre><code>n := len(fields)              <span class="c">// early-bound: data is known at plan / compilation time</span>
 lzResult = lzCompute(lzVals)  <span class="c">// "lz" hungarian notation = late-bound: needs actual runtime data</span></code></pre>
@@ -559,7 +563,7 @@ incoming SQL++    D) QUERY.go generated <span class="c">-- fused, optimized Go c
     </ul>
 <pre class="diagram"><code>parent = the n1k1 program, which has cbq + datasource access, and
  ▲ │     which streams data for the leaves of any QUERY plan to the child process via DatastorePipes
- │ ▼  
+ │ ▼
 child  = the compiled QUERY.go program ── drives the query execution;
          the DatastorePipes provide data for: Fetch / Scan / IndexScan / Meta;
 
@@ -925,26 +929,27 @@ function expand(args, ctx) {
   { name:"order", default: "" },
   { name:"opts",  default: "{}" }
  ] };
-<span class="c">// batch = rows / round-trip to embedding model
-// opts  = embedding model endpoint, dimensions, etc.</span>
-
-function expand(args, ctx) {
- var k   = ctx.gensym("k"),  rows = ctx.gensym("rows"),
-     pg  = ctx.gensym("pg"), emb  = ctx.gensym("emb"),
-     row = ctx.gensym("row"), …;
 </code></pre>
       </div>
       <div>
-<pre><code> … (continued)
+<pre><code>function expand(args, ctx) {
+ var k    = ctx.gensym("k"),
+     rows = ctx.gensym("rows"),
+     pg   = ctx.gensym("pg"),
+     emb  = ctx.gensym("emb"),
+     row  = ctx.gensym("row"), …;
 
- var order = (args.order && args.order.replace(/\s/g, "") !== "") ? args.order : args.id;
- // Force text/into onto the caller's opts (they can't be overridden): the batch objects
- // are {id,text}, so VECTORIZE_BATCH must read "text" and write the requested field.
+ var order = (args.order &amp;&amp;
+   args.order.replace(/\s/g, "") !== "")
+   ? args.order : args.id;</code></pre>
+      </div>
+    </div>
+<pre><code><span class="c"> // text/into are FORCED onto the caller's opts: pages are {id,text}, so VECTORIZE_BATCH must read "text"</span>
  var vopts = 'OBJECT_PUT(OBJECT_PUT(' + args.opts + ', "text", "text"), "into", "' + args.into + '")';
-
  return "(SELECT " + row + ".* FROM (" +
    "SELECT VECTORIZE_BATCH(" + pg + ".b, " + vopts + ") AS b FROM (" +
-     "SELECT ARRAY_AGG({\"id\": " + rows + "." + idc + ", \"text\": " + rows + "." + txt + "}) AS b FROM (" +
+     "SELECT ARRAY_AGG({\"id\": " + rows + "." + idc +
+                    ", \"text\": " + rows + "." + txt + "}) AS b FROM (" +
        "SELECT (" + args.id + ") AS " + idc + ", (" + args.field + ") AS " + txt + ", " +
               "ROW_NUMBER() OVER (ORDER BY " + order + ") AS " + rn +
        " FROM " + args.src + " AS " + k +
@@ -953,9 +958,15 @@ function expand(args, ctx) {
    ") AS " + pg +
  ") AS " + emb + " UNNEST " + emb + ".b AS " + row + ")";
 }</code></pre>
-</div>
-</div>
-    
+
+  </div>
+
+  <!-- 7.4.2 — the payoff: what that string-concatenation actually produces.
+       Second .src card on the same parent, offset UP instead of down. -->
+  <div id="ext-vectors-out" class="step src" data-rel-to="ext-vectors"
+       data-rel-x="360" data-rel-y="-140" data-rel-z="20" data-scale="0.2">
+    <p class="kicker">7.4 · what the macro writes for you</p>
+    <h2>One model call per page, not per row</h2>
 <pre><code><span class="c">// @vectorize_field(...) expands to this (gensym'd names simplified) — page by ROW_NUMBER, ARRAY_AGG each page,
 // ONE embedding model call per page (not per row), UNNEST back to per-row {id, text, vec}.</span>
 (SELECT row.* FROM (SELECT VECTORIZE_BATCH(pg.b, &lt;vopts&gt;) AS b
@@ -965,6 +976,14 @@ function expand(args, ctx) {
                    FROM logs AS k) AS rows
           GROUP BY FLOOR((rows.rn - 1) / 256)) AS pg) AS emb
  UNNEST emb.b AS row)</code></pre>
+    <ul>
+      <li>Page by <code>ROW_NUMBER</code>, <code>ARRAY_AGG</code> each page, <strong>one
+          embedding-model round-trip per page</strong>, then <code>UNNEST</code> back to
+          per-row <code>{id, text, vec}</code> — the batching wall you would otherwise
+          hand-write, every time.</li>
+      <li>Every introduced alias is <code>gensym</code>'d, so nesting two calls cannot
+          collide; <code>.macro expand</code> prints exactly this.</li>
+    </ul>
   </div>
 
   <div id="up-extend" class="step camera"
@@ -1066,9 +1085,268 @@ function expand(args, ctx) {
     <!-- waypoint: pull back over panel 8 before the closing card -->
   </div>
 
+  <!-- ================== ROW 3 — added 2026-08-13, for work that landed after
+       the deck was first written: index freshness, markdown as data, packaging.
+       Three panels, centred under the two rows of four. ================== -->
+
+  <!-- ======================= 9 · INDEX FRESHNESS ======================= -->
+
+  <div id="hub-index" class="step hub" style="--hue:95"
+       data-x="-6200" data-y="9600" data-z="0" data-scale="5">
+    <div class="bignum">9</div>
+    <p class="kicker">9 · incremental indexing, sometimes in reverse</p>
+    <h1>Partial indexing</h1>
+    <p class="dim">catch-up · time-scoping · hybrid serving</p>
+  </div>
+
+  <div id="idx-incremental" class="step" data-rel-to="hub-index"
+       data-rel-x="-1400" data-rel-y="350" data-rel-z="150">
+    <p class="kicker">index freshness</p>
+    <h2>Incremental vs full rebuild</h2>
+    <ul>
+      <li>Naive full index rebuild is correct, based on <em>(file count, newest mtime)</em> —<br>
+          but on append-only data, full rebuild is
+          <span class="num">~19×</span> slower than brute force full scanning.</li>
+      <li>Optimization: track cursors: per-container <strong>byte watermarks</strong>
+          (<code>path#line@offset</code>) kept with index state —<br>SI: boltDB's meta-data;
+          FTS: bleve's <code>Batch.SetInternal</code>.</li>
+      <li>An index append is an <strong>insert-only fold</strong>. Existing
+          entries never change -<br><code>bolt.Put</code> is idempotent, so at-least-once
+          replay is harmless.</li>
+      <li>Conservative: no stored watermark, no
+          rotate / truncate / rewrite anomaly - falls back to a full rebuild.<br><strong>FNV-1a 64
+          fingerprint of the boundary record</strong>.</li>
+    </ul>
+  </div>
+
+  <div id="idx-scoped" class="step" data-rel-to="hub-index"
+       data-rel-x="0" data-rel-y="350" data-rel-z="150">
+    <p class="kicker">index freshness · scope</p>
+    <h2>Index the recent tail first</h2>
+<pre><code>.index create idx_errs on logs (sev) since=72h   <span class="c">-- an ABSOLUTE cutoff,</span>
+.index backfill idx_errs --pages 20              <span class="c">-- resolved once at create</span></code></pre>
+<pre class="diagram"><code>       older ────────── floor ─────────── water ──▶ newer
+        not indexed      INDEXED                     appended
+    ◀── .index backfill  (complete)                  catch-up ──▶</code></pre>
+    <ul>
+      <li>Two ends of one window: catch-up raises <code>water</code>, backfill lowers
+          <code>floor</code> —<br>newest containers first, one resumable page per run.</li>
+      <li>The invariant: the indexed set is <em>always exactly</em>
+          <code>{containers with mtime &gt;= floor}</code> — which is why a page extends
+          to cover <strong>mtime ties</strong>, or one timestamp would straddle the
+          boundary and the invariant would be false.</li>
+      <li>Container-aligned, never mid-file. <code>defHash</code> covers
+          <code>since</code>,<br>so re-scoping builds a <em>new</em> artifact instead of
+          corrupting the existing ones;<br>a floor of <code>"0"</code> means complete.</li>
+    </ul>
+  </div>
+
+  <div id="idx-hybrid" class="step" data-rel-to="hub-index"
+       data-rel-x="1400" data-rel-y="350" data-rel-z="150">
+    <p class="kicker">index freshness · hybrid</p>
+    <h2>Hybrid indexes</h2>
+    <p><strong>Important rule:</strong> <em>a partial index never answers as if
+       complete.</em></p>
+    <ul>
+      <li>A scoped scan answers from <strong>index ∪ scan-below-floor</strong>, merged in
+          encoded-key order —<br>See: ClickHouse's <code>MATERIALIZE PROJECTION</code>:
+          correct, monotonically faster as the floor drops, zero extra cost once
+          complete. (Postgres and Couchbase's GSI have the opposite policy: invalid until index is
+          complete.)</li>
+      <li>Below-floor records run the <em>same</em> key expressions into
+          the <em>same</em> order-preserving encoding, filtered by the <em>same</em>
+          encoded span bounds. The two halves partition on the floor, so the merge
+          doesn't double-emit.</li>
+      <li>SI supports the hybrid based floor technique; FTS and in-memory indexes do not.<br>Env var toggle:
+          <code>N1K1_INDEX_NOHYBRID</code>.</li>
+    </ul>
+  </div>
+
+  <div id="idx-orderby" class="step leaf" data-rel-to="hub-index"
+       data-rel-x="0" data-rel-y="1450" data-rel-z="300" data-scale="0.4">
+    <p class="kicker">index freshness · hybrid subtleties</p>
+    <h2>Example subtlety: breaking <code>ORDER BY</code></h2>
+    <ul>
+      <li>Some receivers depend on scan order:
+          the query planner <em>elides</em> the ORDER BY operator<br>when the index provides key
+          order, so result order <em>is</em> emission order.<br>Our initial hybrid attempt
+          emitted below-floor entries after the SI b-tree walk,<br>and a
+          below-floor <code>"AAA"</code> came out after the indexed <code>"BBB"</code>— a mis-sort.</li>
+      <li>Tradeoffs: order-free scans stream unbuffered,<br>and under a pushed-down
+          <code>LIMIT</code> only the k smallest are kept in a bounded heap —<br>
+          <strong>O(k)</strong> regardless of the remainder.</li>
+    </ul>
+  </div>
+
+  <div id="up-index" class="step camera"
+       data-x="-6200" data-y="9600" data-z="0" data-scale="7">
+    <!-- waypoint: pull back over panel 9 -->
+  </div>
+
+  <!-- ======================= 10 · DOCUMENTS =========================== -->
+
+  <div id="hub-docs" class="step hub" style="--hue:300"
+       data-x="0" data-y="9600" data-z="0" data-scale="5">
+    <div class="bignum">10</div>
+    <p class="kicker">10 · markdown as data</p>
+    <h1>Markdown handling</h1>
+    <p class="dim">frontmatter · outline · link graph</p>
+  </div>
+
+  <div id="docs-front" class="step" data-rel-to="hub-docs"
+       data-rel-x="-800" data-rel-y="350" data-rel-z="150">
+    <p class="kicker">markdown · frontmatter</p>
+    <h2>Markdown: YAML frontmatter</h2>
+<pre><code>$ n1k1 -c 'SELECT c.filename, c.front.title, c.front.tags
+             FROM concepts AS c WHERE "sales" IN c.front.tags' examples/catalog
+{"filename":"orders.md","title":"Orders","tags":["sales","core"]}</code></pre>
+    <ul>
+      <li>A <code>.md</code> document exposes <code>front</code> (the parsed frontmatter object),
+          <code>body</code> (everything after the frontmatter), and <code>text</code> —
+          the <em>whole</em> file, frontmatter included, so LIKE and FTS are unchanged.</li>
+      <li>An unparseable frontmatter block leads to <code>front_error</code> instead of failing
+          to extract, which allows queries to "find the broken frontmatter":</li>
+    </ul>
+<pre><code>WHERE c.front_error IS NOT MISSING
+<span class="c">-- {"filename":"legacy_import.md",
+--  "front_error":"yaml: line 2: did not find expected ',' or ']'"}</span></code></pre>
+  </div>
+
+  <div id="docs-catalog" class="step src-parent" data-rel-to="hub-docs"
+       data-rel-x="800" data-rel-y="350" data-rel-z="150">
+    <p class="kicker">markdown · outline &amp; link graph</p>
+    <h2>Markdown: outline and link graph, as rows</h2>
+    <ul>
+      <li>Shipped UDF's via <code>builtin_markdown.js</code></li>
+    </ul>
+<pre><code>md_sections(md) -&gt; {depth, title, trail, anchor, line, body}   <span class="c">-- ATX headings</span>
+md_links(md)    -&gt; {text, target, kind}   <span class="c">-- external | absolute | relative</span>
+md_code(md)     -&gt; {lang, code, line}     <span class="c">-- fenced blocks</span></code></pre>
+    <ul>
+      <li>These are arrays, so <code>UNNEST</code> provides rows.</li>
+    </ul>
+  </div>
+
+  <!-- y=265, not the usual 140: this parent's text runs down to world y=+189,
+       and the card is 62 half-tall, so anything above ~263 sits on top of the
+       parent's last bullets. Clearing them necessarily pushes the card's own
+       viewport past the parent's bottom edge (full coverage would need y<=162),
+       so the parent frames the top of the screen here instead of all of it. -->
+  <div id="docs-catalog-src" class="step src" data-rel-to="docs-catalog"
+       data-rel-x="360" data-rel-y="265" data-rel-z="20" data-scale="0.2">
+    <p class="kicker">10.2 · markdown - example</p>
+    <h2>Markdown: dead links as an anti-join</h2>
+<pre><code>$ n1k1 -c 'SELECT DISTINCT c.filename AS src, l.target AS dangling
+             FROM concepts AS c UNNEST md_links(c.body) AS l
+            WHERE l.kind = "absolute"
+              AND SPLIT(l.target, "/")[2] || ".md"
+                  NOT IN (SELECT RAW filename FROM concepts)' examples/catalog
+{"src":"orders.md","dangling":"/concepts/refunds"}</code></pre>
+    <div class="cols">
+      <div>
+<pre><code><span class="c">-- the outline, as rows</span>
+SELECT s.depth, s.title, s.trail
+  FROM concepts AS c
+  UNNEST md_sections(c.body) AS s
+ WHERE s.depth &lt;= 2
+
+{"depth":1,"title":"Schema",
+ "trail":"Schema"}
+{"depth":2,"title":"Notes",
+ "trail":"Schema &gt; Notes"}</code></pre>
+      </div>
+      <div>
+<pre><code><span class="c">-- edge cases tested:
+--   links to missing pages
+--   markdown files with no frontmatter
+--   unterminated tags</span>
+
+
+
+
+
+
+</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <div id="up-docs" class="step camera"
+       data-x="0" data-y="9600" data-z="0" data-scale="7">
+    <!-- waypoint: pull back over panel 10 -->
+  </div>
+
+  <!-- ======================= 11 · PACKAGING =========================== -->
+
+  <div id="hub-pack" class="step hub" style="--hue:170"
+       data-x="6200" data-y="9600" data-z="0" data-scale="5">
+    <div class="bignum">11</div>
+    <p class="kicker">11 · packaging &amp; reach</p>
+    <h1>SQL++ is shipped as versioned artifacts</h1>
+    <p class="dim">embedded SQL++ · anything on stdin</p>
+  </div>
+
+  <div id="pack-builtins" class="step" data-rel-to="hub-pack"
+       data-rel-x="-800" data-rel-y="350" data-rel-z="150">
+    <p class="kicker">packaging · shipped queries</p>
+    <h2>SQL++ that ships as SQL++</h2>
+<pre><code>Example: schema census SQL++ is shipped as: builtin:census.sql++@v2.1?keyspace=logs&amp;depth=2
+
+<span class="c">-- census.sql++ front matter:</span>
+-- version: v2.1                      <span class="c">-- the ARTIFACT's version, not n1k1's</span>
+-- param: keyspace ident              <span class="c">-- no `=` means REQUIRED</span>
+-- param: depth int = 2</code></pre>
+    <ul>
+      <li><code>cmd/n1k1/builtins/*.sql++</code> are <code>go:embed</code>'d pack
+          entries —<br><strong>no per-builtin Go codepath</strong>.
+      <li>Pinning <code>@v2.1</code> provides version assertions.</li>
+      <li>Params bind <strong>early</strong> — pre-parse, value-only — so the SQL
+          <em>structure</em> stays static<br>and <code>.multi show</code> prints exactly
+          what will run.</li>
+    </ul>
+  </div>
+
+  <div id="pack-stdin" class="step" data-rel-to="hub-pack"
+       data-rel-x="800" data-rel-y="350" data-rel-z="150">
+    <p class="kicker">packaging · reach</p>
+    <h2>Example: slice &amp; dice Kubernetes / etcd data</h2>
+<pre><code>$ etcdctl get --prefix / -w json | n1k1 -c '
+    SELECT BASE64_DECODE_STRING(kv.`key`) AS k,
+           BASE64_DECODE(kv.`value`)      AS v,
+           kv.mod_revision                AS rev
+      FROM stdin s UNNEST s.kvs AS kv
+     WHERE BASE64_DECODE_STRING(kv.`key`) LIKE "/config/%"'</code></pre>
+    <ul>
+      <li><code>FROM stdin</code> makes n1k1 work like jq:<br>a piped JSON stream is just
+          another keyspace, buffered to a temp <code>.jsonl</code> keyspace<br>and scanned like
+          any other data source.</li>
+      <li><code>BASE64_DECODE_STRING</code> — decode efficiently into a lifted n1k1 buffer, zero boxing.</li>
+    </ul>
+  </div>
+
+  <div id="pack-usecases" class="step leaf" data-rel-to="hub-pack"
+       data-rel-x="0" data-rel-y="1450" data-rel-z="300" data-scale="0.4">
+    <p class="kicker">packaging · offline analysis</p>
+    <h2>n1k1: offline analysis and time machine</h2>
+    <ul>
+      <li>Positioning: <strong>n1k1 is not "a better
+          Steampipe for live inspection" — it is the offline time machine.</strong>
+          <br>A gap n1k1 fills: <em>"Datadog cannot join your cluster spec."</em></li>
+      <li><strong>No</strong>: live inventory, policy engines.<br>
+          <strong>Yes</strong>: forensics over a tarball, diffing two
+          points in time, and ASOF-correlating state ⋈ metrics ⋈ logs.<br>
+          Example: Terraform JSON - <code>terraform show -json</code> feeds right into n1k1.</li>
+    </ul>
+  </div>
+
+  <div id="up-pack" class="step camera"
+       data-x="6200" data-y="9600" data-z="0" data-scale="7">
+    <!-- waypoint: pull back over panel 11 before the closing card -->
+  </div>
+
   <!-- ======================= CLOSING (bottom center) =================== -->
 
-  <div id="closing" class="step title" data-x="0" data-y="7600" data-z="0" data-scale="2">
+  <div id="closing" class="step title" data-x="0" data-y="13500" data-z="0" data-scale="2">
     <p class="kicker">the through-line</p>
     <h2>Five decisions (at least)</h2>
     <ul style="text-align:left">
@@ -1084,7 +1362,7 @@ function expand(args, ctx) {
        n1k1 playground: <a href="https://couchbase.github.io/n1k1/play">couchbase.github.io/n1k1/play</a><br></p>
   </div>
 
-  <div id="overview" class="step camera" data-x="0" data-y="1100" data-z="0" data-scale="25">
+  <div id="overview" class="step camera" data-x="0" data-y="4100" data-z="0" data-scale="27">
     <!-- final camera position: the whole poster again -->
   </div>
 
